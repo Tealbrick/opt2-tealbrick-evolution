@@ -1,6 +1,6 @@
 # Evolving Workflows (Tealbrick mini app): architecture
 
-State: verified against the repo on 2026-10-17. Claims cite paths in this repo. Anything not verified is marked UNVERIFIED. For the whole system see `engineering/ARCHITECTURE.md` and `engineering/SYSTEM-OVERVIEW.md` in the private repo `Tealbrick/opt2-tealbrick-docs`.
+State: verified against the repo on 2026-10-18. Claims cite paths in this repo. Anything not verified is marked UNVERIFIED. For the whole system see `engineering/ARCHITECTURE.md` and `engineering/SYSTEM-OVERVIEW.md` in the private repo `Tealbrick/opt2-tealbrick-docs`.
 
 ## Common app pattern (verified for all seven apps)
 
@@ -20,14 +20,16 @@ State: verified against the repo on 2026-10-17. Claims cite paths in this repo. 
 
 Flow: suggestion (from an agent or from the Kanban detector) to owner review to draft to promoted version to diff to `recipe_export` (`tealbrick.recipe/1`: create a Bound agent whose allow-list is the workflow's operations, with edges to each product) to schedule (five-field cron, UTC) to the Bound agent's own runner polling `routines_due`, `routine_claim`, `routine_report`. The allow-list is enforced by the bridge. The steps are reviewed guidance only.
 
+Cycles (0.3.0, C250 Release B, E1): one cycle = one workflow version, from its promotion to the next promotion of the same workflow. The ledger is computed on read (`src/cycles.ts`) from versions, drafts, suggestions and run rows; the eval of a cycle (`src/evals.ts`: gates duplicate claims, uncertain ratio, completed ratio, completed-ratio drop against the parent; thresholds in `eval/thresholds.json`) is live, and stored in `eval_runs` when the next version is promoted (same transaction) or when the owner asks (`cycle_eval_run`).
+
 Run semantics: the primary key of `routine_runs` is the occurrence (sha256 of automation id, revision and due time), so claims are at most once. A misfire grace of 120 s collapses missed periods into one `missed` row (no catch-up burst). `claimed` over 10 minutes or `dispatched` over 30 minutes without a report becomes `uncertain` and is never re-offered. Nothing starts runs on a timer. The runner is external: `tealbrick agent serve` in routines mode.
 
 ## Operations (from `tealbrick.manifest.json`)
 
-27 operations.
+30 operations.
 - Agent write: `suggestion_create` (idempotency required), `routine_claim`, `routine_report`. Agent read: `suggestions_list`, `suggestion_get`, `workflow_get`, `routines_due`.
-- Person read (12): `review_suggestions`, `detector_status`, `templates_list`, `drafts_list`, `workflows_list`, `workflow_versions`, `workflow_diff`, `recipe_export`, `automations_list`, `runs_list`, and others.
-- Person write (7): `suggestion_decide`, `detector_scan`, `draft_create`, `draft_update`, `workflow_promote`, `automation_set`, `automation_pause`. Person destructive (held): `automation_delete`.
+- Person read (14): `review_suggestions`, `review_suggestion`, `detector_status`, `templates_list`, `drafts_list`, `draft_get`, `workflows_list`, `workflow_versions`, `workflow_diff`, `recipe_export`, `automations_list`, `runs_list`, `cycles_list`, `cycle_get`.
+- Person write (8): `suggestion_decide`, `detector_scan`, `draft_create`, `draft_update`, `workflow_promote`, `automation_set`, `automation_pause`, `cycle_eval_run` (idempotency required). Person destructive (held): `automation_delete`.
 
 ## Scopes, hooks and companions
 
@@ -41,17 +43,18 @@ None. No keys. Default agent harness choice in the UI is "Other agent (MCP)".
 
 ## Data
 
-- **Stored:** Migrations 0001 to 0004 (0004 rebuilds `routine_runs` with the `policy_stale` status, rows unchanged; `test/upgrade.test.ts`, `scripts/upgrade-check.ts`): `suggestions`, `suggestion_events`, `detector_covered`, `drafts`, `workflows`, `workflow_versions` (immutable snapshots), `agent_names`, `automations`, `routine_runs`, `detector_state`. Kanban issue titles are stored as suggestion evidence and shown to the owner only.
+- **Stored:** Migrations 0001 to 0005 (0004 rebuilds `routine_runs` with the `policy_stale` status, rows unchanged; 0005 adds `eval_runs`; `test/upgrade.test.ts`, `scripts/upgrade-check.ts`): `suggestions`, `suggestion_events`, `detector_covered`, `drafts`, `workflows`, `workflow_versions` (immutable snapshots), `agent_names`, `automations`, `routine_runs`, `detector_state`, `eval_runs` (stored cycle evals: verdict and `tealbrick.eval/1` results, no Kanban titles). The cycle ledger is not stored: it is computed on read. Kanban issue titles are stored as suggestion evidence and shown to the owner only.
 - **Never stored:** Anything from Kanban beyond the evidence the owner reviews.
 
 ## External calls and background work
 
 - **External:** None (only the Kanban companion).
 - **Background:** The Kanban detector: first scan 60 s after start, then every 15 minutes (`DETECTOR_REFRESH_MS`), and on demand.
+- **CI evals (T1):** `eval/run.ts` (`tealbrick-ci.json` `preReleaseChecks`): the detector corpus (precision >= 0.9, recall >= 0.8) and the cycle gate corpus, synthetic fixtures only, no model.
 
 ## Person UI
 
-Suggestions, Drafts, Workflows, Schedules, Holds, Agents and scopes (`src/ui/App.tsx`). The largest UI of the small apps.
+Suggestions, Drafts, Workflows, Schedules, Cycles, Holds, Agents and scopes (`src/ui/App.tsx`). The largest UI of the small apps.
 
 ## Requirements and runtime hints
 

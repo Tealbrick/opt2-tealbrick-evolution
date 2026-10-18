@@ -2,7 +2,7 @@
 
 Evolution (product id `evolution`): the mini app that turns work your agents repeat into reviewed, versioned workflows, and exports a recipe that creates a Bound agent for a workflow. Workflows can run on a schedule through that Bound agent. Evolution never starts an agent and never calls a model. Built on the Miniapp SDK.
 
-**Status:** stable 0.2.11; `main` is 0.2.12 (dev channel only; its qa1 soak is the gate for stable, C221). Visibility: public, Apache-2.0. Image: `ghcr.io/tealbrick/opt2-tealbrick-evolution` (publicly pullable; as of 2026-10-17 it holds the tags 0.2.12, its earlier dev pre-release 0.2.12-dev.1, and `sha-` tags; 0.2.11 and older were published under the former owner's GHCR namespace). Step A (0.1): suggestions, owner review, drafts, versions, diffs, recipe export, Task Board pattern detector. Step B (0.2): schedules and runs claimed at most once by the Bound agent's own runner (`tealbrick agent serve` in routines mode); every run is a Task Board issue assigned to the Bound agent.
+**Status:** stable 0.2.11; `main` is 0.2.12 (dev channel only; its qa1 soak is the gate for stable, C221). Visibility: public, Apache-2.0. Image: `ghcr.io/tealbrick/opt2-tealbrick-evolution` (publicly pullable; as of 2026-10-17 it holds the tags 0.2.12, its earlier dev pre-release 0.2.12-dev.1, and `sha-` tags; 0.2.11 and older were published under the former owner's GHCR namespace). Step A (0.1): suggestions, owner review, drafts, versions, diffs, recipe export, Task Board pattern detector. Step B (0.2): schedules and runs claimed at most once by the Bound agent's own runner (`tealbrick agent serve` in routines mode); every run is a Task Board issue assigned to the Bound agent. Release B (0.3.0, C250, on `main` before its version chore): the cycle ledger and an eval per cycle (Cycles page), T1 evals in CI (`eval/`).
 
 - Repository: `Tealbrick/opt2-tealbrick-evolution` (GitHub organisation `Tealbrick`)
 - Licence: Apache-2.0 for the app code (`LICENSE`, `NOTICE`); upstream licences are in `THIRD_PARTY_NOTICES.md`. The Tealbrick brand mark and app art are Tealbrick artwork and are not covered by the Apache-2.0 licence.
@@ -32,7 +32,7 @@ owner (person ops): review → approve → draft (steps, allowed ops per product
 
 The UI says it plainly: **the agent may call these operations** (the bridge blocks every other one); the steps are reviewed guidance, not an enforced program. The allow-list is enforced by the bridge. Temporal and the v1 step runner are not part of opt2.
 
-27 operations:
+30 operations:
 
 | Operation | Audience | Purpose |
 |---|---|---|
@@ -49,6 +49,8 @@ The UI says it plainly: **the agent may call these operations** (the bridge bloc
 | `routine_report` | agent | `dispatched` → `completed` / `failed` / `uncertain` (+ summary); closes the run's Task Board issue |
 | `automation_set`, `automation_pause`, `automations_list`, `runs_list` | person | schedules (cron, version pin or active, applied policy version, Task Board project, `warnings`) and run history; `automations_list` also answers `kanbanLinked` |
 | `automation_delete` | person | deletes a schedule (destructive, held) |
+| `cycles_list`, `cycle_get` | person | the cycle ledger (one cycle per workflow version) with the live eval; `cycle_get` adds the stored evals |
+| `cycle_eval_run` | person | stores the eval of one cycle now (trigger `owner`; idempotency required) |
 
 ### Schedules and runs (0.2)
 
@@ -59,6 +61,21 @@ The UI says it plainly: **the agent may call these operations** (the bridge bloc
 - Task Board (companion `issue_create`, `issue_complete`, `issue_block`): one issue per claimed run, assigned to the Bound agent, template `evolution:<workflow id>`; the detector never suggests these. Task Board down → the run still runs (`kanbanSync: failed`).
 - Run issue project: the schedule's `kanbanProject`. Use a Task Board project the owner SHARES with the Bound agent, so the agent can read and comment on its run issues (shared projects reach agents and Evolution). When Evolution can reach Task Board (its companion grant is in the workspace slice, `kanbanLinked`), a NEW schedule needs `kanbanProject` (`422 kanban_project_required`); an edit can keep an older schedule without one, never remove one, and such a schedule carries the `kanban_project_missing` warning. Without a project, run issues go to Evolution's own Task Board project, which the Bound agent cannot see (0.2.13, C250). Every recipe allows `kanban.issue_get` and `kanban.issue_comment_add` for this.
 - Cron and the due / misfire rule: `nextCronTime` and `cronDue` from `@opt2-tealbrick/manifest` (5 fields, UTC; the one shared helper, no local copy). `routines_due` only books what the clock and the policy gate imply (`missed`, `policy_stale`); it never claims. Nothing starts runs on a timer; the runner is external.
+
+### Cycles and evals (0.3.0, C250 Release B)
+
+- A cycle is one workflow version, from its promotion until the next version of the same workflow is promoted (`retiredAt`; null = active). The ledger is computed on read from `workflow_versions`, `drafts`, `suggestions` and `routine_runs` (`src/cycles.ts`); nothing is copied. Owner only (person ops), no Task Board titles, no cost fields (E2 later).
+- Per cycle: authoring (`parentVersion`, `suggestionId`, `evidenceCount`, `approvalDelayMs`, `draftRevisions`, `widensAccess` against the parent) and runs (`counts` total / completed / failed / uncertain / missed / policyStale / open, `completedRatio`, `uncertainRatio`, `failedRatio`, `missedRatio`, `claimLatencyP50Ms`, `durationP50Ms`, `kanbanClosedRatio`, `duplicateClaims`, `last10`). A run belongs to its `workflow_version`; a 0.2.x `missed` row without one belongs to the version active at its due time. From 0.3.0 a `missed` row stores its version (the pin, else the version active at the due time). Stale `claimed` / `dispatched` runs count as uncertain (the `runs_list` rule). Ratios use completed + failed + uncertain as the base (`missedRatio` adds missed); medians are nearest-rank (lower middle).
+- Eval (`src/evals.ts`, one `tealbrick.eval/1` result per metric, suite `cycle:<workflow id>@v<n>`, tier T2). Gates: `duplicate_claims` = 0, `uncertain_ratio` <= 0.05, `completed_ratio` >= 0.80, `completed_ratio_drop` (parent minus this) <= 0.10. Information: `missed_ratio` <= 0.20, `policy_stale_runs`. A ratio needs 5 terminal runs (the drop: 5 in both cycles), else `pass: null`. Verdict: `fail` if a gate fails, `pass` if every gate passes, else `insufficient`. Version 1 has no parent, so no drop metric. Thresholds: `eval/thresholds.json` (the one source).
+- Stored evals (`eval_runs`, migration 0005): promoting version n+1 stores the closing eval of version n in the same transaction (trigger `promotion`); "Store eval now" on the Cycles page calls `cycle_eval_run` (trigger `owner`). The live eval of every cycle is computed on read.
+
+### T1 evals (`eval/`)
+
+`node eval/run.ts [--out <file>]` runs two synthetic, public-safe suites through the real code and prints one `tealbrick.eval/1` line (JSON) per metric; exit 1 on any failure. CI runs it on every pipeline (`tealbrick-ci.json` `preReleaseChecks`, ci-v9.6+).
+
+- `eval/cases/detector/*.json` (43 Task Board histories): `parseDoneIssues` + `buildGroups` + the N filter, as the scan does. Precision and recall over all cases; gate `detector.precision >= 0.9`, `detector.recall >= 0.8` (measured baseline 1.0 / 1.0 is in `thresholds.json`). Near-duplicates the detector misses (word order, plural, typo) have `expected: []` and a `note`: E5 targets.
+- `eval/cases/cycles/*.json` (18 run histories): `runStats` + `cycleEval` + `verdictOf`; every expected verdict and metric value must match.
+- `test/evals.test.ts` proves the runner fails on a mutated threshold and on a wrong expected list (in memory; the corpus is never edited to make a test pass).
 
 ### Task Board (soft dependency)
 
@@ -84,16 +101,19 @@ New code is TypeScript (Node 24+).
 | `src/scan.ts` | the detector's background refresh and on-demand scan |
 | `src/recipe.ts` | Bound-agent recipe builder |
 | `src/routines.ts` | schedules, due/claim/report, missed records, sweep (cron rule from the manifest package) |
+| `src/cycles.ts` | cycle ledger computed on read; stored evals (`eval_runs`) |
+| `src/evals.ts` | pure eval of a cycle (gates, verdict); reads `eval/thresholds.json` |
+| `eval/` | T1 evals: `run.ts`, `thresholds.json`, `cases/detector/`, `cases/cycles/` |
 | `src/templates.ts` | seed workflow templates |
-| `src/ui/` | owner UI in `<AppShell>`: Suggestions, Drafts, Workflows, Schedules, Holds, Agents |
-| `migrations/` | 4 forward-only migrations: `0001_init.sql` (0.1), `0002_routines.sql` (0.2), `0003_detector_state.sql`, `0004_policy_stale_runs.sql` (0.2.13: rebuilds `routine_runs` to allow `policy_stale`). Never edit a released file. |
-| `scripts/upgrade-check.ts` | upgrade check on a COPY of a real 0.2.12 `app.db`: applies the new migrations like the SDK and compares every row; prints counts only |
+| `src/ui/` | owner UI in `<AppShell>`: Suggestions, Drafts, Workflows, Schedules, Cycles, Holds, Agents |
+| `migrations/` | 5 forward-only migrations: `0001_init.sql` (0.1), `0002_routines.sql` (0.2), `0003_detector_state.sql`, `0004_policy_stale_runs.sql` (0.2.13: rebuilds `routine_runs` to allow `policy_stale`), `0005_eval_runs.sql` (0.3.0: stored cycle evals). Never edit a released file. |
+| `scripts/upgrade-check.ts` | upgrade check on a COPY of a real 0.2.12 or 0.2.13 `app.db`: applies the new migrations like the SDK and compares every row; prints counts only |
 | `skills/use-evolution/SKILL.md` | agent skill: when to suggest, Bound-agent behaviour |
 | `Dockerfile` | the one opt2 app Dockerfile pattern |
 | `.woodpecker/ci.yaml`, `.github/workflows/opt2-release.yml` | the opt2 CI template ci-v9.9, generated from `Tealbrick/opt2-tealbrick-platform`; do not edit |
 | `tealbrick-ci.json` | CI settings: kind `miniapp`, one image |
 | `conformance.start.ts` | boots the app for `tb-conformance` |
-| `test/` | model, detector, recipe, routine and flow checks, UI checks |
+| `test/` | model, detector, recipe, routine, cycle ledger, eval and flow checks, upgrade, UI checks |
 
 Scaffolded with `create-tealbrick-miniapp`.
 
@@ -104,6 +124,7 @@ corepack enable && pnpm install --frozen-lockfile --ignore-scripts
 pnpm typecheck && pnpm lint && pnpm test
 pnpm build            # kit, server to dist/, UI to dist/ui/assets-<hash>/
 pnpm conformance      # SDK conformance suite against this app (not release evidence; QA is)
+node eval/run.ts      # T1 evals (detector corpus, cycle gates); exit 1 on any failure
 pnpm gen              # tb-gen: openapi, kit, docs, railway (gen/, not committed)
 TB_STANDALONE=1 TB_DATA_DIR=.data TB_DATA_EPHEMERAL=1 pnpm start   # app-alone mode: person UI only (operations answer 503 no_bridge)
 ```
