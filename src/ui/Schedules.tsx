@@ -7,7 +7,7 @@ import { errorText, type Out, person, utcDue, utcStamp } from "./ops.ts";
 
 type Automation = Out<"automations_list">["automations"][number];
 type Run = Out<"runs_list">["runs"][number];
-const STATUS: Record<Run["status"], Status> = { completed: "live", claimed: "busy", dispatched: "busy", failed: "needs-you", missed: "needs-you", uncertain: "needs-you" };
+const STATUS: Record<Run["status"], Status> = { completed: "live", claimed: "busy", dispatched: "busy", failed: "needs-you", missed: "needs-you", uncertain: "needs-you", policy_stale: "needs-you" };
 const SERVE_CONFIG = {
   format: "tealbrick.agent-serve/1",
   harness: { kind: "claude", modelKeyEnv: "ANTHROPIC_API_KEY" },
@@ -18,6 +18,7 @@ const SERVE_CONFIG = {
 
 export function Schedules({ agents, agentsLoading }: { agents: UseAgents["agents"]; agentsLoading: boolean }) {
   const [rows, setRows] = useState<Automation[] | null>(null);
+  const [kanbanLinked, setKanbanLinked] = useState(false);
   const [workflows, setWorkflows] = useState<Out<"workflows_list">["workflows"]>([]);
   const [open, setOpen] = useState<string | null | undefined>(undefined);
   const [error, setError] = useState<string | null>(null);
@@ -25,7 +26,9 @@ export function Schedules({ agents, agentsLoading }: { agents: UseAgents["agents
   const [creating, setCreating] = useState(false);
   const load = useCallback(async () => {
     try {
-      setRows((await person("automations_list", {})).automations);
+      const r = await person("automations_list", {});
+      setRows(r.automations);
+      setKanbanLinked(r.kanbanLinked);
       setError(null);
     } catch (e) {
       setError(errorText(e));
@@ -117,6 +120,11 @@ export function Schedules({ agents, agentsLoading }: { agents: UseAgents["agents
                   <strong>Runs were missed since {utcStamp(a.missedSince)}:</strong> the agent’s runner did not claim them in time. Check that tealbrick agent serve is running.
                 </Notice>
               ) : null}
+              {a.warnings.map((w) => (
+                <Notice key={w.code} tone="needs-you">
+                  {w.message}
+                </Notice>
+              ))}
               {openId === a.id ? <Runs id={a.id} /> : null}
             </article>
           ))}
@@ -137,6 +145,7 @@ export function Schedules({ agents, agentsLoading }: { agents: UseAgents["agents
           workflows={workflows}
           bound={bound}
           agentsLoading={agentsLoading}
+          kanbanLinked={kanbanLinked}
           onClose={() => setCreating(false)}
           onCreated={async () => {
             setCreating(false);
@@ -152,12 +161,14 @@ function NewSchedule({
   workflows,
   bound,
   agentsLoading,
+  kanbanLinked,
   onClose,
   onCreated,
 }: {
   workflows: Out<"workflows_list">["workflows"];
   bound: UseAgents["agents"];
   agentsLoading: boolean;
+  kanbanLinked: boolean;
   onClose: () => void;
   onCreated: () => Promise<void>;
 }) {
@@ -187,7 +198,7 @@ function NewSchedule({
       onClose={onClose}
       busy={working}
       footer={
-        <Button variant="primary" disabled={working || !form.workflowId || !form.agentId} onClick={() => void create()}>
+        <Button variant="primary" disabled={working || !form.workflowId || !form.agentId || (kanbanLinked && !form.kanbanProject.trim())} onClick={() => void create()}>
           Create schedule
         </Button>
       }
@@ -209,7 +220,11 @@ function NewSchedule({
         </Field>
         <Field
           label="Task Board project for run issues"
-          hint="Use a project you share with the Bound agent in Task Board (its id), so the agent can read and comment on its runs. Empty: the project of Evolving Workflows, which the agent sees only if you share it."
+          hint={
+            kanbanLinked
+              ? "Required. Use a project you share with the Bound agent in Task Board (its id), so the agent can read and comment on its runs."
+              : "Task Board is not connected. If you connect it later, use a project you share with the Bound agent (its id)."
+          }
         >
           <TextInput value={form.kanbanProject} onChange={(e) => setForm({ ...form, kanbanProject: e.target.value })} maxLength={64} />
         </Field>

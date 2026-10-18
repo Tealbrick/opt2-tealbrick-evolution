@@ -5,6 +5,9 @@
 //   nextCronTime); this file only stores what they decide.
 //   claimed > 10 min or dispatched > 30 min without a report → uncertain (never offered again; a late report may
 //   still close it). Due times are computed when asked; nothing here runs on a timer and nothing starts an agent.
+//   policy_stale (C250): a due occurrence of a wider active version than the recipe the agent has (`policyVersion`) is
+//   recorded once as a `policy_stale` run; routines_due leaves it out and routine_claim answers policy_stale. One gate
+//   (`policyStale`) decides it for both.
 import { createHash } from "node:crypto";
 import { CronError, cronDue, nextCronTime, ulid } from "@opt2-tealbrick/manifest";
 import type { Db } from "@opt2-tealbrick/miniapp-sdk";
@@ -14,7 +17,7 @@ import { getVersion, getWorkflow, StoreError, snapshotOf, type Version } from ".
 export const CLAIMED_TIMEOUT_MS = 10 * 60_000;
 export const DISPATCHED_TIMEOUT_MS = 30 * 60_000;
 export const DEFAULT_GRACE_SEC = 120;
-export type RunStatus = "claimed" | "dispatched" | "completed" | "failed" | "missed" | "uncertain";
+export type RunStatus = "claimed" | "dispatched" | "completed" | "failed" | "missed" | "uncertain" | "policy_stale";
 export type ClaimReason = "already_claimed" | "missed" | "not_due" | "paused" | "not_bound" | "version_missing" | "policy_stale";
 
 export interface Automation {
@@ -144,7 +147,17 @@ export interface AutomationInput {
   kanbanProject?: string | null;
 }
 
-export function setAutomation(db: Db, input: AutomationInput, now: number = Date.now()): Automation {
+/** `kanbanLinked`: Evolution has a companion grant for Task Board (the slice's companionTargets). Then a NEW schedule
+ *  must name a Task Board project: run issues in Evolution's own project are invisible to the Bound agent (C250). An
+ *  existing schedule without one keeps working and carries a warning in automations_list. */
+export interface SetOptions {
+  kanbanLinked?: boolean;
+}
+
+const KANBAN_PROJECT_REQUIRED =
+  "Choose a Task Board project that you share with the Bound agent. Run issues in the own project of Evolving Workflows are not visible to the agent.";
+
+export function setAutomation(db: Db, input: AutomationInput, now: number = Date.now(), opts: SetOptions = {}): Automation {
   return db.transaction(() => {
     const wf = getWorkflow(db, input.workflowId);
     const pin = input.versionPin ?? null;
@@ -153,15 +166,21 @@ export function setAutomation(db: Db, input: AutomationInput, now: number = Date
     getVersion(db, wf.id, policyVersion);
     const cron = input.cron.trim().replace(/\s+/g, " ");
     const firstDue = next(cron, now);
+    const project = input.kanbanProject?.trim() || null;
     if (!input.id) {
+      if (opts.kanbanLinked && project === null) throw new StoreError("kanban_project_required", KANBAN_PROJECT_REQUIRED, { pointer: "/kanbanProject" });
       const id = `aut_${ulid(now)}`;
       db.prepare(
         "INSERT INTO automations (id, workflow_id, version_pin, policy_version, agent_id, cron, enabled, misfire_grace_sec, kanban_project, revision, next_due_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)",
-      ).run(id, wf.id, pin, policyVersion, input.agentId, cron, input.enabled === false ? 0 : 1, input.misfireGraceSec ?? DEFAULT_GRACE_SEC, input.kanbanProject ?? null, firstDue, now, now);
+      ).run(id, wf.id, pin, policyVersion, input.agentId, cron, input.enabled === false ? 0 : 1, input.misfireGraceSec ?? DEFAULT_GRACE_SEC, project, firstDue, now, now);
       return view(load(db, id));
     }
     const cur = load(db, input.id);
     if (input.revision !== cur.revision) throw new StoreError("revision_conflict", "The schedule changed since you opened it. Reload it.", { currentRevision: cur.revision });
+    const kanbanProject = input.kanbanProject === undefined ? cur.kanbanProject : project;
+    // an edit may keep a missing project (old schedules), never remove one
+    if (opts.kanbanLinked && kanbanProject === null && cur.kanbanProject !== null)
+      throw new StoreError("kanban_project_required", KANBAN_PROJECT_REQUIRED, { pointer: "/kanbanProject" });
     const enabled = input.enabled ?? cur.enabled;
     // a changed cron or a re-enabled schedule starts from now; otherwise keep the pending due time
     const keep = cron === cur.cron && enabled === cur.enabled;
@@ -175,7 +194,7 @@ export function setAutomation(db: Db, input: AutomationInput, now: number = Date
       cron,
       enabled ? 1 : 0,
       input.misfireGraceSec ?? cur.grace,
-      input.kanbanProject === undefined ? cur.kanbanProject : input.kanbanProject,
+      kanbanProject,
       keep ? cur.nextDueAt : firstDue,
       now,
       cur.id,
@@ -221,13 +240,35 @@ export function settle(db: Db, a: Row, now: number): Settled {
   return { row: load(db, a.id), due: null };
 }
 
+export type WarningCode = "policy_stale" | "kanban_project_missing";
+export interface AutomationWarning {
+  code: WarningCode;
+  message: string;
+}
 export interface AutomationView extends Automation {
   workflowTitle: string;
   effectiveNextDueAt: string;
   missedSince: string | null;
+  warnings: AutomationWarning[];
 }
 
-export function listAutomations(db: Db, now: number = Date.now()): AutomationView[] {
+function warningsOf(db: Db, r: Row, kanbanLinked: boolean): AutomationWarning[] {
+  const w: AutomationWarning[] = [];
+  const v = resolveVersion(db, r);
+  if (v && policyStale(db, r, v))
+    w.push({
+      code: "policy_stale",
+      message: `Version ${v.version} needs more access than the recipe of version ${r.policyVersion} that the agent has. Runs are not claimed until you apply the new recipe in Portal and set the schedule to that version.`,
+    });
+  if (kanbanLinked && r.kanbanProject === null)
+    w.push({
+      code: "kanban_project_missing",
+      message: "No Task Board project: run issues go to the own project of Evolving Workflows, which the Bound agent cannot see. Edit the schedule and choose a project you share with the agent.",
+    });
+  return w;
+}
+
+export function listAutomations(db: Db, now: number = Date.now(), opts: SetOptions = {}): AutomationView[] {
   return db.transaction(() =>
     db
       .prepare("SELECT * FROM automations WHERE deleted_at IS NULL ORDER BY created_at DESC")
@@ -248,6 +289,7 @@ export function listAutomations(db: Db, now: number = Date.now()): AutomationVie
           workflowTitle: title,
           effectiveNextDueAt: iso(due ?? r.nextDueAt),
           missedSince: last && last.status === "missed" ? iso(last.due_at) : null,
+          warnings: warningsOf(db, r, opts.kanbanLinked === true),
         };
       }),
   );
@@ -307,6 +349,14 @@ export interface Job {
   title: string;
 }
 
+/** THE policy gate of routines_due and routine_claim: a schedule that follows the active version may run it only when
+ *  that version needs no more access than the recipe the owner applied (`policyVersion`). */
+export function policyStale(db: Db, a: Row, v: Version): boolean {
+  if (a.versionPin !== null || v.version === a.policyVersion) return false;
+  const applied = resolveVersionAt(db, a.workflowId, a.policyVersion);
+  return !applied || diffSnapshots(snapshotOf(applied), snapshotOf(v)).widensAccess;
+}
+
 function resolveVersion(db: Db, a: Row): Version | null {
   try {
     return getVersion(db, a.workflowId, a.versionPin ?? undefined);
@@ -327,6 +377,10 @@ export function dueJobs(db: Db, agentId: string, now: number = Date.now()): Job[
       if (getRun(db, occurrence)) continue;
       const v = resolveVersion(db, a);
       if (!v) continue;
+      if (policyStale(db, a, v)) {
+        recordPolicyStale(db, a, due, v, now);
+        continue;
+      }
       jobs.push({ occurrence, automationId: a.id, workflowId: a.workflowId, version: v.version, dueAt: iso(due), title: v.title });
     }
     return jobs.sort((x, y) => x.dueAt.localeCompare(y.dueAt));
@@ -351,7 +405,7 @@ export function claim(db: Db, caller: { id: string; mode: string | null }, occur
     if (caller.mode !== "bound") return { claimed: false, reason: getRun(db, occurrence) ? "already_claimed" : "not_bound" };
     for (const a0 of db.prepare("SELECT * FROM automations WHERE agent_id = ? AND deleted_at IS NULL").all(caller.id).map(toRow)) settle(db, a0, now);
     const prior = getRun(db, occurrence);
-    if (prior) return { claimed: false, reason: prior.status === "missed" ? "missed" : "already_claimed" };
+    if (prior) return { claimed: false, reason: prior.status === "missed" || prior.status === "policy_stale" ? prior.status : "already_claimed" };
     for (const a of db.prepare("SELECT * FROM automations WHERE agent_id = ? AND deleted_at IS NULL").all(caller.id).map(toRow)) {
       const r = cronDue(a.cron, { nextDueAt: new Date(a.nextDueAt), now: new Date(now), graceSec: a.grace });
       if (!r.due || r.missed || occurrenceOf(a.id, a.revision, r.due.getTime()) !== occurrence) continue;
@@ -359,9 +413,9 @@ export function claim(db: Db, caller: { id: string; mode: string | null }, occur
       if (!a.enabled) return { claimed: false, reason: "paused" };
       const v = resolveVersion(db, a);
       if (!v) return { claimed: false, reason: "version_missing" };
-      if (a.versionPin === null && v.version !== a.policyVersion) {
-        const applied = resolveVersionAt(db, a.workflowId, a.policyVersion);
-        if (!applied || diffSnapshots(snapshotOf(applied), snapshotOf(v)).widensAccess) return { claimed: false, reason: "policy_stale" };
+      if (policyStale(db, a, v)) {
+        recordPolicyStale(db, a, s.due, v, now);
+        return { claimed: false, reason: "policy_stale" };
       }
       db.prepare(
         "INSERT INTO routine_runs (occurrence, automation_id, revision, due_at, status, claimed_by, workflow_id, workflow_version, claimed_at, updated_at) VALUES (?, ?, ?, ?, 'claimed', ?, ?, ?, ?, ?)",
@@ -406,6 +460,27 @@ function recordMissed(db: Db, a: Row, dueAt: number, now: number): void {
   ).run(occurrenceOf(a.id, a.revision, dueAt), a.id, a.revision, dueAt, a.workflowId, "Not claimed within the misfire grace; later periods collapsed into this record.", now);
 }
 
+/** The due occurrence `dueAt` of a policy-stale version: one `policy_stale` run row (never claimable), and the pending due
+ *  time moves to the next period, like a claim. Applying the new recipe changes the schedule (new revision), so the
+ *  next period runs. */
+function recordPolicyStale(db: Db, a: Row, dueAt: number, v: Version, now: number): void {
+  db.prepare(
+    "INSERT OR IGNORE INTO routine_runs (occurrence, automation_id, revision, due_at, status, workflow_id, workflow_version, summary, updated_at) VALUES (?, ?, ?, ?, 'policy_stale', ?, ?, ?, ?)",
+  ).run(
+    occurrenceOf(a.id, a.revision, dueAt),
+    a.id,
+    a.revision,
+    dueAt,
+    a.workflowId,
+    v.version,
+    `Not offered: version ${v.version} needs more access than the recipe of version ${a.policyVersion}. Apply the new recipe in Portal and set the schedule to that version.`,
+    now,
+  );
+  const r = cronDue(a.cron, { nextDueAt: new Date(dueAt), now: new Date(now), graceSec: a.grace });
+  if (r.nextDueAt) advance(db, a, r.nextDueAt.getTime());
+  else db.prepare("UPDATE automations SET enabled = 0 WHERE id = ?").run(a.id);
+}
+
 /** Moves the pending due time forward (never back); not a schedule change, so `revision` stays. */
 function advance(db: Db, a: Row, nextDue: number): void {
   db.prepare("UPDATE automations SET next_due_at = ? WHERE id = ? AND next_due_at < ?").run(nextDue, a.id, nextDue);
@@ -427,6 +502,7 @@ const NEXT_STATUS: Record<RunStatus, RunStatus[]> = {
   completed: [],
   failed: [],
   missed: [],
+  policy_stale: [],
 };
 
 export type ReportStatus = "dispatched" | "completed" | "failed" | "uncertain";

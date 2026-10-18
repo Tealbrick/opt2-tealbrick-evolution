@@ -47,7 +47,7 @@ The UI says it plainly: **the agent may call these operations** (the bridge bloc
 | `routines_due` | agent | Bound caller's due runs; pure read, the runner's poll target (Free callers get none) |
 | `routine_claim` | agent | `{occurrence}` → at most one claim ever succeeds; answers the reviewed workflow, or `claimed: false` + reason (`already_claimed`, `missed`, `not_due`, `paused`, `not_bound`, `version_missing`, `policy_stale`) |
 | `routine_report` | agent | `dispatched` → `completed` / `failed` / `uncertain` (+ summary); closes the run's Task Board issue |
-| `automation_set`, `automation_pause`, `automations_list`, `runs_list` | person | schedules (cron, version pin or active, applied policy version, Task Board project) and run history |
+| `automation_set`, `automation_pause`, `automations_list`, `runs_list` | person | schedules (cron, version pin or active, applied policy version, Task Board project, `warnings`) and run history; `automations_list` also answers `kanbanLinked` |
 | `automation_delete` | person | deletes a schedule (destructive, held) |
 
 ### Schedules and runs (0.2)
@@ -55,9 +55,9 @@ The UI says it plainly: **the agent may call these operations** (the bridge bloc
 - occurrence = sha256 of `[automationId, revision, dueAt]`; the primary key of the run row (`routine_runs`) makes a claim at-most-once (v1 routines model).
 - Misfire grace (default 120 s, `cronDue`): a due time not claimed in time is recorded `missed` once, missed periods collapse into that record, and the next period runs; never a burst of catch-up runs.
 - `claimed` over 10 minutes or `dispatched` over 30 minutes without a report → `uncertain`, never offered again (a late report still closes it).
-- Following the active version: if it allows more than the version whose recipe the owner applied (`policyVersion`), claims answer `policy_stale` until the owner applies the new recipe and updates the schedule.
+- Following the active version: if it allows more than the version whose recipe the owner applied (`policyVersion`), the schedule shows a `policy_stale` warning, `routines_due` does not offer its due run, and that run is recorded once as a `policy_stale` run (`runs_list`; a claim of it answers `policy_stale`). The period then ends like a claimed one. After the owner applies the new recipe and sets `policyVersion`, the next period runs. One gate (`policyStale` in `src/routines.ts`) decides this for `routines_due` and `routine_claim` (0.2.13, C250).
 - Task Board (companion `issue_create`, `issue_complete`, `issue_block`): one issue per claimed run, assigned to the Bound agent, template `evolution:<workflow id>`; the detector never suggests these. Task Board down → the run still runs (`kanbanSync: failed`).
-- Run issue project: the schedule's `kanbanProject`. Use a Task Board project the owner SHARES with the Bound agent, so the agent can read and comment on its run issues (shared projects reach agents and Evolution). Empty = Evolution's own Task Board project, which the agent sees only if the owner shares it. Every recipe allows `kanban.issue_get` and `kanban.issue_comment_add` for this.
+- Run issue project: the schedule's `kanbanProject`. Use a Task Board project the owner SHARES with the Bound agent, so the agent can read and comment on its run issues (shared projects reach agents and Evolution). When Evolution can reach Task Board (its companion grant is in the workspace slice, `kanbanLinked`), a NEW schedule needs `kanbanProject` (`422 kanban_project_required`); an edit can keep an older schedule without one, never remove one, and such a schedule carries the `kanban_project_missing` warning. Without a project, run issues go to Evolution's own Task Board project, which the Bound agent cannot see (0.2.13, C250). Every recipe allows `kanban.issue_get` and `kanban.issue_comment_add` for this.
 - Cron and the due / misfire rule: `nextCronTime` and `cronDue` from `@opt2-tealbrick/manifest` (5 fields, UTC; the one shared helper, no local copy). `routines_due` only records runs that passed the grace as `missed`; it never claims. Nothing starts runs on a timer; the runner is external.
 
 ### Task Board (soft dependency)
@@ -86,7 +86,8 @@ New code is TypeScript (Node 24+).
 | `src/routines.ts` | schedules, due/claim/report, missed records, sweep (cron rule from the manifest package) |
 | `src/templates.ts` | seed workflow templates |
 | `src/ui/` | owner UI in `<AppShell>`: Suggestions, Drafts, Workflows, Schedules, Holds, Agents |
-| `migrations/` | 3 forward-only migrations: `0001_init.sql` (0.1), `0002_routines.sql` (0.2), `0003_detector_state.sql`. Never edit a released file. |
+| `migrations/` | 4 forward-only migrations: `0001_init.sql` (0.1), `0002_routines.sql` (0.2), `0003_detector_state.sql`, `0004_policy_stale_runs.sql` (0.2.13: rebuilds `routine_runs` to allow `policy_stale`). Never edit a released file. |
+| `scripts/upgrade-check.ts` | upgrade check on a COPY of a real 0.2.12 `app.db`: applies the new migrations like the SDK and compares every row; prints counts only |
 | `skills/use-evolution/SKILL.md` | agent skill: when to suggest, Bound-agent behaviour |
 | `Dockerfile` | the one opt2 app Dockerfile pattern |
 | `.woodpecker/ci.yaml`, `.github/workflows/opt2-release.yml` | the opt2 CI template ci-v9.9, generated from `Tealbrick/opt2-tealbrick-platform`; do not edit |
