@@ -7,7 +7,7 @@
 // edits, promotes or exports is a person op, so only the workspace owner can do it (SDK-API §5).
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { type AppDefinition, type Caller, type Db, defineApp, type HandlerSpec, type OpContext, type SdkAppDefinition, TbError } from "@opt2-tealbrick/miniapp-sdk";
+import { type AppDefinition, type Caller, type Db, defineApp, type HandlerSpec, type OpContext, type SdkAppDefinition, type SdkOpContext, TbError } from "@opt2-tealbrick/miniapp-sdk";
 import type * as K from "#kit";
 import { OP, type OpId } from "#kit";
 import { DEFAULT_MIN_REPEATS, KANBAN } from "./detector.ts";
@@ -37,7 +37,7 @@ function op<I, O>(spec: HandlerSpec<I, O>): HandlerSpec {
   } as unknown as HandlerSpec;
 }
 
-const STATUS: Record<store.StoreError["code"], number> = { not_found: 404, conflict: 409, revision_conflict: 409, validation_failed: 422 };
+const STATUS: Record<store.StoreError["code"], number> = { not_found: 404, conflict: 409, revision_conflict: 409, validation_failed: 422, kanban_project_required: 422 };
 export function toTbError(e: unknown): unknown {
   if (e instanceof store.StoreError) return new TbError(e.code, e.message, STATUS[e.code], e.details);
   if (e instanceof ModelError) return new TbError("validation_failed", e.message, 422, { pointer: e.pointer });
@@ -136,8 +136,14 @@ async function flushKanban(db: Db, callApp: CallApp): Promise<void> {
   for (const run of routines.pendingKanban(db, 5)) await closeRunIssue(db, callApp, run);
 }
 
-function automationView(db: Db, id: string): routines.AutomationView {
-  const a = routines.listAutomations(db).find((x) => x.id === id);
+/** Evolution has a companion grant for Task Board in this workspace (the verified slice's companionTargets). */
+export function kanbanLinked(ctx: OpContext): boolean {
+  const targets = (ctx as Partial<SdkOpContext>).companionTargets;
+  return typeof targets === "function" && targets.call(ctx).includes(KANBAN.product);
+}
+
+function automationView(db: Db, id: string, opts: routines.SetOptions): routines.AutomationView {
+  const a = routines.listAutomations(db, Date.now(), opts).find((x) => x.id === id);
   if (!a) throw new store.StoreError("not_found", "No schedule with this id.");
   return a;
 }
@@ -178,7 +184,8 @@ export const handlers = {
   }),
 
   [OP.routinesDue]: op<K.RoutinesDueInput, K.RoutinesDueOutput>({
-    // Pure read (no state change, no receipt): the poll target of `tealbrick agent serve` routines mode.
+    // The poll target of `tealbrick agent serve` routines mode. No receipt and no decision: it only books what the clock
+    // and the policy gate imply (missed and policy_stale periods), the same bookkeeping the owner's lists do.
     async run(_input, ctx) {
       if (ctx.caller.type !== "agent" || ctx.caller.mode !== "bound") return { jobs: [] };
       return { jobs: routines.dueJobs(ctx.db, ctx.caller.id) };
@@ -319,13 +326,14 @@ export const handlers = {
   [OP.automationSet]: op<K.AutomationSetInput, K.AutomationSetOutput>({
     redact: (input) => `Schedule ${input.id ?? "new"} for ${input.workflowId}: ${input.cron}`,
     async run(input, ctx) {
-      return automationView(ctx.db, routines.setAutomation(ctx.db, input).id);
+      const opts = { kanbanLinked: kanbanLinked(ctx) };
+      return automationView(ctx.db, routines.setAutomation(ctx.db, input, Date.now(), opts).id, opts);
     },
   }),
   [OP.automationPause]: op<K.AutomationPauseInput, K.AutomationPauseOutput>({
     redact: (input) => `Schedule ${input.id}: ${input.paused ? "paused" : "resumed"}`,
     async run(input, ctx) {
-      return automationView(ctx.db, routines.pauseAutomation(ctx.db, input.id, input.revision, input.paused).id);
+      return automationView(ctx.db, routines.pauseAutomation(ctx.db, input.id, input.revision, input.paused).id, { kanbanLinked: kanbanLinked(ctx) });
     },
   }),
   [OP.automationDelete]: op<K.AutomationDeleteInput, K.AutomationDeleteOutput>({
@@ -337,7 +345,8 @@ export const handlers = {
   }),
   [OP.automationsList]: op<K.AutomationsListInput, K.AutomationsListOutput>({
     async run(_input, ctx) {
-      return { automations: routines.listAutomations(ctx.db) };
+      const linked = kanbanLinked(ctx);
+      return { automations: routines.listAutomations(ctx.db, Date.now(), { kanbanLinked: linked }), kanbanLinked: linked };
     },
   }),
   [OP.runsList]: op<K.RunsListInput, K.RunsListOutput>({

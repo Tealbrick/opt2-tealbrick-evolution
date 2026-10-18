@@ -7,7 +7,7 @@ import { errorText, type Out, person, utcDue, utcStamp } from "./ops.ts";
 
 type Automation = Out<"automations_list">["automations"][number];
 type Run = Out<"runs_list">["runs"][number];
-const STATUS: Record<Run["status"], Status> = { completed: "live", claimed: "busy", dispatched: "busy", failed: "needs-you", missed: "needs-you", uncertain: "needs-you" };
+const STATUS: Record<Run["status"], Status> = { completed: "live", claimed: "busy", dispatched: "busy", failed: "needs-you", missed: "needs-you", uncertain: "needs-you", policy_stale: "needs-you" };
 const SERVE_CONFIG = {
   format: "tealbrick.agent-serve/1",
   harness: { kind: "claude", modelKeyEnv: "ANTHROPIC_API_KEY" },
@@ -18,6 +18,9 @@ const SERVE_CONFIG = {
 
 export function Schedules({ agents, agentsLoading }: { agents: UseAgents["agents"]; agentsLoading: boolean }) {
   const [rows, setRows] = useState<Automation[] | null>(null);
+  // null = not known yet (list not loaded): the New schedule form waits, so it never offers "no project" by mistake
+  const [kanbanLinked, setKanbanLinked] = useState<boolean | null>(null);
+  const [editing, setEditing] = useState<Automation | null>(null);
   const [workflows, setWorkflows] = useState<Out<"workflows_list">["workflows"]>([]);
   const [open, setOpen] = useState<string | null | undefined>(undefined);
   const [error, setError] = useState<string | null>(null);
@@ -25,7 +28,9 @@ export function Schedules({ agents, agentsLoading }: { agents: UseAgents["agents
   const [creating, setCreating] = useState(false);
   const load = useCallback(async () => {
     try {
-      setRows((await person("automations_list", {})).automations);
+      const r = await person("automations_list", {});
+      setRows(r.automations);
+      setKanbanLinked(r.kanbanLinked);
       setError(null);
     } catch (e) {
       setError(errorText(e));
@@ -100,6 +105,9 @@ export function Schedules({ agents, agentsLoading }: { agents: UseAgents["agents
                   <Button size="sm" aria-expanded={openId === a.id} onClick={() => setOpen(openId === a.id ? null : a.id)}>
                     {openId === a.id ? "Hide runs" : "Show runs"}
                   </Button>
+                  <Button size="sm" onClick={() => setEditing(a)}>
+                    Edit
+                  </Button>
                   <Button size="sm" onClick={() => void act(() => person("automation_pause", { id: a.id, revision: a.revision, paused: a.enabled }))}>
                     {a.enabled ? "Pause" : "Resume"}
                   </Button>
@@ -117,6 +125,11 @@ export function Schedules({ agents, agentsLoading }: { agents: UseAgents["agents
                   <strong>Runs were missed since {utcStamp(a.missedSince)}:</strong> the agent’s runner did not claim them in time. Check that tealbrick agent serve is running.
                 </Notice>
               ) : null}
+              {a.warnings.map((w) => (
+                <Notice key={w.code} tone="needs-you">
+                  {w.message}
+                </Notice>
+              ))}
               {openId === a.id ? <Runs id={a.id} /> : null}
             </article>
           ))}
@@ -132,11 +145,24 @@ export function Schedules({ agents, agentsLoading }: { agents: UseAgents["agents
           <CopyBlock text={JSON.stringify(SERVE_CONFIG, null, 2)} label="runner configuration" />
         </div>
       </details>
+      {editing ? (
+        <EditSchedule
+          automation={editing}
+          activeVersion={workflows.find((w) => w.id === editing.workflowId)?.activeVersion ?? editing.policyVersion}
+          kanbanLinked={kanbanLinked === true}
+          onClose={() => setEditing(null)}
+          onSaved={async () => {
+            setEditing(null);
+            await load();
+          }}
+        />
+      ) : null}
       {creating ? (
         <NewSchedule
           workflows={workflows}
           bound={bound}
           agentsLoading={agentsLoading}
+          kanbanLinked={kanbanLinked}
           onClose={() => setCreating(false)}
           onCreated={async () => {
             setCreating(false);
@@ -152,12 +178,14 @@ function NewSchedule({
   workflows,
   bound,
   agentsLoading,
+  kanbanLinked,
   onClose,
   onCreated,
 }: {
   workflows: Out<"workflows_list">["workflows"];
   bound: UseAgents["agents"];
   agentsLoading: boolean;
+  kanbanLinked: boolean | null;
   onClose: () => void;
   onCreated: () => Promise<void>;
 }) {
@@ -187,7 +215,7 @@ function NewSchedule({
       onClose={onClose}
       busy={working}
       footer={
-        <Button variant="primary" disabled={working || !form.workflowId || !form.agentId} onClick={() => void create()}>
+        <Button variant="primary" disabled={working || kanbanLinked === null || !form.workflowId || !form.agentId || (kanbanLinked && !form.kanbanProject.trim())} onClick={() => void create()}>
           Create schedule
         </Button>
       }
@@ -209,10 +237,99 @@ function NewSchedule({
         </Field>
         <Field
           label="Task Board project for run issues"
-          hint="Use a project you share with the Bound agent in Task Board (its id), so the agent can read and comment on its runs. Empty: the project of Evolving Workflows, which the agent sees only if you share it."
+          hint={
+            kanbanLinked === null
+              ? "Loading the schedules first: then this page knows if Task Board is connected."
+              : kanbanLinked
+                ? "Required. Use a project you share with the Bound agent in Task Board (its id), so the agent can read and comment on its runs."
+                : "Task Board is not connected. If you connect it later, use a project you share with the Bound agent (its id)."
+          }
         >
           <TextInput value={form.kanbanProject} onChange={(e) => setForm({ ...form, kanbanProject: e.target.value })} maxLength={64} />
         </Field>
+        {error ? (
+          <Notice tone="needs-you" role="alert">
+            {error}
+          </Notice>
+        ) : null}
+      </div>
+    </Dialog>
+  );
+}
+
+/** Edit: the project, the cron and "Recipe applied" (policyVersion) — what the warnings ask the owner to change. Every
+ *  other field is sent unchanged, so an edit never clears the policy gate by itself. */
+export function EditSchedule({
+  automation: a,
+  activeVersion,
+  kanbanLinked,
+  onClose,
+  onSaved,
+}: {
+  automation: Automation;
+  activeVersion: number;
+  kanbanLinked: boolean;
+  onClose: () => void;
+  onSaved: () => Promise<void>;
+}) {
+  const [form, setForm] = useState({ cron: a.cron, kanbanProject: a.kanbanProject ?? "", policyVersion: String(a.policyVersion) });
+  const [error, setError] = useState<string | null>(null);
+  const [working, setWorking] = useState(false);
+  const project = form.kanbanProject.trim();
+  const save = async () => {
+    setWorking(true);
+    try {
+      await person("automation_set", {
+        id: a.id,
+        revision: a.revision,
+        workflowId: a.workflowId,
+        agentId: a.agentId,
+        versionPin: a.versionPin,
+        enabled: a.enabled,
+        misfireGraceSec: a.misfireGraceSec,
+        cron: form.cron,
+        policyVersion: Number(form.policyVersion),
+        kanbanProject: project || null,
+      });
+      await onSaved();
+    } catch (e) {
+      setError(errorText(e));
+      setWorking(false);
+    }
+  };
+  // the newest version, read when the dialog opens (a version promoted after the page loaded is offered too)
+  const [latest, setLatest] = useState(activeVersion);
+  useEffect(() => {
+    person("workflow_versions", { workflowId: a.workflowId })
+      .then((r) => setLatest(r.workflow.activeVersion))
+      .catch(() => {});
+  }, [a.workflowId]);
+  const versions = Array.from({ length: Math.max(latest, activeVersion, a.policyVersion) }, (_, i) => String(i + 1));
+  return (
+    <Dialog
+      open
+      kicker="Schedule"
+      title={`Edit ${a.workflowTitle}`}
+      onClose={onClose}
+      busy={working}
+      footer={
+        <Button variant="primary" disabled={working || (kanbanLinked && !project && a.kanbanProject !== null)} onClick={() => void save()}>
+          Save
+        </Button>
+      }
+    >
+      <div className="tb-stack">
+        <Field label="Cron (UTC)" hint="minute hour day month weekday, for example 0 8 * * 1-5">
+          <TextInput value={form.cron} onChange={(e) => setForm({ ...form, cron: e.target.value })} maxLength={120} />
+        </Field>
+        <Field label="Task Board project for run issues" hint="Use a project you share with the Bound agent in Task Board (its id).">
+          <TextInput value={form.kanbanProject} onChange={(e) => setForm({ ...form, kanbanProject: e.target.value })} maxLength={64} />
+        </Field>
+        {a.versionPin === null ? (
+          <Field label="Recipe applied" hint="The workflow version whose recipe you applied to the agent in Portal. Choose a newer version only after you applied its recipe.">
+            <Select value={form.policyVersion} onValueChange={(policyVersion) => setForm({ ...form, policyVersion })} options={versions.map((v) => ({ value: v, label: `version ${v}` }))} />
+          </Field>
+        ) : null}
         {error ? (
           <Notice tone="needs-you" role="alert">
             {error}

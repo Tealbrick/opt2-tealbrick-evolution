@@ -41,7 +41,7 @@ None. No keys. Default agent harness choice in the UI is "Other agent (MCP)".
 
 ## Data
 
-- **Stored:** Migrations 0001 to 0003: `suggestions`, `suggestion_events`, `detector_covered`, `drafts`, `workflows`, `workflow_versions` (immutable snapshots), `agent_names`, `automations`, `routine_runs`, `detector_state`. Kanban issue titles are stored as suggestion evidence and shown to the owner only.
+- **Stored:** Migrations 0001 to 0004 (0004 rebuilds `routine_runs` with the `policy_stale` status, rows unchanged; `test/upgrade.test.ts`, `scripts/upgrade-check.ts`): `suggestions`, `suggestion_events`, `detector_covered`, `drafts`, `workflows`, `workflow_versions` (immutable snapshots), `agent_names`, `automations`, `routine_runs`, `detector_state`. Kanban issue titles are stored as suggestion evidence and shown to the owner only.
 - **Never stored:** Anything from Kanban beyond the evidence the owner reviews.
 
 ## External calls and background work
@@ -61,10 +61,10 @@ Port 8080. 0.25 cpu, 256 MB. Data 1 GB plus backup 2 GB. Backup cron `30 2 * * *
 
 ## Pinned packages
 
-miniapp-sdk 0.1.25, spec 0.1.39, manifest 0.1.18, conformance 0.1.18, ui 0.2.4. Cron maths come from `@opt2-tealbrick/manifest` (`cronDue`, `nextCronTime`).
+miniapp-sdk 0.1.31, spec 0.1.47, manifest 0.1.25, conformance 0.1.22, ui 0.2.4. Cron maths come from `@opt2-tealbrick/manifest` (`cronDue`, `nextCronTime`).
 
-All `@opt2-tealbrick/*` pins use dist-host tarball URLs. Upgrade safety (SDK 0.1.25: pre-update snapshot, migration lock, failed mode) is in this app on `main` (0.2.12, dev channel; its qa1 soak is the gate for stable, C221). The stable release 0.2.11 pins SDK 0.1.22, so Core can roll back an update of that version only as an image (no data restore) until a stable version with SDK 0.1.25 ships (after the qa1 soak).
+All `@opt2-tealbrick/*` pins use dist-host tarball URLs. Upgrade safety (SDK 0.1.25 and later: pre-update snapshot, migration lock, failed mode) is in every release since 0.2.12 (stable since 2026-10-18). A failed update is rolled back by Core with the SDK pre-update snapshot; there are no down migrations.
 
 ## Known gaps
 
-- Pins `@opt2-tealbrick/spec` 0.1.39 directly (kanban, inbox, fleet and rules have no direct spec dependency; connect and knowledge pin 0.1.39).
+- Pins `@opt2-tealbrick/spec` 0.1.47 directly (the version miniapp-sdk 0.1.31 uses; `src/recipe.ts` and the UI import `spec/routes`).

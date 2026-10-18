@@ -1266,7 +1266,8 @@
               "completed",
               "failed",
               "missed",
-              "uncertain"
+              "uncertain",
+              "policy_stale"
             ]
           },
           "claimedBy": {
@@ -4035,7 +4036,7 @@
     {
       "id": "automation_set",
       "title": "Schedule a workflow",
-      "description": "Create or change the schedule of a workflow for one Bound agent (cron, 5 fields, UTC). Each run becomes a Task Board issue in kanbanProject: use a project you share with the Bound agent in Task Board, so the agent can comment on its runs (empty = the own project of Evolving Workflows, which the agent sees only if you share it).",
+      "description": "Create or change the schedule of a workflow for one Bound agent (cron, 5 fields, UTC). Each run becomes a Task Board issue in kanbanProject: a project you share with the Bound agent in Task Board, so the agent can read and comment on its runs. When Task Board is connected, a new schedule needs kanbanProject (kanban_project_required); an edit can keep an old schedule without one but not remove one.",
       "input": {
         "type": "object",
         "additionalProperties": false,
@@ -4128,7 +4129,8 @@
           "effectiveNextDueAt",
           "missedSince",
           "createdAt",
-          "updatedAt"
+          "updatedAt",
+          "warnings"
         ],
         "properties": {
           "id": {
@@ -4199,6 +4201,30 @@
           },
           "updatedAt": {
             "type": "string"
+          },
+          "warnings": {
+            "type": "array",
+            "maxItems": 4,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "code",
+                "message"
+              ],
+              "properties": {
+                "code": {
+                  "type": "string",
+                  "enum": [
+                    "policy_stale",
+                    "kanban_project_missing"
+                  ]
+                },
+                "message": {
+                  "type": "string"
+                }
+              }
+            }
           }
         }
       },
@@ -4258,7 +4284,8 @@
           "effectiveNextDueAt",
           "missedSince",
           "createdAt",
-          "updatedAt"
+          "updatedAt",
+          "warnings"
         ],
         "properties": {
           "id": {
@@ -4329,6 +4356,30 @@
           },
           "updatedAt": {
             "type": "string"
+          },
+          "warnings": {
+            "type": "array",
+            "maxItems": 4,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "code",
+                "message"
+              ],
+              "properties": {
+                "code": {
+                  "type": "string",
+                  "enum": [
+                    "policy_stale",
+                    "kanban_project_missing"
+                  ]
+                },
+                "message": {
+                  "type": "string"
+                }
+              }
+            }
           }
         }
       },
@@ -4393,7 +4444,7 @@
     {
       "id": "automations_list",
       "title": "Schedules",
-      "description": "All schedules with their next due time.",
+      "description": "All schedules with their next due time and warnings (a version that needs a new recipe; no Task Board project). kanbanLinked: Evolving Workflows can reach Task Board.",
       "input": {
         "type": "object",
         "additionalProperties": false,
@@ -4403,7 +4454,8 @@
         "type": "object",
         "additionalProperties": false,
         "required": [
-          "automations"
+          "automations",
+          "kanbanLinked"
         ],
         "properties": {
           "automations": {
@@ -4428,7 +4480,8 @@
                 "effectiveNextDueAt",
                 "missedSince",
                 "createdAt",
-                "updatedAt"
+                "updatedAt",
+                "warnings"
               ],
               "properties": {
                 "id": {
@@ -4499,9 +4552,36 @@
                 },
                 "updatedAt": {
                   "type": "string"
+                },
+                "warnings": {
+                  "type": "array",
+                  "maxItems": 4,
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "code",
+                      "message"
+                    ],
+                    "properties": {
+                      "code": {
+                        "type": "string",
+                        "enum": [
+                          "policy_stale",
+                          "kanban_project_missing"
+                        ]
+                      },
+                      "message": {
+                        "type": "string"
+                      }
+                    }
+                  }
                 }
               }
             }
+          },
+          "kanbanLinked": {
+            "type": "boolean"
           }
         }
       },
@@ -4516,7 +4596,7 @@
     {
       "id": "runs_list",
       "title": "Run history",
-      "description": "Runs of one schedule or of all schedules, newest first.",
+      "description": "Runs of one schedule or of all schedules, newest first. policy_stale: the due run was not offered because the active version needs a new recipe.",
       "input": {
         "type": "object",
         "additionalProperties": false,
@@ -4591,7 +4671,8 @@
                     "completed",
                     "failed",
                     "missed",
-                    "uncertain"
+                    "uncertain",
+                    "policy_stale"
                   ]
                 },
                 "claimedBy": {

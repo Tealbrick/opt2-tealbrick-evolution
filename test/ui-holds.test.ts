@@ -12,6 +12,7 @@ import { Window } from "happy-dom";
 import type { ReactElement } from "react";
 
 type Standard = typeof import("../src/ui/standard.tsx");
+type SchedulesUi = typeof import("../src/ui/Schedules.tsx");
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const outDir = join(root, "dist", "ui-test");
@@ -69,6 +70,7 @@ globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) =>
   await stub.gate[op];
   const failure = stub.fail[op];
   if (failure) return json(failure.status, { error: { code: failure.code, message: `raw upstream text for ${failure.code}`, requestId: "req_1" } });
+  if (op === "automation_set") return json(200, { status: "ok", output: {} });
   if (op === "tb.holds_list") return json(200, { status: "ok", output: { items: stub.holds, nextCursor: null } });
   if (op === "tb.holds_decide") {
     const id = (body.input as { holdId: string }).holdId;
@@ -110,12 +112,14 @@ const rows = (host: Element) => [...host.querySelectorAll(".item")];
 const alerts = (host: Element) => [...host.querySelectorAll('[role="alert"]')].map((a) => a.textContent ?? "");
 
 let std: Standard;
+let sched: SchedulesUi;
 before(() => {
   const tsc = spawnSync(join(root, "node_modules", ".bin", "tsc"), ["-p", "tsconfig.build.json", "--outDir", outDir], { cwd: root, encoding: "utf8" });
   assert.equal(tsc.status, 0, `${tsc.stdout}${tsc.stderr}`);
 });
 before(async () => {
   std = (await import(pathToFileURL(join(outDir, "ui", "standard.js")).href)) as Standard;
+  sched = (await import(pathToFileURL(join(outDir, "ui", "Schedules.js")).href)) as SchedulesUi;
 });
 after(() => rmSync(outDir, { recursive: true, force: true }));
 
@@ -272,5 +276,58 @@ describe("helpers", () => {
     assert.equal(std.pageOf(routes, base, `/a/kanban/holds/hld_${ULID}`, "board"), "holds");
     assert.equal(std.holdOf(`/a/kanban/holds/hld_${ULID}/`), `hld_${ULID}`);
     assert.equal(std.holdOf("/a/kanban/holds/hld_short"), null);
+  });
+});
+
+describe("Schedules: Edit (C250 review S2: the warnings ask for Edit)", () => {
+  const automation = {
+    id: "aut_01HZX3K8Q2V4N6P8R0S2T4V6W8",
+    workflowId: "wfl_01HZX3K8Q2V4N6P8R0S2T4V6W8",
+    workflowTitle: "Morning rollup",
+    versionPin: null,
+    policyVersion: 1,
+    agentId: "agt_01HZX3K8Q2V4N6P8R0S2T4V6W8",
+    cron: "0 8 * * *",
+    enabled: true,
+    misfireGraceSec: 120,
+    kanbanProject: null,
+    revision: 3,
+    nextDueAt: "2026-10-13T08:00:00.000Z",
+    effectiveNextDueAt: "2026-10-13T08:00:00.000Z",
+    missedSince: null,
+    createdAt: "2026-10-12T06:00:00.000Z",
+    updatedAt: "2026-10-12T06:00:00.000Z",
+    warnings: [],
+  };
+  it("Save sends every field unchanged except what the owner edited (pin, enabled, grace, policyVersion kept)", async () => {
+    reset([]);
+    let saved = 0;
+    const m = await mount(
+      h(sched.EditSchedule, { automation, activeVersion: 2, kanbanLinked: true, onClose: () => {}, onSaved: async () => void saved++ }),
+    );
+    const input = [...document.querySelectorAll("input")].find((i) => i.value === "") as HTMLInputElement;
+    assert.ok(input, "the empty project field");
+    await act(async () => {
+      const set = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(input), "value")?.set;
+      set?.call(input, "prj_shared");
+      input.dispatchEvent(new window.Event("input", { bubbles: true }) as unknown as Event);
+    });
+    await click(button(document.body, "Save"));
+    await flush();
+    const call = stub.calls.find((c) => c.op === "automation_set");
+    assert.deepEqual(call?.input, {
+      id: automation.id,
+      revision: 3,
+      workflowId: automation.workflowId,
+      agentId: automation.agentId,
+      versionPin: null,
+      enabled: true,
+      misfireGraceSec: 120,
+      cron: "0 8 * * *",
+      policyVersion: 1,
+      kanbanProject: "prj_shared",
+    });
+    assert.equal(saved, 1);
+    await m.unmount();
   });
 });

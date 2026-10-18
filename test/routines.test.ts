@@ -137,17 +137,48 @@ test("pause, resume, edit and delete: a changed schedule never reuses an old occ
   assert.deepEqual(r.dueJobs(db, BOUND.id, T("2026-10-13T08:00:10Z")), []);
 });
 
-test("policy_stale: following the active version, a wider version needs the new recipe applied first", () => {
+test("policy_stale (quiet on good): a newer active version that needs no more access is offered and claimed", () => {
+  const db = migratedDb();
+  const a = daily(db);
+  const wf = store.getWorkflow(db, a.workflowId);
+  const d = store.getDraft(db, wf.draftId);
+  const u = store.updateDraft(db, d.id, d.revision, { instruction: "Roll up, shorter." }, D0);
+  store.promote(db, d.id, u.revision, D0); // v2: text only, same allowed ops
+  const now = T("2026-10-12T08:00:30Z");
+  const jobs = r.dueJobs(db, BOUND.id, now);
+  assert.equal(jobs.length, 1);
+  assert.equal(jobs[0]?.version, 2);
+  assert.equal(r.claim(db, BOUND, jobs[0]?.occurrence as string, now).claimed, true);
+  assert.deepEqual(r.listAutomations(db, now)[0]?.warnings, [], "no warning without a wider version");
+  assert.equal(r.listRuns(db, { limit: 10 }, now).filter((x) => x.status === "policy_stale").length, 0);
+});
+
+test("policy_stale (fire on bad): routines_due leaves a wider version out, records it once, the owner sees it", () => {
   const db = migratedDb();
   const a = daily(db);
   widen(db, a.workflowId);
+  assert.deepEqual(
+    r.listAutomations(db, D0)[0]?.warnings.map((w) => w.code),
+    ["policy_stale"],
+    "the owner is warned before any run",
+  );
   const now = T("2026-10-12T08:00:30Z");
-  const occ = r.dueJobs(db, BOUND.id, now)[0]?.occurrence as string;
-  assert.deepEqual(r.claim(db, BOUND, occ, now), { claimed: false, reason: "policy_stale" });
-  // the owner applies v2's recipe and says so
+  assert.deepEqual(r.dueJobs(db, BOUND.id, now), [], "a job the runner may not claim is not offered (QA LOW B6)");
+  assert.deepEqual(r.dueJobs(db, BOUND.id, now + 1000), [], "and not offered on the next poll either");
+  const runs = r.listRuns(db, { automationId: a.id, limit: 10 }, now);
+  assert.equal(runs.length, 1, "one record per occurrence");
+  assert.equal(runs[0]?.status, "policy_stale");
+  assert.equal(runs[0]?.workflowVersion, 2);
+  assert.equal(runs[0]?.dueAt, "2026-10-12T08:00:00.000Z");
+  assert.match(runs[0]?.summary ?? "", /needs more access than the recipe of version 1/);
+  const occ = r.occurrenceOf(a.id, a.revision, T("2026-10-12T08:00:00Z"));
+  assert.deepEqual(r.claim(db, BOUND, occ, now), { claimed: false, reason: "policy_stale" }, "a runner that still holds the id gets the same reason");
+  assert.equal(r.listAutomations(db, now)[0]?.nextDueAt, "2026-10-13T08:00:00.000Z", "the period is over, like a claim");
+  // the owner applies v2's recipe and says so: the next period runs v2
   const cur = r.listAutomations(db, now)[0] as r.Automation;
   const b = r.setAutomation(db, { id: a.id, revision: cur.revision, workflowId: a.workflowId, agentId: BOUND.id, cron: cur.cron, policyVersion: 2 }, now);
-  assert.deepEqual(r.dueJobs(db, BOUND.id, T("2026-10-12T08:03:00Z")), [], "today's refused run passes the grace and is recorded missed");
+  assert.deepEqual(r.listAutomations(db, now)[0]?.warnings, []);
+  assert.deepEqual(r.dueJobs(db, BOUND.id, T("2026-10-12T08:03:00Z")), []);
   const job = r.dueJobs(db, BOUND.id, T("2026-10-13T08:00:10Z"))[0];
   assert.equal(job?.version, 2);
   assert.equal(r.claim(db, BOUND, job?.occurrence as string, T("2026-10-13T08:00:10Z")).claimed, true);
@@ -155,6 +186,99 @@ test("policy_stale: following the active version, a wider version needs the new 
   const pinned = r.setAutomation(db, { id: a.id, revision: b.revision, workflowId: a.workflowId, agentId: BOUND.id, cron: cur.cron, versionPin: 1, policyVersion: 1 }, now);
   assert.equal(r.dueJobs(db, BOUND.id, T("2026-10-14T08:00:10Z"))[0]?.version, 1);
   assert.equal(pinned.versionPin, 1);
+});
+
+test("policy_stale: a claim without a poll first records the same run (one gate for due and claim)", () => {
+  const db = migratedDb();
+  const a = daily(db);
+  widen(db, a.workflowId);
+  const now = T("2026-10-12T08:00:30Z");
+  const occ = r.occurrenceOf(a.id, a.revision, T("2026-10-12T08:00:00Z"));
+  assert.deepEqual(r.claim(db, BOUND, occ, now), { claimed: false, reason: "policy_stale" });
+  assert.deepEqual(
+    r.listRuns(db, { limit: 10 }, now).map((x) => [x.occurrence, x.status]),
+    [[occ, "policy_stale"]],
+  );
+  assert.deepEqual(r.dueJobs(db, BOUND.id, now), []);
+  assert.throws(() => r.report(db, BOUND.id, occ, "completed", null, now), /No run of yours/, "nobody can report on a run nobody claimed");
+});
+
+test("policy_stale: a frequent cron records ONE row per schedule revision and version, and every period is skipped", () => {
+  const db = migratedDb();
+  const a = r.setAutomation(db, { workflowId: workflow(db), agentId: BOUND.id, cron: "*/5 * * * *" }, D0);
+  widen(db, a.workflowId);
+  for (let i = 0; i < 6; i++) assert.deepEqual(r.dueJobs(db, BOUND.id, T("2026-10-12T06:05:30Z") + i * 300_000), [], `period ${i} not offered`);
+  const rows = r.listRuns(db, { automationId: a.id, limit: 50 }, T("2026-10-12T06:40:00Z"));
+  assert.deepEqual(rows.map((x) => x.status), ["policy_stale"], "no flood of rows, no missed rows either");
+  assert.equal(rows[0]?.dueAt, "2026-10-12T06:05:00.000Z");
+  assert.equal(r.listAutomations(db, T("2026-10-12T06:31:00Z"))[0]?.nextDueAt, "2026-10-12T06:35:00.000Z", "every skipped period advanced the schedule");
+  assert.deepEqual(r.listAutomations(db, T("2026-10-12T06:31:00Z"))[0]?.warnings.map((w) => w.code), ["policy_stale"], "the warning stays");
+});
+
+test("an edit that does not name policyVersion keeps it (editing the project or cron never clears the policy gate)", () => {
+  const db = migratedDb();
+  const a = daily(db, { kanbanProject: "prj_a" });
+  widen(db, a.workflowId); // active = v2, applied recipe = v1
+  const e = r.setAutomation(db, { id: a.id, revision: a.revision, workflowId: a.workflowId, agentId: BOUND.id, cron: "0 9 * * *", kanbanProject: "prj_b" }, D0);
+  assert.equal(e.policyVersion, 1, "before the fix an edit reset it to the active version and opened the gate silently");
+  assert.deepEqual(r.listAutomations(db, D0)[0]?.warnings.map((w) => w.code), ["policy_stale"]);
+  const fresh = daily(db);
+  assert.equal(fresh.policyVersion, 1, "a new schedule starts at the active version of its own workflow");
+  const pinned = r.setAutomation(db, { id: e.id, revision: e.revision, workflowId: e.workflowId, agentId: BOUND.id, cron: e.cron, versionPin: 1 }, D0);
+  assert.equal(pinned.policyVersion, 1);
+  const unpinned = r.setAutomation(db, { id: e.id, revision: pinned.revision, workflowId: e.workflowId, agentId: BOUND.id, cron: e.cron, versionPin: null }, D0);
+  assert.equal(unpinned.policyVersion, 1, "unpinning keeps the applied recipe: it never jumps to the wider active version");
+  assert.deepEqual(r.listAutomations(db, D0).find((x) => x.id === e.id)?.warnings.map((w) => w.code), ["policy_stale"]);
+});
+
+test("a blank project stored by 0.2.12 reads as none (warning, no Task Board call with a blank project)", () => {
+  const db = migratedDb();
+  const a = daily(db);
+  db.prepare("UPDATE automations SET kanban_project = '   ' WHERE id = ?").run(a.id);
+  const [v] = r.listAutomations(db, D0, { kanbanLinked: true });
+  assert.equal(v?.kanbanProject, null);
+  assert.deepEqual(v?.warnings.map((w) => w.code), ["kanban_project_missing"]);
+});
+
+test("C250 A3: with Task Board connected a NEW schedule needs a project; old ones keep working with a warning", () => {
+  const db = migratedDb();
+  const wf = workflow(db);
+  const linked = { kanbanLinked: true };
+  const refused = (e: unknown) => e instanceof store.StoreError && e.code === "kanban_project_required" && e.details?.pointer === "/kanbanProject";
+  assert.throws(() => r.setAutomation(db, { workflowId: wf, agentId: BOUND.id, cron: "0 8 * * *" }, D0, linked), refused);
+  assert.throws(() => r.setAutomation(db, { workflowId: wf, agentId: BOUND.id, cron: "0 8 * * *", kanbanProject: "   " }, D0, linked), refused, "blank = none");
+  const ok = r.setAutomation(db, { workflowId: wf, agentId: BOUND.id, cron: "0 8 * * *", kanbanProject: " prj_shared " }, D0, linked);
+  assert.equal(ok.kanbanProject, "prj_shared");
+  assert.throws(() => r.setAutomation(db, { id: ok.id, revision: ok.revision, workflowId: wf, agentId: BOUND.id, cron: "0 8 * * *", kanbanProject: null }, D0, linked), refused, "an edit cannot remove the project");
+  // a schedule made before 0.2.13 (or while Task Board was not connected) has none
+  const old = r.setAutomation(db, { workflowId: wf, agentId: BOUND.id, cron: "0 9 * * *" }, D0);
+  assert.equal(old.kanbanProject, null, "without Task Board nothing is refused");
+  const edited = r.setAutomation(db, { id: old.id, revision: old.revision, workflowId: wf, agentId: BOUND.id, cron: "0 10 * * *" }, D0, linked);
+  assert.equal(edited.kanbanProject, null, "an edit may keep an old schedule without a project");
+  const views = r.listAutomations(db, D0, linked);
+  assert.deepEqual(views.find((x) => x.id === old.id)?.warnings.map((w) => w.code), ["kanban_project_missing"]);
+  assert.deepEqual(views.find((x) => x.id === ok.id)?.warnings, []);
+  assert.deepEqual(r.listAutomations(db, D0).find((x) => x.id === old.id)?.warnings, [], "no Task Board, no warning");
+});
+
+test("C250 A3 through the handlers: kanbanLinked comes from the verified slice's companionTargets", async () => {
+  const db = migratedDb();
+  const wf = workflow(db);
+  const withKanban = { ...ctxFor(db, OWNER), companionTargets: () => ["kanban"] } as unknown as ReturnType<typeof ctxFor>;
+  const without = { ...ctxFor(db, OWNER), companionTargets: () => [] } as unknown as ReturnType<typeof ctxFor>;
+  await assert.rejects(call(H, "automation_set", { workflowId: wf, agentId: BOUND.id, cron: "0 8 * * *" }, withKanban), (e: unknown) => {
+    const t = e as { code?: string; httpStatus?: number };
+    return t.code === "kanban_project_required" && t.httpStatus === 422;
+  });
+  const a = await call<K.AutomationSetOutput>(H, "automation_set", { workflowId: wf, agentId: BOUND.id, cron: "0 8 * * *" }, without);
+  assert.deepEqual(a.warnings, []);
+  const list = await call<K.AutomationsListOutput>(H, "automations_list", {}, withKanban);
+  assert.equal(list.kanbanLinked, true);
+  assert.deepEqual(list.automations[0]?.warnings.map((w) => w.code), ["kanban_project_missing"]);
+  const paused = await call<K.AutomationPauseOutput>(H, "automation_pause", { id: a.id, revision: a.revision, paused: true }, withKanban);
+  assert.equal(paused.enabled, false, "pause and resume never need a project");
+  assert.deepEqual(paused.warnings.map((w) => w.code), ["kanban_project_missing"]);
+  assert.equal((await call<K.AutomationsListOutput>(H, "automations_list", {}, ctxFor(db, OWNER))).kanbanLinked, false, "a ctx without companionTargets = not linked");
 });
 
 // ── through the handlers, with a fake Kanban companion ──
