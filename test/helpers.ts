@@ -10,18 +10,24 @@ export function migratedDb(): Db {
   const raw = new DatabaseSync(":memory:");
   raw.exec("PRAGMA foreign_keys = ON");
   for (const f of readdirSync(migrationsDir).filter((x) => x.endsWith(".sql")).sort()) raw.exec(readFileSync(join(migrationsDir, f), "utf8"));
+  // like the SDK's transaction runner: nested calls become savepoints
+  let depth = 0;
   const db = {
     exec: (sql: string) => raw.exec(sql),
     prepare: (sql: string) => raw.prepare(sql),
     transaction<T>(fn: () => T): T {
-      raw.exec("BEGIN");
+      const d = depth;
+      raw.exec(d === 0 ? "BEGIN" : `SAVEPOINT sp${d}`);
+      depth = d + 1;
       try {
         const v = fn();
-        raw.exec("COMMIT");
+        raw.exec(d === 0 ? "COMMIT" : `RELEASE sp${d}`);
         return v;
       } catch (e) {
-        raw.exec("ROLLBACK");
+        raw.exec(d === 0 ? "ROLLBACK" : `ROLLBACK TO sp${d}; RELEASE sp${d}`);
         throw e;
+      } finally {
+        depth = d;
       }
     },
   };

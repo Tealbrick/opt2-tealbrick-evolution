@@ -291,7 +291,7 @@ export const handlers = {
   [OP.workflowPromote]: op<K.WorkflowPromoteInput, K.WorkflowPromoteOutput>({
     redact: (input, output) => (output ? `Promoted draft ${input.draftId} to ${output.workflow.id} v${output.version.version}` : `Promote draft ${input.draftId}`),
     async run(input, ctx) {
-      return store.promote(ctx.db, input.draftId, input.revision);
+      return store.promote(ctx.db, input.draftId, input.revision, Date.now(), { log: ctx.log });
     },
   }),
   [OP.workflowsList]: op<K.WorkflowsListInput, K.WorkflowsListOutput>({

@@ -103,6 +103,19 @@ test("a cycle runs from its promotion to the next promotion; authoring fields co
   assert.deepEqual([b1?.suggestionId, b1?.evidenceCount, b1?.approvalDelayMs], [null, 0, null]);
 });
 
+test("approvalDelayMs is the FIRST approval: a later archive (decided_at overwritten) does not change it", () => {
+  const db = migratedDb();
+  const owner = { type: "person" as const, id: OWNER.id, name: "Owner" };
+  const s = store.createSuggestion(db, { title: "Rollup", summary: "", source: "agent", agentId: AGENT_A.id, createdBy: { type: "agent", id: AGENT_A.id, name: "A" }, evidence: [], steps: [] }, D0);
+  store.decideSuggestion(db, s.id, "approve", owner, null, D0 + 3_600_000);
+  const d = store.createDraft(db, { suggestionId: s.id, templateId: null, snapshot: { title: "Rollup", summary: "", instruction: "Do it.", trigger: "", steps: [], allowed: READ } }, D0 + 3_700_000);
+  const wf = store.promote(db, d.id, d.revision, D0 + 3_800_000).workflow.id;
+  assert.equal(cycles.workflowCycles(db, wf, NOW)[0]?.approvalDelayMs, 3_600_000, "quiet");
+  store.decideSuggestion(db, s.id, "archive", owner, null, D0 + 5 * 86_400_000);
+  assert.equal(store.getSuggestion(db, s.id).decidedAt, new Date(D0 + 5 * 86_400_000).toISOString(), "decided_at moved");
+  assert.equal(cycles.workflowCycles(db, wf, NOW)[0]?.approvalDelayMs, 3_600_000, "fires on decided_at: it would read 5 days");
+});
+
 test("run attribution: by workflow_version; a version-less missed row belongs to the version active at its due time", () => {
   const db = migratedDb();
   const wf = workflow(db);
@@ -191,12 +204,33 @@ test("ratios, medians and the Task Board close ratio", () => {
   assert.deepEqual(c?.counts, { total: 5, completed: 2, failed: 1, uncertain: 1, missed: 1, policyStale: 0, open: 0 });
   assert.deepEqual([c?.completedRatio, c?.failedRatio, c?.uncertainRatio, c?.missedRatio], [0.5, 0.25, 0.25, 0.2]);
   assert.equal(c?.claimLatencyP50Ms, 20_000, "median of 10, 20, 40, 90 s (lower middle)");
-  assert.equal(c?.durationP50Ms, 120_000, "completed / failed only: 60, 120, 300 s");
+  assert.equal(c?.durationP50Ms, null, "every completed / failed run here had its Task Board close synced");
   assert.equal(c?.kanbanClosedRatio, 0.666667, "2 of 3 terminal runs with an issue");
   assert.deepEqual(c?.last10, ["missed", "uncertain", "failed", "completed", "completed"]);
   const [empty] = cycles.workflowCycles(db, workflow(db).id, NOW);
   assert.deepEqual([empty?.completedRatio, empty?.claimLatencyP50Ms, empty?.durationP50Ms, empty?.kanbanClosedRatio, empty?.last10], [null, null, null, null, []]);
   assert.equal(empty?.evalLive.verdict, "insufficient");
+});
+
+test("duration median: completed / failed runs only, and never a run whose Task Board close moved updated_at", () => {
+  const db = migratedDb();
+  const wf = workflow(db);
+  const a = r.setAutomation(db, { workflowId: wf.id, agentId: BOUND.id, cron: "0 8 * * *" }, D0);
+  const run = (n: number, status: "completed" | "failed", secs: number, issue: string | null, sync: string): RunRow => ({
+    status,
+    due: day(n),
+    claimedAt: day(n),
+    updatedAt: day(n) + secs * 1000,
+    issue,
+    sync,
+  });
+  insertRuns(db, wf.id, a.id, [run(2, "completed", 60, null, "none"), run(3, "failed", 120, "iss_2", "pending"), run(4, "completed", 300, null, "failed")]);
+  assert.equal(cycles.workflowCycles(db, wf.id, NOW)[0]?.durationP50Ms, 120_000, "quiet: 60, 120, 300 s (a failed issue create keeps the duration)");
+  // closes synced hours later (done, or a failed close of an existing issue): left out, so the median does not move
+  insertRuns(db, wf.id, a.id, [run(5, "completed", 7200, "iss_5", "done"), run(6, "completed", 9000, "iss_6", "done"), run(7, "failed", 8000, "iss_7", "failed")]);
+  const [c] = cycles.workflowCycles(db, wf.id, NOW);
+  assert.equal(c?.durationP50Ms, 120_000, "fires if the sync lag counts: the median would be 2 h");
+  assert.equal(c?.counts.completed, 4, "the runs still count");
 });
 
 test("promote of version n+1 stores the closing eval of version n in the same transaction; version 1 stores none", () => {
@@ -217,6 +251,31 @@ test("promote of version n+1 stores the closing eval of version n in the same tr
   assert.equal(closing?.results.find((x) => x.metric === "completed_ratio")?.value, 1);
   assert.equal(cycles.getCycle(db, wf.id, 1, NOW).evalStored?.id, closing?.id);
   assert.deepEqual(cycles.storedEvals(db, wf.id, 2), [], "the new version's cycle is open");
+});
+
+test("the closing eval is best effort: an eval that throws never fails the promotion and leaves no eval row", () => {
+  const db = migratedDb();
+  const wf = workflow(db);
+  db.exec("CREATE TRIGGER no_evals BEFORE INSERT ON eval_runs BEGIN SELECT RAISE(ABORT, 'eval store down'); END");
+  const warned: { msg: string; f?: Record<string, unknown> }[] = [];
+  const d = store.getDraft(db, wf.draftId);
+  const u = store.updateDraft(db, d.id, d.revision, { instruction: "Roll up, v2." }, day(8));
+  const out = store.promote(db, d.id, u.revision, day(8), { log: { warn: (msg, f) => void warned.push({ msg, f }) } });
+  assert.equal(out.version.version, 2, "promoted");
+  assert.equal(store.getWorkflow(db, wf.id).activeVersion, 2);
+  assert.equal(store.getDraft(db, d.id).state, "promoted", "the promotion's own writes are kept");
+  assert.equal((db.prepare("SELECT count(*) AS n FROM eval_runs").get() as { n: number }).n, 0, "no eval row");
+  assert.deepEqual(warned, [{ msg: "closing eval not stored", f: { workflowId: wf.id, version: 1, error: "Error" } }]);
+  // without a logger it is dropped too (store-level callers)
+  db.exec("DROP TRIGGER no_evals");
+  db.exec("CREATE TRIGGER no_evals BEFORE INSERT ON eval_runs BEGIN SELECT RAISE(ABORT, 'eval store down'); END");
+  const d3 = store.updateDraft(db, d.id, store.getDraft(db, d.id).revision, { instruction: "Roll up, v3." }, day(9));
+  assert.equal(store.promote(db, d.id, d3.revision, day(9)).version.version, 3);
+  db.exec("DROP TRIGGER no_evals");
+  // quiet: with a working store the next promotion stores its closing eval
+  const d4 = store.updateDraft(db, d.id, store.getDraft(db, d.id).revision, { instruction: "Roll up, v4." }, day(10));
+  store.promote(db, d.id, d4.revision, day(10));
+  assert.deepEqual(cycles.storedEvals(db, wf.id, 3).map((e) => e.trigger), ["promotion"]);
 });
 
 test("cycles_list / cycle_get / cycle_eval_run through the handlers (owner ops, manifest outputs)", async () => {

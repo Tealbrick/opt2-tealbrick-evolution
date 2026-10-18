@@ -388,9 +388,14 @@ export function listVersions(db: Db, workflowId: string): Version[] {
   return db.prepare("SELECT * FROM workflow_versions WHERE workflow_id = ? ORDER BY version").all(workflowId).map(toVersion);
 }
 
+/** Where promote reports a closing eval it could not store (the handler passes ctx.log). */
+export interface PromoteOptions {
+  log?: { warn(msg: string, f?: Record<string, unknown>): void };
+}
+
 /** Draft → permanent workflow: version 1 on first promotion, then the next version of the same workflow, which closes
- *  the previous version's cycle: its closing eval is stored in the same transaction. */
-export function promote(db: Db, draftId: string, revision: number, now: number = Date.now()): { workflow: Workflow; version: Version } {
+ *  the previous version's cycle: its closing eval is stored in the same transaction, best effort (see below). */
+export function promote(db: Db, draftId: string, revision: number, now: number = Date.now(), opts: PromoteOptions = {}): { workflow: Workflow; version: Version } {
   return db.transaction(() => {
     const d = getDraft(db, draftId);
     if (d.revision !== revision) throw new StoreError("revision_conflict", "The draft changed since you reviewed it. Review it again before you promote.", { currentRevision: d.revision });
@@ -426,7 +431,17 @@ export function promote(db: Db, draftId: string, revision: number, now: number =
       now,
     );
     db.prepare("UPDATE drafts SET workflow_id = ?, state = 'promoted', promoted_version = ?, updated_at = ? WHERE id = ?").run(workflowId, version, now, draftId);
-    if (version > 1) storeEval(db, workflowId, version - 1, "promotion", now);
+    // The closing eval is best effort: a nested transaction (an SDK savepoint) so a failure rolls back the eval only,
+    // never the promotion. Without a logger (store-level callers, tests) the failure is dropped: the live eval of the
+    // retired cycle stays computed on read, and the owner can store one with cycle_eval_run.
+    if (version > 1) {
+      const closed = workflowId;
+      try {
+        db.transaction(() => storeEval(db, closed, version - 1, "promotion", now));
+      } catch (e) {
+        opts.log?.warn("closing eval not stored", { workflowId: closed, version: version - 1, error: e instanceof Error ? e.name : "unknown" });
+      }
+    }
     return { workflow: getWorkflow(db, workflowId), version: getVersion(db, workflowId, version) };
   });
 }

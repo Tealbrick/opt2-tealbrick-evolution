@@ -91,7 +91,14 @@ export function effectiveStatus(r: LedgerRun, now: number): RunStatus {
   return isStale(r.status, r.updatedAt, now) ? "uncertain" : r.status;
 }
 
-/** Counts, ratios and medians of one cycle's runs. Pure. */
+/** The Task Board close of this run was attempted after its report (done, or failed on an issue that exists): setKanban
+ *  moved updated_at to that moment, so updated_at - claimed_at is no longer the run's duration. */
+function closeSynced(r: LedgerRun): boolean {
+  return r.kanbanSync === "done" || (r.kanbanSync === "failed" && r.kanbanIssueId !== null);
+}
+
+/** Counts, ratios and medians of one cycle's runs. Pure. durationP50Ms leaves out runs whose Task Board close was
+ *  synced (closeSynced): their updated_at includes the sync lag. */
 export function runStats(runs: readonly LedgerRun[], now: number): RunStats {
   const counts: RunCounts = { total: runs.length, completed: 0, failed: 0, uncertain: 0, missed: 0, policyStale: 0, open: 0 };
   const latency: number[] = [];
@@ -108,7 +115,7 @@ export function runStats(runs: readonly LedgerRun[], now: number): RunStats {
     else if (s === "policy_stale") counts.policyStale++;
     else counts.open++;
     if (r.claimedAt !== null) latency.push(r.claimedAt - r.dueAt);
-    if ((r.status === "completed" || r.status === "failed") && r.claimedAt !== null) duration.push(r.updatedAt - r.claimedAt);
+    if ((r.status === "completed" || r.status === "failed") && r.claimedAt !== null && !closeSynced(r)) duration.push(r.updatedAt - r.claimedAt);
     if (TERMINAL.has(s) && r.kanbanIssueId !== null) {
       kanbanTerminal++;
       if (r.kanbanSync === "done") kanbanDone++;
@@ -159,7 +166,8 @@ function versionRows(db: Db, workflowId: string): VersionRow[] {
   return db
     .prepare(
       `SELECT v.workflow_id, w.title AS workflow_title, v.version, v.snapshot, v.draft_revision, v.promoted_at, d.suggestion_id,
-              s.evidence AS s_evidence, s.decided_at AS s_decided_at, s.created_at AS s_created_at
+              s.evidence AS s_evidence, s.created_at AS s_created_at,
+              (SELECT min(e.at) FROM suggestion_events e WHERE e.suggestion_id = s.id AND e.type = 'approved') AS s_approved_at
          FROM workflow_versions v
          JOIN workflows w ON w.id = v.workflow_id
          LEFT JOIN drafts d ON d.id = v.draft_id
@@ -177,7 +185,8 @@ function versionRows(db: Db, workflowId: string): VersionRow[] {
       promotedAt: Number(r.promoted_at),
       suggestionId: r.suggestion_id === null || r.suggestion_id === undefined ? null : String(r.suggestion_id),
       evidenceCount: r.s_evidence === null || r.s_evidence === undefined ? 0 : (JSON.parse(String(r.s_evidence)) as unknown[]).length,
-      approvalDelayMs: r.s_decided_at === null || r.s_decided_at === undefined ? null : Number(r.s_decided_at) - Number(r.s_created_at),
+      // the FIRST approval: decided_at is overwritten by every later decision (an archive after promotion, for example)
+      approvalDelayMs: r.s_approved_at === null || r.s_approved_at === undefined ? null : Number(r.s_approved_at) - Number(r.s_created_at),
     }));
 }
 
