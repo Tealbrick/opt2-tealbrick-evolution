@@ -1,0 +1,56 @@
+{
+  "name": "exact title repeats",
+  "minRepeats": 3,
+  "covered": [],
+  "output": {
+    "issues": [
+      {
+        "id": "iss_01J00000000000000000000004",
+        "title": "Send the Monday digest",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000A",
+          "name": "Agent A"
+        },
+        "updatedAt": "2026-09-05T10:00:00Z"
+      },
+      {
+        "id": "iss_01J00000000000000000000005",
+        "title": "Send the Monday digest",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000A",
+          "name": "Agent A"
+        },
+        "updatedAt": "2026-09-06T10:00:00Z"
+      },
+      {
+        "id": "iss_01J00000000000000000000006",
+        "title": "Send the Monday digest",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000A",
+          "name": "Agent A"
+        },
+        "updatedAt": "2026-09-07T10:00:00Z"
+      },
+      {
+        "id": "iss_01J00000000000000000000007",
+        "title": "Send the Monday digest",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000A",
+          "name": "Agent A"
+        },
+        "updatedAt": "2026-09-08T10:00:00Z"
+      }
+    ]
+  },
+  "expected": [
+    "agt_01J0000000000000000000000A|title:send the monday digest"
+  ]
+}

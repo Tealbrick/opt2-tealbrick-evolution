@@ -1,0 +1,32 @@
+{
+  "now": "2026-10-20T00:00:00.000Z",
+  "name": "a drop of exactly 10 points passes",
+  "parent": [
+    {
+      "status": "completed",
+      "count": 10
+    }
+  ],
+  "runs": [
+    {
+      "status": "completed",
+      "count": 9
+    },
+    {
+      "status": "failed"
+    }
+  ],
+  "expected": {
+    "verdict": "pass",
+    "metrics": {
+      "completed_ratio": {
+        "value": 0.9,
+        "pass": true
+      },
+      "completed_ratio_drop": {
+        "value": 0.1,
+        "pass": true
+      }
+    }
+  }
+}

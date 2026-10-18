@@ -1,0 +1,28 @@
+{
+  "now": "2026-10-20T00:00:00.000Z",
+  "name": "completed ratio below 0.80",
+  "parent": null,
+  "runs": [
+    {
+      "status": "completed",
+      "count": 7
+    },
+    {
+      "status": "failed",
+      "count": 3
+    }
+  ],
+  "expected": {
+    "verdict": "fail",
+    "metrics": {
+      "completed_ratio": {
+        "value": 0.7,
+        "pass": false
+      },
+      "uncertain_ratio": {
+        "value": 0,
+        "pass": true
+      }
+    }
+  }
+}

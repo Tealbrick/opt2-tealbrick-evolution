@@ -1,0 +1,45 @@
+{
+  "name": "numbered titles with hash and date",
+  "minRepeats": 3,
+  "covered": [],
+  "output": {
+    "issues": [
+      {
+        "id": "iss_01J00000000000000000000011",
+        "title": "Invoice run #7 (2026-09-01)",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000B",
+          "name": "Agent B"
+        },
+        "updatedAt": "2026-09-12T10:00:00Z"
+      },
+      {
+        "id": "iss_01J00000000000000000000012",
+        "title": "Invoice run #8 (2026-09-08)",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000B",
+          "name": "Agent B"
+        },
+        "updatedAt": "2026-09-13T10:00:00Z"
+      },
+      {
+        "id": "iss_01J00000000000000000000013",
+        "title": "Invoice run #9 (2026-09-15)",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000B",
+          "name": "Agent B"
+        },
+        "updatedAt": "2026-09-14T10:00:00Z"
+      }
+    ]
+  },
+  "expected": [
+    "agt_01J0000000000000000000000B|title:invoice run # # # #"
+  ]
+}

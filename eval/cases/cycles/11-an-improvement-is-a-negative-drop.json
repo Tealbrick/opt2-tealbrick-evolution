@@ -1,0 +1,29 @@
+{
+  "now": "2026-10-20T00:00:00.000Z",
+  "name": "an improvement is a negative drop",
+  "parent": [
+    {
+      "status": "completed",
+      "count": 8
+    },
+    {
+      "status": "failed",
+      "count": 2
+    }
+  ],
+  "runs": [
+    {
+      "status": "completed",
+      "count": 10
+    }
+  ],
+  "expected": {
+    "verdict": "pass",
+    "metrics": {
+      "completed_ratio_drop": {
+        "value": -0.2,
+        "pass": true
+      }
+    }
+  }
+}

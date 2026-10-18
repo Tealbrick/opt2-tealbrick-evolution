@@ -1,0 +1,29 @@
+{
+  "now": "2026-10-20T00:00:00.000Z",
+  "name": "policy_stale runs are information only and never claims",
+  "parent": null,
+  "runs": [
+    {
+      "status": "completed",
+      "count": 6
+    },
+    {
+      "status": "policy_stale",
+      "count": 2,
+      "dueAt": "2026-10-10T08:00:00.000Z"
+    }
+  ],
+  "expected": {
+    "verdict": "pass",
+    "metrics": {
+      "policy_stale_runs": {
+        "value": 2,
+        "pass": null
+      },
+      "duplicate_claims": {
+        "value": 0,
+        "pass": true
+      }
+    }
+  }
+}

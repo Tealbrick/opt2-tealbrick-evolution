@@ -1,0 +1,32 @@
+{
+  "now": "2026-10-20T00:00:00.000Z",
+  "name": "exactly at the thresholds",
+  "note": "16 completed, 3 failed, 1 uncertain: completed 0.80 and uncertain 0.05 both pass (inclusive).",
+  "parent": null,
+  "runs": [
+    {
+      "status": "completed",
+      "count": 16
+    },
+    {
+      "status": "failed",
+      "count": 3
+    },
+    {
+      "status": "uncertain"
+    }
+  ],
+  "expected": {
+    "verdict": "pass",
+    "metrics": {
+      "completed_ratio": {
+        "value": 0.8,
+        "pass": true
+      },
+      "uncertain_ratio": {
+        "value": 0.05,
+        "pass": true
+      }
+    }
+  }
+}

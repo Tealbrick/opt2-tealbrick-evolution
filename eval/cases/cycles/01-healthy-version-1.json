@@ -1,0 +1,36 @@
+{
+  "now": "2026-10-20T00:00:00.000Z",
+  "name": "healthy version 1",
+  "parent": null,
+  "runs": [
+    {
+      "status": "completed",
+      "count": 10
+    }
+  ],
+  "expected": {
+    "verdict": "pass",
+    "metrics": {
+      "duplicate_claims": {
+        "value": 0,
+        "pass": true
+      },
+      "uncertain_ratio": {
+        "value": 0,
+        "pass": true
+      },
+      "completed_ratio": {
+        "value": 1,
+        "pass": true
+      },
+      "missed_ratio": {
+        "value": 0,
+        "pass": true
+      },
+      "policy_stale_runs": {
+        "value": 0,
+        "pass": null
+      }
+    }
+  }
+}

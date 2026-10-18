@@ -1,0 +1,9 @@
+{
+  "name": "an empty board",
+  "minRepeats": 3,
+  "covered": [],
+  "output": {
+    "issues": []
+  },
+  "expected": []
+}

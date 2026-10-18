@@ -1,0 +1,48 @@
+{
+  "name": "items shape",
+  "minRepeats": 3,
+  "covered": [],
+  "output": {
+    "items": [
+      {
+        "id": "iss_01J00000000000000000000091",
+        "title": "Order office supplies",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000A",
+          "name": "Agent A"
+        },
+        "updatedAt": "2026-09-08T10:00:00Z",
+        "template": "tpl-supplies"
+      },
+      {
+        "id": "iss_01J00000000000000000000092",
+        "title": "Order office supplies",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000A",
+          "name": "Agent A"
+        },
+        "updatedAt": "2026-09-09T10:00:00Z",
+        "template": "tpl-supplies"
+      },
+      {
+        "id": "iss_01J00000000000000000000093",
+        "title": "Order office supplies",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000A",
+          "name": "Agent A"
+        },
+        "updatedAt": "2026-09-10T10:00:00Z",
+        "template": "tpl-supplies"
+      }
+    ]
+  },
+  "expected": [
+    "agt_01J0000000000000000000000A|template:tpl-supplies"
+  ]
+}

@@ -1,0 +1,44 @@
+{
+  "name": "near-duplicate: plural and article",
+  "note": "Known miss of the 0.2.13 detector (exact normalised title only): a human sees one repeated task. E5 target; expected stays empty until the detector groups it. Ideal group: agt_01J0000000000000000000000B 'send invoice to acme'.",
+  "minRepeats": 3,
+  "covered": [],
+  "output": {
+    "issues": [
+      {
+        "id": "iss_01J00000000000000000000166",
+        "title": "Send invoice to Acme",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000B",
+          "name": "Agent B"
+        },
+        "updatedAt": "2026-09-27T10:00:00Z"
+      },
+      {
+        "id": "iss_01J00000000000000000000167",
+        "title": "Send invoices to Acme",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000B",
+          "name": "Agent B"
+        },
+        "updatedAt": "2026-09-28T10:00:00Z"
+      },
+      {
+        "id": "iss_01J00000000000000000000168",
+        "title": "Send the invoice to Acme",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000B",
+          "name": "Agent B"
+        },
+        "updatedAt": "2026-09-01T10:00:00Z"
+      }
+    ]
+  },
+  "expected": []
+}

@@ -1,0 +1,50 @@
+{
+  "name": "app-assigned work is never suggested",
+  "minRepeats": 3,
+  "covered": [],
+  "output": {
+    "issues": [
+      {
+        "id": "iss_01J00000000000000000000029",
+        "title": "Sync calendar",
+        "status": "done",
+        "assignee": {
+          "kind": "app",
+          "id": "calendar-sync",
+          "name": "Calendar"
+        }
+      },
+      {
+        "id": "iss_01J00000000000000000000030",
+        "title": "Sync calendar",
+        "status": "done",
+        "assignee": {
+          "kind": "app",
+          "id": "calendar-sync",
+          "name": "Calendar"
+        }
+      },
+      {
+        "id": "iss_01J00000000000000000000031",
+        "title": "Sync calendar",
+        "status": "done",
+        "assignee": {
+          "kind": "app",
+          "id": "calendar-sync",
+          "name": "Calendar"
+        }
+      },
+      {
+        "id": "iss_01J00000000000000000000032",
+        "title": "Sync calendar",
+        "status": "done",
+        "assignee": {
+          "kind": "app",
+          "id": "calendar-sync",
+          "name": "Calendar"
+        }
+      }
+    ]
+  },
+  "expected": []
+}

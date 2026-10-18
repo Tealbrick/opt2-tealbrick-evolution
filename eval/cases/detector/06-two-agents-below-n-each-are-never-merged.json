@@ -1,0 +1,54 @@
+{
+  "name": "two agents below N each are never merged",
+  "minRepeats": 3,
+  "covered": [],
+  "output": {
+    "issues": [
+      {
+        "id": "iss_01J00000000000000000000020",
+        "title": "Draft release notes",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000A",
+          "name": "Agent A"
+        },
+        "updatedAt": "2026-09-21T10:00:00Z"
+      },
+      {
+        "id": "iss_01J00000000000000000000021",
+        "title": "Draft release notes",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000A",
+          "name": "Agent A"
+        },
+        "updatedAt": "2026-09-22T10:00:00Z"
+      },
+      {
+        "id": "iss_01J00000000000000000000022",
+        "title": "Draft release notes",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000B",
+          "name": "Agent B"
+        },
+        "updatedAt": "2026-09-23T10:00:00Z"
+      },
+      {
+        "id": "iss_01J00000000000000000000023",
+        "title": "Draft release notes",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000B",
+          "name": "Agent B"
+        },
+        "updatedAt": "2026-09-24T10:00:00Z"
+      }
+    ]
+  },
+  "expected": []
+}

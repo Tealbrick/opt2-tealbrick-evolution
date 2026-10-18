@@ -1,0 +1,272 @@
+{
+  "name": "a mixed board",
+  "note": "Agent A's template work and Agent B's numbered reports are suggested; owner work, run issues and open work are not.",
+  "minRepeats": 3,
+  "covered": [],
+  "output": {
+    "issues": [
+      {
+        "id": "iss_01J00000000000000000000140",
+        "title": "Compile the support summary",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000A",
+          "name": "Agent A"
+        },
+        "updatedAt": "2026-09-01T10:00:00Z",
+        "template": "tpl-support-summary"
+      },
+      {
+        "id": "iss_01J00000000000000000000141",
+        "title": "Compile the support summary",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000A",
+          "name": "Agent A"
+        },
+        "updatedAt": "2026-09-02T10:00:00Z",
+        "template": "tpl-support-summary"
+      },
+      {
+        "id": "iss_01J00000000000000000000142",
+        "title": "Compile the support summary",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000A",
+          "name": "Agent A"
+        },
+        "updatedAt": "2026-09-03T10:00:00Z",
+        "template": "tpl-support-summary"
+      },
+      {
+        "id": "iss_01J00000000000000000000143",
+        "title": "Compile the support summary",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000A",
+          "name": "Agent A"
+        },
+        "updatedAt": "2026-09-04T10:00:00Z",
+        "template": "tpl-support-summary"
+      },
+      {
+        "id": "iss_01J00000000000000000000144",
+        "title": "Sprint 12 retro notes",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000B",
+          "name": "Agent B"
+        },
+        "updatedAt": "2026-09-05T10:00:00Z"
+      },
+      {
+        "id": "iss_01J00000000000000000000145",
+        "title": "Sprint 13 retro notes",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000B",
+          "name": "Agent B"
+        },
+        "updatedAt": "2026-09-06T10:00:00Z"
+      },
+      {
+        "id": "iss_01J00000000000000000000146",
+        "title": "Sprint 14 retro notes",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000B",
+          "name": "Agent B"
+        },
+        "updatedAt": "2026-09-07T10:00:00Z"
+      },
+      {
+        "id": "iss_01J00000000000000000000147",
+        "title": "Approve invoices",
+        "status": "done",
+        "assignee": {
+          "kind": "owner",
+          "id": "per_01J0000000000000000000000P",
+          "name": "Owner"
+        }
+      },
+      {
+        "id": "iss_01J00000000000000000000148",
+        "title": "Approve invoices",
+        "status": "done",
+        "assignee": {
+          "kind": "owner",
+          "id": "per_01J0000000000000000000000P",
+          "name": "Owner"
+        }
+      },
+      {
+        "id": "iss_01J00000000000000000000149",
+        "title": "Approve invoices",
+        "status": "done",
+        "assignee": {
+          "kind": "owner",
+          "id": "per_01J0000000000000000000000P",
+          "name": "Owner"
+        }
+      },
+      {
+        "id": "iss_01J00000000000000000000150",
+        "title": "Approve invoices",
+        "status": "done",
+        "assignee": {
+          "kind": "owner",
+          "id": "per_01J0000000000000000000000P",
+          "name": "Owner"
+        }
+      },
+      {
+        "id": "iss_01J00000000000000000000151",
+        "title": "Approve invoices",
+        "status": "done",
+        "assignee": {
+          "kind": "owner",
+          "id": "per_01J0000000000000000000000P",
+          "name": "Owner"
+        }
+      },
+      {
+        "id": "iss_01J00000000000000000000152",
+        "title": "Run: Morning rollup",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000A",
+          "name": "Agent A"
+        },
+        "updatedAt": "2026-09-13T10:00:00Z",
+        "template": "evolution:wfl-01j0000000000000000000000w"
+      },
+      {
+        "id": "iss_01J00000000000000000000153",
+        "title": "Run: Morning rollup",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000A",
+          "name": "Agent A"
+        },
+        "updatedAt": "2026-09-14T10:00:00Z",
+        "template": "evolution:wfl-01j0000000000000000000000w"
+      },
+      {
+        "id": "iss_01J00000000000000000000154",
+        "title": "Run: Morning rollup",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000A",
+          "name": "Agent A"
+        },
+        "updatedAt": "2026-09-15T10:00:00Z",
+        "template": "evolution:wfl-01j0000000000000000000000w"
+      },
+      {
+        "id": "iss_01J00000000000000000000155",
+        "title": "Run: Morning rollup",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000A",
+          "name": "Agent A"
+        },
+        "updatedAt": "2026-09-16T10:00:00Z",
+        "template": "evolution:wfl-01j0000000000000000000000w"
+      },
+      {
+        "id": "iss_01J00000000000000000000156",
+        "title": "Run: Morning rollup",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000A",
+          "name": "Agent A"
+        },
+        "updatedAt": "2026-09-17T10:00:00Z",
+        "template": "evolution:wfl-01j0000000000000000000000w"
+      },
+      {
+        "id": "iss_01J00000000000000000000157",
+        "title": "Run: Morning rollup",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000A",
+          "name": "Agent A"
+        },
+        "updatedAt": "2026-09-18T10:00:00Z",
+        "template": "evolution:wfl-01j0000000000000000000000w"
+      },
+      {
+        "id": "iss_01J00000000000000000000158",
+        "title": "Translate the help page",
+        "status": "in_progress",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000C",
+          "name": "Agent C"
+        },
+        "updatedAt": "2026-09-19T10:00:00Z"
+      },
+      {
+        "id": "iss_01J00000000000000000000159",
+        "title": "Translate the help page",
+        "status": "in_progress",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000C",
+          "name": "Agent C"
+        },
+        "updatedAt": "2026-09-20T10:00:00Z"
+      },
+      {
+        "id": "iss_01J00000000000000000000160",
+        "title": "Translate the help page",
+        "status": "in_progress",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000C",
+          "name": "Agent C"
+        },
+        "updatedAt": "2026-09-21T10:00:00Z"
+      },
+      {
+        "id": "iss_01J00000000000000000000161",
+        "title": "Translate the help page",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000C",
+          "name": "Agent C"
+        },
+        "updatedAt": "2026-09-22T10:00:00Z"
+      },
+      {
+        "id": "iss_01J00000000000000000000162",
+        "title": "Translate the help page",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000C",
+          "name": "Agent C"
+        },
+        "updatedAt": "2026-09-23T10:00:00Z"
+      }
+    ]
+  },
+  "expected": [
+    "agt_01J0000000000000000000000A|template:tpl-support-summary",
+    "agt_01J0000000000000000000000B|title:sprint # retro notes"
+  ]
+}

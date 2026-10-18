@@ -1,0 +1,32 @@
+{
+  "name": "below N",
+  "minRepeats": 3,
+  "covered": [],
+  "output": {
+    "issues": [
+      {
+        "id": "iss_01J00000000000000000000051",
+        "title": "Back up the wiki",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000A",
+          "name": "Agent A"
+        },
+        "updatedAt": "2026-09-24T10:00:00Z"
+      },
+      {
+        "id": "iss_01J00000000000000000000052",
+        "title": "Back up the wiki",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000A",
+          "name": "Agent A"
+        },
+        "updatedAt": "2026-09-25T10:00:00Z"
+      }
+    ]
+  },
+  "expected": []
+}

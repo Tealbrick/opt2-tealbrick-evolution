@@ -1,0 +1,27 @@
+{
+  "now": "2026-10-20T00:00:00.000Z",
+  "name": "an open run is not counted",
+  "parent": null,
+  "runs": [
+    {
+      "status": "completed",
+      "count": 9
+    },
+    {
+      "status": "dispatched"
+    }
+  ],
+  "expected": {
+    "verdict": "pass",
+    "metrics": {
+      "uncertain_ratio": {
+        "value": 0,
+        "pass": true
+      },
+      "completed_ratio": {
+        "value": 1,
+        "pass": true
+      }
+    }
+  }
+}

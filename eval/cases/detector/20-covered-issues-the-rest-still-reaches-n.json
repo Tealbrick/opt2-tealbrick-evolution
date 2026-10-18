@@ -1,0 +1,70 @@
+{
+  "name": "covered issues: the rest still reaches N",
+  "minRepeats": 3,
+  "covered": [
+    "iss_01J00000000000000000000074",
+    "iss_01J00000000000000000000075"
+  ],
+  "output": {
+    "issues": [
+      {
+        "id": "iss_01J00000000000000000000074",
+        "title": "Archive old tickets",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000A",
+          "name": "Agent A"
+        },
+        "updatedAt": "2026-09-19T10:00:00Z"
+      },
+      {
+        "id": "iss_01J00000000000000000000075",
+        "title": "Archive old tickets",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000A",
+          "name": "Agent A"
+        },
+        "updatedAt": "2026-09-20T10:00:00Z"
+      },
+      {
+        "id": "iss_01J00000000000000000000076",
+        "title": "Archive old tickets",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000A",
+          "name": "Agent A"
+        },
+        "updatedAt": "2026-09-21T10:00:00Z"
+      },
+      {
+        "id": "iss_01J00000000000000000000077",
+        "title": "Archive old tickets",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000A",
+          "name": "Agent A"
+        },
+        "updatedAt": "2026-09-22T10:00:00Z"
+      },
+      {
+        "id": "iss_01J00000000000000000000078",
+        "title": "Archive old tickets",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000A",
+          "name": "Agent A"
+        },
+        "updatedAt": "2026-09-23T10:00:00Z"
+      }
+    ]
+  },
+  "expected": [
+    "agt_01J0000000000000000000000A|title:archive old tickets"
+  ]
+}

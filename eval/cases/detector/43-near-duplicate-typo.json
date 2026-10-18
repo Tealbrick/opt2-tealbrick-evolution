@@ -1,0 +1,44 @@
+{
+  "name": "near-duplicate: typo",
+  "note": "Known miss of the 0.2.13 detector (exact normalised title only): a human sees one repeated task. E5 target; expected stays empty until the detector groups it. Ideal group: agt_01J0000000000000000000000C 'reconcile ledger'.",
+  "minRepeats": 3,
+  "covered": [],
+  "output": {
+    "issues": [
+      {
+        "id": "iss_01J00000000000000000000169",
+        "title": "Reconcile ledger",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000C",
+          "name": "Agent C"
+        },
+        "updatedAt": "2026-09-02T10:00:00Z"
+      },
+      {
+        "id": "iss_01J00000000000000000000170",
+        "title": "Reconcile ledgr",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000C",
+          "name": "Agent C"
+        },
+        "updatedAt": "2026-09-03T10:00:00Z"
+      },
+      {
+        "id": "iss_01J00000000000000000000171",
+        "title": "Reconcile the ledger",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000C",
+          "name": "Agent C"
+        },
+        "updatedAt": "2026-09-04T10:00:00Z"
+      }
+    ]
+  },
+  "expected": []
+}
