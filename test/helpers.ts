@@ -2,8 +2,9 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { validateAgainstSchema } from "@opt2-tealbrick/manifest";
 import type { Caller, CompanionResult, Db, OpContext } from "@opt2-tealbrick/miniapp-sdk";
-import { migrationsDir } from "../src/app.ts";
+import { manifest, migrationsDir } from "../src/app.ts";
 
 export function migratedDb(): Db {
   const raw = new DatabaseSync(":memory:");
@@ -40,8 +41,15 @@ export function ctxFor(db: Db, caller: Caller, callApp?: CallApp): OpContext {
   return { db, caller, callApp: callApp ?? refuse } as unknown as OpContext;
 }
 
-/** Runs a handler from the app's handler map with a typed input. */
+/** Runs a handler from the app's handler map with a typed input, and checks the output against the manifest output
+ *  schema as the SDK does (a handler answer the SDK would refuse fails the test). */
 export async function call<O>(handlers: Record<string, { run: (i: never, c: OpContext) => Promise<unknown> } | unknown>, id: string, input: unknown, ctx: OpContext): Promise<O> {
   const h = handlers[id] as { run: (i: unknown, c: OpContext) => Promise<unknown> };
-  return (await h.run(input, ctx)) as O;
+  const out = await h.run(input, ctx);
+  const op = (manifest.operations as { id: string; output?: unknown }[]).find((o) => o.id === id);
+  if (op?.output) {
+    const v = validateAgainstSchema(op.output as never, JSON.parse(JSON.stringify(out)) as never);
+    if (!v.ok) throw new Error(`${id} output fails the manifest schema: ${JSON.stringify(v.errors).slice(0, 400)}`);
+  }
+  return out as O;
 }

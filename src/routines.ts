@@ -6,8 +6,8 @@
 //   claimed > 10 min or dispatched > 30 min without a report → uncertain (never offered again; a late report may
 //   still close it). Due times are computed when asked; nothing here runs on a timer and nothing starts an agent.
 //   policy_stale (C250): a due occurrence of a wider active version than the recipe the agent has (`policyVersion`) is
-//   recorded once as a `policy_stale` run; routines_due leaves it out and routine_claim answers policy_stale. One gate
-//   (`policyStale`) decides it for both.
+//   skipped like a claimed period; the first one per schedule revision and version is recorded as a `policy_stale` run;
+//   routines_due leaves it out and routine_claim answers policy_stale. One gate (`policyStale`) decides it for both.
 import { createHash } from "node:crypto";
 import { CronError, cronDue, nextCronTime, ulid } from "@opt2-tealbrick/manifest";
 import type { Db } from "@opt2-tealbrick/miniapp-sdk";
@@ -88,7 +88,7 @@ function toRow(r: Record<string, unknown>): Row {
     cron: String(r.cron),
     enabled: Number(r.enabled) === 1,
     grace: Number(r.misfire_grace_sec),
-    kanbanProject: strOrNull(r.kanban_project),
+    kanbanProject: strOrNull(r.kanban_project)?.trim() || null, // 0.2.12 stored blanks untrimmed
     revision: Number(r.revision),
     nextDueAt: Number(r.next_due_at),
     deletedAt: r.deleted_at === null ? null : Number(r.deleted_at),
@@ -162,7 +162,10 @@ export function setAutomation(db: Db, input: AutomationInput, now: number = Date
     const wf = getWorkflow(db, input.workflowId);
     const pin = input.versionPin ?? null;
     if (pin !== null) getVersion(db, wf.id, pin);
-    const policyVersion = input.policyVersion ?? pin ?? wf.activeVersion;
+    // The applied recipe version is the owner's statement: a new schedule starts at the pin or the active version; an edit
+    // that does not name it keeps it (an edit of the project or the cron must not silently clear a policy_stale gate).
+    const prior = input.id ? load(db, input.id) : null;
+    const policyVersion = input.policyVersion ?? (prior && prior.workflowId === wf.id && pin === prior.versionPin ? prior.policyVersion : (pin ?? wf.activeVersion));
     getVersion(db, wf.id, policyVersion);
     const cron = input.cron.trim().replace(/\s+/g, " ");
     const firstDue = next(cron, now);
@@ -258,12 +261,12 @@ function warningsOf(db: Db, r: Row, kanbanLinked: boolean): AutomationWarning[] 
   if (v && policyStale(db, r, v))
     w.push({
       code: "policy_stale",
-      message: `Version ${v.version} needs more access than the recipe of version ${r.policyVersion} that the agent has. Runs are not claimed until you apply the new recipe in Portal and set the schedule to that version.`,
+      message: `Version ${v.version} needs more access than the recipe of version ${r.policyVersion} that the agent has. Runs are skipped. Apply the recipe of version ${v.version} in Portal, then choose Edit and set "Recipe applied" to version ${v.version}.`,
     });
   if (kanbanLinked && r.kanbanProject === null)
     w.push({
       code: "kanban_project_missing",
-      message: "No Task Board project: run issues go to the own project of Evolving Workflows, which the Bound agent cannot see. Edit the schedule and choose a project you share with the agent.",
+      message: "No Task Board project: run issues go to the own project of Evolving Workflows, which the Bound agent cannot see. Choose Edit and set a project that you share with the agent.",
     });
   return w;
 }
@@ -366,7 +369,8 @@ function resolveVersion(db: Db, a: Row): Version | null {
 }
 
 /** routines_due: Bound callers only; one job per automation at most (its due occurrence inside the grace). Claims
- *  nothing; only records missed runs (see `settle`). */
+ *  nothing. Bookkeeping only (facts from the clock and the policy gate): records missed runs (see `settle`) and skips /
+ *  records policy-stale periods (`recordPolicyStale`); no receipt. */
 export function dueJobs(db: Db, agentId: string, now: number = Date.now()): Job[] {
   return db.transaction(() => {
     const jobs: Job[] = [];
@@ -460,11 +464,15 @@ function recordMissed(db: Db, a: Row, dueAt: number, now: number): void {
   ).run(occurrenceOf(a.id, a.revision, dueAt), a.id, a.revision, dueAt, a.workflowId, "Not claimed within the misfire grace; later periods collapsed into this record.", now);
 }
 
-/** The due occurrence `dueAt` of a policy-stale version: one `policy_stale` run row (never claimable), and the pending due
- *  time moves to the next period, like a claim. Applying the new recipe changes the schedule (new revision), so the
- *  next period runs. */
+/** The due occurrence `dueAt` of a policy-stale version: the pending due time moves to the next period, like a claim.
+ *  Only the FIRST such period of one schedule revision and version is stored (one `policy_stale` run row, never
+ *  claimable); later periods are skipped without a row, so a frequent cron does not flood the run history. Applying the
+ *  new recipe changes the schedule (new revision), so the next period runs. */
 function recordPolicyStale(db: Db, a: Row, dueAt: number, v: Version, now: number): void {
-  db.prepare(
+  const seen = db
+    .prepare("SELECT 1 AS x FROM routine_runs WHERE automation_id = ? AND revision = ? AND workflow_version = ? AND status = 'policy_stale' LIMIT 1")
+    .get(a.id, a.revision, v.version);
+  if (!seen) db.prepare(
     "INSERT OR IGNORE INTO routine_runs (occurrence, automation_id, revision, due_at, status, workflow_id, workflow_version, summary, updated_at) VALUES (?, ?, ?, ?, 'policy_stale', ?, ?, ?, ?)",
   ).run(
     occurrenceOf(a.id, a.revision, dueAt),
@@ -473,7 +481,7 @@ function recordPolicyStale(db: Db, a: Row, dueAt: number, v: Version, now: numbe
     dueAt,
     a.workflowId,
     v.version,
-    `Not offered: version ${v.version} needs more access than the recipe of version ${a.policyVersion}. Apply the new recipe in Portal and set the schedule to that version.`,
+    `Not offered: version ${v.version} needs more access than the recipe of version ${a.policyVersion}. Later periods are skipped without a record until the schedule says the new recipe is applied.`,
     now,
   );
   const r = cronDue(a.cron, { nextDueAt: new Date(dueAt), now: new Date(now), graceSec: a.grace });

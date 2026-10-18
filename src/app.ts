@@ -184,7 +184,8 @@ export const handlers = {
   }),
 
   [OP.routinesDue]: op<K.RoutinesDueInput, K.RoutinesDueOutput>({
-    // Pure read (no state change, no receipt): the poll target of `tealbrick agent serve` routines mode.
+    // The poll target of `tealbrick agent serve` routines mode. No receipt and no decision: it only books what the clock
+    // and the policy gate imply (missed and policy_stale periods), the same bookkeeping the owner's lists do.
     async run(_input, ctx) {
       if (ctx.caller.type !== "agent" || ctx.caller.mode !== "bound") return { jobs: [] };
       return { jobs: routines.dueJobs(ctx.db, ctx.caller.id) };

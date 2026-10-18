@@ -203,6 +203,40 @@ test("policy_stale: a claim without a poll first records the same run (one gate 
   assert.throws(() => r.report(db, BOUND.id, occ, "completed", null, now), /No run of yours/, "nobody can report on a run nobody claimed");
 });
 
+test("policy_stale: a frequent cron records ONE row per schedule revision and version, and every period is skipped", () => {
+  const db = migratedDb();
+  const a = r.setAutomation(db, { workflowId: workflow(db), agentId: BOUND.id, cron: "*/5 * * * *" }, D0);
+  widen(db, a.workflowId);
+  for (let i = 0; i < 6; i++) assert.deepEqual(r.dueJobs(db, BOUND.id, T("2026-10-12T06:05:30Z") + i * 300_000), [], `period ${i} not offered`);
+  const rows = r.listRuns(db, { automationId: a.id, limit: 50 }, T("2026-10-12T06:40:00Z"));
+  assert.deepEqual(rows.map((x) => x.status), ["policy_stale"], "no flood of rows, no missed rows either");
+  assert.equal(rows[0]?.dueAt, "2026-10-12T06:05:00.000Z");
+  assert.equal(r.listAutomations(db, T("2026-10-12T06:31:00Z"))[0]?.nextDueAt, "2026-10-12T06:35:00.000Z", "every skipped period advanced the schedule");
+  assert.deepEqual(r.listAutomations(db, T("2026-10-12T06:31:00Z"))[0]?.warnings.map((w) => w.code), ["policy_stale"], "the warning stays");
+});
+
+test("an edit that does not name policyVersion keeps it (editing the project or cron never clears the policy gate)", () => {
+  const db = migratedDb();
+  const a = daily(db, { kanbanProject: "prj_a" });
+  widen(db, a.workflowId); // active = v2, applied recipe = v1
+  const e = r.setAutomation(db, { id: a.id, revision: a.revision, workflowId: a.workflowId, agentId: BOUND.id, cron: "0 9 * * *", kanbanProject: "prj_b" }, D0);
+  assert.equal(e.policyVersion, 1, "before the fix an edit reset it to the active version and opened the gate silently");
+  assert.deepEqual(r.listAutomations(db, D0)[0]?.warnings.map((w) => w.code), ["policy_stale"]);
+  const fresh = daily(db);
+  assert.equal(fresh.policyVersion, 1, "a new schedule starts at the active version of its own workflow");
+  const pinned = r.setAutomation(db, { id: e.id, revision: e.revision, workflowId: e.workflowId, agentId: BOUND.id, cron: e.cron, versionPin: 2 }, D0);
+  assert.equal(pinned.policyVersion, 2, "a changed pin starts at the pin");
+});
+
+test("a blank project stored by 0.2.12 reads as none (warning, no Task Board call with a blank project)", () => {
+  const db = migratedDb();
+  const a = daily(db);
+  db.prepare("UPDATE automations SET kanban_project = '   ' WHERE id = ?").run(a.id);
+  const [v] = r.listAutomations(db, D0, { kanbanLinked: true });
+  assert.equal(v?.kanbanProject, null);
+  assert.deepEqual(v?.warnings.map((w) => w.code), ["kanban_project_missing"]);
+});
+
 test("C250 A3: with Task Board connected a NEW schedule needs a project; old ones keep working with a warning", () => {
   const db = migratedDb();
   const wf = workflow(db);
