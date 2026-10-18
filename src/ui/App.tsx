@@ -1,8 +1,9 @@
-// Owner UI inside the ONE app shell (<AppShell> from @opt2-tealbrick/ui, SDK-API §14): Suggestions, Drafts, Workflows and
-// Schedules, plus the shared Holds and Agents & scopes pages (./standard.tsx). Every action here is a person op (owner only).
+// Owner UI inside the ONE app shell (<AppShell> from @opt2-tealbrick/ui, SDK-API §14): Suggestions, Drafts, Workflows,
+// Schedules and Cycles (0.3.0), plus the shared Holds and Agents & scopes pages (./standard.tsx). Every action here is a person op (owner only).
 import { useAgents, useSession } from "@opt2-tealbrick/miniapp-sdk/client";
 import { AppShell, appArt, appColour, Button, Notice, STANDARD_PAGES, Tag } from "@opt2-tealbrick/ui";
 import { useEffect, useState } from "react";
+import { Cycles } from "./Cycles.tsx";
 import { Drafts } from "./Drafts.tsx";
 import { person } from "./ops.ts";
 import { Schedules } from "./Schedules.tsx";
@@ -15,12 +16,13 @@ const NAME = "Evolving Workflows";
 const STILLS = new URL("./stills/", import.meta.url).href;
 
 /** Shell page id → path under the base `/a/evolution/`. Suggestions is the launch page (manifest `ui.launchPath`), Agents & scopes is `ui.configurePath`. */
-const ROUTES: Routes = { suggestions: "", drafts: "drafts", workflows: "workflows", schedules: "schedules", holds: "holds", agents: "configure" };
+const ROUTES: Routes = { suggestions: "", drafts: "drafts", workflows: "workflows", schedules: "schedules", cycles: "cycles", holds: "holds", agents: "configure" };
 const APP_PAGES = [
   { id: "suggestions", label: "Suggestions" },
   { id: "drafts", label: "Drafts" },
   { id: "workflows", label: "Workflows" },
   { id: "schedules", label: "Schedules" },
+  { id: "cycles", label: "Cycles" },
 ];
 const PAGES = [...APP_PAGES, ...STANDARD_PAGES.filter((p) => p.id in ROUTES)];
 
@@ -61,6 +63,8 @@ export function App() {
         return <Workflows openId={openWorkflow} stills={STILLS} />;
       case "schedules":
         return <Schedules agents={directory.agents} agentsLoading={directory.loading} />;
+      case "cycles":
+        return <Cycles />;
       case "holds":
         return <HoldsPage list={holds} only={nav.hold} empty="No calls wait for your approval." />;
       case "agents":

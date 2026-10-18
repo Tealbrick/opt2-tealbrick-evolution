@@ -45,3 +45,12 @@
 .page-desc { max-width: 62ch; }
 .detail .toolbar .tb-select { width: 220px; max-width: 100%; }
 .app-page > .toolbar .tb-field { width: 280px; max-width: 100%; }
+/* Cycles page (0.3.0): last-10 run ticks, the trend mark, the version timeline under a row */
+.ticks { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+.ticks .tb-tag { min-height: 24px; min-width: 24px; padding: 0 6px; font-size: var(--tb-text-tag); }
+.ticks .tb-tag.busy::before { display: none; }
+.trend { color: var(--tb-ink-soft); font-weight: var(--tb-weight-head); }
+.cycle-detail > td { padding-block: var(--tb-s3) var(--tb-s4); }
+.timeline { display: grid; gap: var(--tb-s3); list-style: none; padding: 0; margin: 0; }
+.timeline > li { display: grid; gap: 4px; }
+.timeline-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
