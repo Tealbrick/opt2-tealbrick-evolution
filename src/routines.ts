@@ -165,7 +165,9 @@ export function setAutomation(db: Db, input: AutomationInput, now: number = Date
     // The applied recipe version is the owner's statement: a new schedule starts at the pin or the active version; an edit
     // that does not name it keeps it (an edit of the project or the cron must not silently clear a policy_stale gate).
     const prior = input.id ? load(db, input.id) : null;
-    const policyVersion = input.policyVersion ?? (prior && prior.workflowId === wf.id && pin === prior.versionPin ? prior.policyVersion : (pin ?? wf.activeVersion));
+    // (also when the pin changes: a pinned schedule skips the gate, so keeping the value is safe, and unpinning must not
+    // jump to a wider active version)
+    const policyVersion = input.policyVersion ?? (prior && prior.workflowId === wf.id ? prior.policyVersion : (pin ?? wf.activeVersion));
     getVersion(db, wf.id, policyVersion);
     const cron = input.cron.trim().replace(/\s+/g, " ");
     const firstDue = next(cron, now);

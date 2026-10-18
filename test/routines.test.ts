@@ -224,8 +224,11 @@ test("an edit that does not name policyVersion keeps it (editing the project or 
   assert.deepEqual(r.listAutomations(db, D0)[0]?.warnings.map((w) => w.code), ["policy_stale"]);
   const fresh = daily(db);
   assert.equal(fresh.policyVersion, 1, "a new schedule starts at the active version of its own workflow");
-  const pinned = r.setAutomation(db, { id: e.id, revision: e.revision, workflowId: e.workflowId, agentId: BOUND.id, cron: e.cron, versionPin: 2 }, D0);
-  assert.equal(pinned.policyVersion, 2, "a changed pin starts at the pin");
+  const pinned = r.setAutomation(db, { id: e.id, revision: e.revision, workflowId: e.workflowId, agentId: BOUND.id, cron: e.cron, versionPin: 1 }, D0);
+  assert.equal(pinned.policyVersion, 1);
+  const unpinned = r.setAutomation(db, { id: e.id, revision: pinned.revision, workflowId: e.workflowId, agentId: BOUND.id, cron: e.cron, versionPin: null }, D0);
+  assert.equal(unpinned.policyVersion, 1, "unpinning keeps the applied recipe: it never jumps to the wider active version");
+  assert.deepEqual(r.listAutomations(db, D0).find((x) => x.id === e.id)?.warnings.map((w) => w.code), ["policy_stale"]);
 });
 
 test("a blank project stored by 0.2.12 reads as none (warning, no Task Board call with a blank project)", () => {

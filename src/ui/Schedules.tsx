@@ -297,7 +297,14 @@ export function EditSchedule({
       setWorking(false);
     }
   };
-  const versions = Array.from({ length: Math.max(activeVersion, a.policyVersion) }, (_, i) => String(i + 1));
+  // the newest version, read when the dialog opens (a version promoted after the page loaded is offered too)
+  const [latest, setLatest] = useState(activeVersion);
+  useEffect(() => {
+    person("workflow_versions", { workflowId: a.workflowId })
+      .then((r) => setLatest(r.workflow.activeVersion))
+      .catch(() => {});
+  }, [a.workflowId]);
+  const versions = Array.from({ length: Math.max(latest, activeVersion, a.policyVersion) }, (_, i) => String(i + 1));
   return (
     <Dialog
       open
