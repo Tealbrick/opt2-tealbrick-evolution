@@ -26,7 +26,7 @@ Known edge cases of the ledger (accepted for 0.3.0):
 - A duplicate claim whose two runs belong to different versions (a schedule edit across a promotion) is counted in neither cycle: `duplicateClaims` counts (schedule, due time) pairs inside one cycle.
 - 0.2.x `missed` rows have no version; they go to the version active at their due time, also for a PINNED schedule (whose real version was the pin). From 0.3.0 missed rows store their version.
 - `cycles_list` answers at most 500 cycles (newest promotion first); older cycles are left out of the list (`cycle_get` still reads them).
-- `durationP50Ms` leaves out runs whose Task Board close was synced (the sync moves updated_at).
+- `durationP50Ms` uses `reported_at` (set by the runner's terminal report, never by the sweep; the Task Board close moves only `updated_at`). Rows from before 0.3.0 have none and are left out, so early cycles show few or no durations.
 - `workflowTitle` may come from a Kanban-derived suggestion title (C88): owner-only, like `workflows_list`. The ledger has no Kanban evidence titles.
 - The closing eval at promotion is best effort (savepoint): if it fails, the promotion stands and the cycle has no stored closing eval.
 
@@ -51,14 +51,14 @@ None. No keys. Default agent harness choice in the UI is "Other agent (MCP)".
 
 ## Data
 
-- **Stored:** Migrations 0001 to 0005 (0004 rebuilds `routine_runs` with the `policy_stale` status, rows unchanged; 0005 adds `eval_runs`; `test/upgrade.test.ts`, `scripts/upgrade-check.ts`): `suggestions`, `suggestion_events`, `detector_covered`, `drafts`, `workflows`, `workflow_versions` (immutable snapshots), `agent_names`, `automations`, `routine_runs`, `detector_state`, `eval_runs` (stored cycle evals: verdict and `tealbrick.eval/1` results, no Kanban titles). The cycle ledger is not stored: it is computed on read. Kanban issue titles are stored as suggestion evidence and shown to the owner only (a workflow title made from a detector suggestion can carry one; `cycles_list` shows it to the owner only).
+- **Stored:** Migrations 0001 to 0005 (0004 rebuilds `routine_runs` with the `policy_stale` status, rows unchanged; 0005 adds `eval_runs` and the nullable `routine_runs.reported_at`, null on old rows; `test/upgrade.test.ts`, `scripts/upgrade-check.ts`): `suggestions`, `suggestion_events`, `detector_covered`, `drafts`, `workflows`, `workflow_versions` (immutable snapshots), `agent_names`, `automations`, `routine_runs`, `detector_state`, `eval_runs` (stored cycle evals: verdict and `tealbrick.eval/1` results, no Kanban titles). The cycle ledger is not stored: it is computed on read. Kanban issue titles are stored as suggestion evidence and shown to the owner only (a workflow title made from a detector suggestion can carry one; `cycles_list` shows it to the owner only).
 - **Never stored:** Anything from Kanban beyond the evidence the owner reviews.
 
 ## External calls and background work
 
 - **External:** None (only the Kanban companion).
 - **Background:** The Kanban detector: first scan 60 s after start, then every 15 minutes (`DETECTOR_REFRESH_MS`), and on demand.
-- **CI evals (T1):** `eval/run.ts` (`tealbrick-ci.json` `preReleaseChecks`): the detector corpus (every case must match; known misses reported; precision and recall 1.0, the measured baseline) and the cycle gate corpus, synthetic fixtures only, no model.
+- **CI evals (T1):** `eval/run.ts` (`tealbrick-ci.json` `preReleaseChecks`): the detector corpus (every case must match; in the 3 known-miss cases only missing gold groups are tolerated, a full match fails; precision and recall 1.0, the measured baseline) and the cycle gate corpus, synthetic fixtures only, no model.
 
 ## Person UI
 

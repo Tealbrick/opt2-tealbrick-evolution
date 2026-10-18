@@ -24,6 +24,8 @@ export interface LedgerRun {
   workflowVersion: number | null;
   claimedAt: number | null;
   updatedAt: number;
+  /** when the runner's terminal report arrived (0.3.0; null for older rows and for swept runs) */
+  reportedAt: number | null;
   kanbanIssueId: string | null;
   kanbanSync: string;
 }
@@ -91,14 +93,9 @@ export function effectiveStatus(r: LedgerRun, now: number): RunStatus {
   return isStale(r.status, r.updatedAt, now) ? "uncertain" : r.status;
 }
 
-/** The Task Board close of this run was attempted after its report (done, or failed on an issue that exists): setKanban
- *  moved updated_at to that moment, so updated_at - claimed_at is no longer the run's duration. */
-function closeSynced(r: LedgerRun): boolean {
-  return r.kanbanSync === "done" || (r.kanbanSync === "failed" && r.kanbanIssueId !== null);
-}
-
-/** Counts, ratios and medians of one cycle's runs. Pure. durationP50Ms leaves out runs whose Task Board close was
- *  synced (closeSynced): their updated_at includes the sync lag. */
+/** Counts, ratios and medians of one cycle's runs. Pure. durationP50Ms = reported_at - claimed_at of completed / failed
+ *  runs with a reported_at (not updated_at: the Task Board close sync moves that later); rows without one (before
+ *  0.3.0) are left out. */
 export function runStats(runs: readonly LedgerRun[], now: number): RunStats {
   const counts: RunCounts = { total: runs.length, completed: 0, failed: 0, uncertain: 0, missed: 0, policyStale: 0, open: 0 };
   const latency: number[] = [];
@@ -115,7 +112,7 @@ export function runStats(runs: readonly LedgerRun[], now: number): RunStats {
     else if (s === "policy_stale") counts.policyStale++;
     else counts.open++;
     if (r.claimedAt !== null) latency.push(r.claimedAt - r.dueAt);
-    if ((r.status === "completed" || r.status === "failed") && r.claimedAt !== null && !closeSynced(r)) duration.push(r.updatedAt - r.claimedAt);
+    if ((r.status === "completed" || r.status === "failed") && r.claimedAt !== null && r.reportedAt !== null) duration.push(r.reportedAt - r.claimedAt);
     if (TERMINAL.has(s) && r.kanbanIssueId !== null) {
       kanbanTerminal++;
       if (r.kanbanSync === "done") kanbanDone++;
@@ -192,7 +189,7 @@ function versionRows(db: Db, workflowId: string): VersionRow[] {
 
 function runsOf(db: Db, workflowId: string): LedgerRun[] {
   return db
-    .prepare("SELECT automation_id, due_at, status, workflow_version, claimed_at, updated_at, kanban_issue_id, kanban_sync FROM routine_runs WHERE workflow_id = ?")
+    .prepare("SELECT automation_id, due_at, status, workflow_version, claimed_at, updated_at, reported_at, kanban_issue_id, kanban_sync FROM routine_runs WHERE workflow_id = ?")
     .all(workflowId)
     .map((r) => ({
       automationId: String(r.automation_id),
@@ -201,6 +198,7 @@ function runsOf(db: Db, workflowId: string): LedgerRun[] {
       workflowVersion: r.workflow_version === null ? null : Number(r.workflow_version),
       claimedAt: r.claimed_at === null ? null : Number(r.claimed_at),
       updatedAt: Number(r.updated_at),
+      reportedAt: r.reported_at === null || r.reported_at === undefined ? null : Number(r.reported_at),
       kanbanIssueId: r.kanban_issue_id === null ? null : String(r.kanban_issue_id),
       kanbanSync: String(r.kanban_sync),
     }));

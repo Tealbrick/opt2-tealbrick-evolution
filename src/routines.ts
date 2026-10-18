@@ -548,7 +548,11 @@ export function report(db: Db, callerId: string, occurrence: string, status: Rep
     if (run.status === status) return { run, changed: false };
     if (!NEXT_STATUS[run.status].includes(status)) throw new StoreError("conflict", `A ${run.status} run cannot become ${status}.`, { status: run.status });
     const sync = TERMINAL.has(status) && run.kanbanIssueId ? "pending" : run.kanbanSync;
-    db.prepare("UPDATE routine_runs SET status = ?, summary = COALESCE(?, summary), kanban_sync = ?, updated_at = ? WHERE occurrence = ?").run(status, summary, sync, now, occurrence);
+    // reported_at (0.3.0): the moment of the runner's terminal report, for the cycle ledger's duration (updated_at moves
+    // again when the Task Board issue is closed; the sweep never sets reported_at)
+    db.prepare(
+      "UPDATE routine_runs SET status = ?, summary = COALESCE(?, summary), kanban_sync = ?, updated_at = ?, reported_at = CASE WHEN ? THEN ? ELSE reported_at END WHERE occurrence = ?",
+    ).run(status, summary, sync, now, TERMINAL.has(status) ? 1 : 0, now, occurrence);
     return { run: getRun(db, occurrence) as Run, changed: true };
   });
 }

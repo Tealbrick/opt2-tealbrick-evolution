@@ -70,7 +70,19 @@ const after = tables();
 for (const name of before.keys()) assert.ok(after.has(name), `table ${name} is still there`);
 const added = [...after.keys()].filter((k) => !before.has(k));
 for (const name of added) assert.equal(after.get(name)?.length, 0, `new table ${name} starts empty`);
-for (const [name, rows] of before) assert.deepEqual(after.get(name), rows, `table ${name}: every row unchanged`);
+// columns a migration adds to an existing table (0005: routine_runs.reported_at) must be null on every old row; every
+// other value must be unchanged
+const addedColumns: string[] = [];
+for (const [name, rows] of before) {
+  const now = (after.get(name) ?? []) as Record<string, unknown>[];
+  const was = rows as Record<string, unknown>[];
+  const extra = now.length ? Object.keys(now[0] as object).filter((k) => !(was[0] && k in (was[0] as object))) : [];
+  if (was.length) for (const k of extra) addedColumns.push(`${name}.${k}`);
+  for (const r of now) for (const k of extra) assert.equal(r[k], null, `table ${name}: new column ${k} is null on old rows`);
+  // node:sqlite rows have a null prototype: keep it, so only the values are compared
+  const strip = now.map((r) => Object.assign(Object.create(null), Object.fromEntries(Object.entries(r).filter(([k]) => !extra.includes(k)))));
+  assert.deepEqual(strip, was, `table ${name}: every row unchanged`);
+}
 assert.deepEqual(db.prepare("PRAGMA foreign_key_check").all(), [], "foreign keys");
 assert.equal((db.prepare("PRAGMA integrity_check").get() as Record<string, string>).integrity_check, "ok", "integrity");
 const idx = (db.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'routine_runs' AND name NOT LIKE 'sqlite_%' ORDER BY name").all() as { name: string }[]).map((x) => x.name);
@@ -83,6 +95,7 @@ console.log(
       check: `evolution upgrade from app schema ${from} to ${files.length}`,
       applied: pending.map((f) => f.file),
       addedTables: added,
+      addedColumns,
       rows: Object.fromEntries([...before].map(([k, v]) => [k, v.length])),
       runStatuses: statusesBefore,
       result: "pass",

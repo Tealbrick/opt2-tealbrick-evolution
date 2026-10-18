@@ -204,7 +204,7 @@ test("ratios, medians and the Task Board close ratio", () => {
   assert.deepEqual(c?.counts, { total: 5, completed: 2, failed: 1, uncertain: 1, missed: 1, policyStale: 0, open: 0 });
   assert.deepEqual([c?.completedRatio, c?.failedRatio, c?.uncertainRatio, c?.missedRatio], [0.5, 0.25, 0.25, 0.2]);
   assert.equal(c?.claimLatencyP50Ms, 20_000, "median of 10, 20, 40, 90 s (lower middle)");
-  assert.equal(c?.durationP50Ms, null, "every completed / failed run here had its Task Board close synced");
+  assert.equal(c?.durationP50Ms, null, "rows without reported_at (written before 0.3.0) are left out");
   assert.equal(c?.kanbanClosedRatio, 0.666667, "2 of 3 terminal runs with an issue");
   assert.deepEqual(c?.last10, ["missed", "uncertain", "failed", "completed", "completed"]);
   const [empty] = cycles.workflowCycles(db, workflow(db).id, NOW);
@@ -212,25 +212,35 @@ test("ratios, medians and the Task Board close ratio", () => {
   assert.equal(empty?.evalLive.verdict, "insufficient");
 });
 
-test("duration median: completed / failed runs only, and never a run whose Task Board close moved updated_at", () => {
+test("duration = reported_at - claimed_at of the runner's report; a Task Board close after the report does not change it", () => {
   const db = migratedDb();
   const wf = workflow(db);
-  const a = r.setAutomation(db, { workflowId: wf.id, agentId: BOUND.id, cron: "0 8 * * *" }, D0);
-  const run = (n: number, status: "completed" | "failed", secs: number, issue: string | null, sync: string): RunRow => ({
-    status,
-    due: day(n),
-    claimedAt: day(n),
-    updatedAt: day(n) + secs * 1000,
-    issue,
-    sync,
+  r.setAutomation(db, { workflowId: wf.id, agentId: BOUND.id, cron: "0 8 * * *" }, D0);
+  const reportedAt = (occ: string) => (db.prepare("SELECT reported_at FROM routine_runs WHERE occurrence = ?").get(occ) as { reported_at: number | null }).reported_at;
+  const occs: string[] = [];
+  [60, 120, 300].forEach((secs, k) => {
+    const t = day(1 + k) + 30_000;
+    const occ = r.dueJobs(db, BOUND.id, t)[0]?.occurrence as string;
+    assert.equal(r.claim(db, BOUND, occ, t).claimed, true);
+    assert.equal(r.report(db, BOUND.id, occ, "dispatched", null, t + 1000).run.status, "dispatched");
+    assert.equal(reportedAt(occ), null, "dispatched is not a terminal report");
+    r.report(db, BOUND.id, occ, k === 1 ? "failed" : "completed", null, t + secs * 1000);
+    assert.equal(reportedAt(occ), t + secs * 1000);
+    occs.push(occ);
   });
-  insertRuns(db, wf.id, a.id, [run(2, "completed", 60, null, "none"), run(3, "failed", 120, "iss_2", "pending"), run(4, "completed", 300, null, "failed")]);
-  assert.equal(cycles.workflowCycles(db, wf.id, NOW)[0]?.durationP50Ms, 120_000, "quiet: 60, 120, 300 s (a failed issue create keeps the duration)");
-  // closes synced hours later (done, or a failed close of an existing issue): left out, so the median does not move
-  insertRuns(db, wf.id, a.id, [run(5, "completed", 7200, "iss_5", "done"), run(6, "completed", 9000, "iss_6", "done"), run(7, "failed", 8000, "iss_7", "failed")]);
-  const [c] = cycles.workflowCycles(db, wf.id, NOW);
-  assert.equal(c?.durationP50Ms, 120_000, "fires if the sync lag counts: the median would be 2 h");
-  assert.equal(c?.counts.completed, 4, "the runs still count");
+  assert.equal(cycles.workflowCycles(db, wf.id, NOW)[0]?.durationP50Ms, 120_000, "quiet: 60, 120, 300 s");
+  // the Task Board issues are closed hours later (setKanban moves updated_at): the duration must not move
+  for (const occ of occs) r.setKanban(db, occ, "iss_1", "done", day(5));
+  assert.equal(cycles.workflowCycles(db, wf.id, NOW)[0]?.durationP50Ms, 120_000, "fires on updated_at: the median would be days");
+
+  // a run the sweep makes uncertain has no reported_at; a late report of the runner sets it
+  const t = day(4) + 30_000;
+  const occ = r.dueJobs(db, BOUND.id, t)[0]?.occurrence as string;
+  r.claim(db, BOUND, occ, t);
+  assert.equal(r.sweep(db, t + r.CLAIMED_TIMEOUT_MS + 1), 1);
+  assert.equal(reportedAt(occ), null, "the sweep is not a report");
+  r.report(db, BOUND.id, occ, "completed", "late", t + 3_600_000);
+  assert.equal(reportedAt(occ), t + 3_600_000);
 });
 
 test("promote of version n+1 stores the closing eval of version n in the same transaction; version 1 stores none", () => {
@@ -265,7 +275,7 @@ test("the closing eval is best effort: an eval that throws never fails the promo
   assert.equal(store.getWorkflow(db, wf.id).activeVersion, 2);
   assert.equal(store.getDraft(db, d.id).state, "promoted", "the promotion's own writes are kept");
   assert.equal((db.prepare("SELECT count(*) AS n FROM eval_runs").get() as { n: number }).n, 0, "no eval row");
-  assert.deepEqual(warned, [{ msg: "closing eval not stored", f: { workflowId: wf.id, version: 1, error: "Error" } }]);
+  assert.deepEqual(warned, [{ msg: "closing eval not stored", f: { workflowId: wf.id, version: 1, error: "Error", message: "eval store down" } }]);
   // without a logger it is dropped too (store-level callers)
   db.exec("DROP TRIGGER no_evals");
   db.exec("CREATE TRIGGER no_evals BEFORE INSERT ON eval_runs BEGIN SELECT RAISE(ABORT, 'eval store down'); END");

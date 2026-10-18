@@ -2,8 +2,9 @@
 // 0.2.12 schema (migrations 0001-0003) with a run in every 0.2.12 status and every Kanban sync state, then 0004. Every
 // row of every table must be byte-equal after it, the indexes and constraints must be back, and the 0.2.13 code must
 // work on the result. `scripts/upgrade-check.ts` runs the same comparison on a COPY of a real 0.2.12 data file.
-// C250 Release B: 0005 adds eval_runs on 0.2.13 data (0001-0004, a run in every status incl. policy_stale and missed
-// rows without a version): every existing row unchanged, and the 0.3.0 ledger reads the old rows.
+// C250 Release B: 0005 adds eval_runs and routine_runs.reported_at on 0.2.13 data (0001-0004, a run in every status
+// incl. policy_stale and missed rows without a version): every existing value unchanged, the new column null, and the
+// 0.3.0 ledger reads the old rows.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
@@ -150,7 +151,7 @@ function seed0213(raw: DatabaseSync): void {
     .run(r.occurrenceOf(a?.id as string, a?.revision as number, due), a?.id as string, a?.revision as number, due, wf?.id as string, due);
 }
 
-test("0005 on 0.2.13 data: every row unchanged, eval_runs and its indexes and constraints exist", () => {
+test("0005 on 0.2.13 data: every row unchanged (reported_at null), eval_runs and its indexes and constraints exist", () => {
   const raw = new DatabaseSync(":memory:");
   seed0213(raw);
   const before = tables(raw);
@@ -161,6 +162,10 @@ test("0005 on 0.2.13 data: every row unchanged, eval_runs and its indexes and co
   const after = tables(raw);
   assert.deepEqual(after.eval_runs, []);
   delete after.eval_runs;
+  // routine_runs gains reported_at: null on every old row; every other value unchanged
+  const runs = after.routine_runs as Record<string, unknown>[];
+  assert.ok(runs.every((x) => "reported_at" in x && x.reported_at === null), "new column, null on old rows");
+  after.routine_runs = runs.map(({ reported_at: _r, ...rest }) => Object.assign(Object.create(null), rest)); // node:sqlite rows have a null prototype
   assert.deepEqual(after, before, "same tables (plus eval_runs), same rows, same order");
   const idx = (raw.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'eval_runs' AND name NOT LIKE 'sqlite_%' ORDER BY name").all() as { name: string }[]).map((x) => x.name);
   assert.deepEqual(idx, ["eval_runs_by_cycle", "eval_runs_by_key"]);

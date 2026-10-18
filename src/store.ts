@@ -439,7 +439,14 @@ export function promote(db: Db, draftId: string, revision: number, now: number =
       try {
         db.transaction(() => storeEval(db, closed, version - 1, "promotion", now));
       } catch (e) {
-        opts.log?.warn("closing eval not stored", { workflowId: closed, version: version - 1, error: e instanceof Error ? e.name : "unknown" });
+        // ids, the error's own message and a store code only: no Task Board data reaches the log
+        opts.log?.warn("closing eval not stored", {
+          workflowId: closed,
+          version: version - 1,
+          error: e instanceof Error ? e.name : "unknown",
+          message: e instanceof Error ? e.message : String(e),
+          ...(e instanceof StoreError ? { code: e.code } : {}),
+        });
       }
     }
     return { workflow: getWorkflow(db, workflowId), version: getVersion(db, workflowId, version) };

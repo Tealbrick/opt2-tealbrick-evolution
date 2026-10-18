@@ -3,7 +3,7 @@
 -- suggestions and routine_runs (no copy that can go stale); only an eval verdict at a point in time is stored here:
 -- the closing eval of version n when version n+1 is promoted (trigger 'promotion', same transaction) and an eval the
 -- owner stores with cycle_eval_run (trigger 'owner'). results = JSON [tealbrick.eval/1 result]. Forward only: a new
--- table, no existing row changes.
+-- table and one new nullable column; no existing value changes.
 CREATE TABLE eval_runs (
   id TEXT PRIMARY KEY,               -- evr_<ulid>
   workflow_id TEXT NOT NULL REFERENCES workflows (id),
@@ -19,3 +19,8 @@ CREATE TABLE eval_runs (
 );
 CREATE INDEX eval_runs_by_cycle ON eval_runs (workflow_id, version, created_at DESC);
 CREATE UNIQUE INDEX eval_runs_by_key ON eval_runs (idempotency_key) WHERE idempotency_key IS NOT NULL;
+
+-- When the runner's terminal report arrived (routine_report: completed / failed / uncertain); null for rows before 0.3.0
+-- and for runs the sweep made uncertain. The ledger's duration is reported_at - claimed_at: updated_at also moves when
+-- the run's Task Board issue is closed.
+ALTER TABLE routine_runs ADD COLUMN reported_at INTEGER;
