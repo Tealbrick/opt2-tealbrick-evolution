@@ -1,0 +1,17 @@
+{
+  "schema": "evolution.eval-thresholds/1",
+  "note": "The single source of the eval thresholds (G6 §6.0, C250 Release B). src/evals.ts reads the cycle block; eval/run.ts reads both. A cycle metric below its minSample answers pass null (not enough data).",
+  "detector": {
+    "precision": 0.9,
+    "recall": 0.8,
+    "baseline": { "precision": 1, "recall": 1, "measured": "2026-10-18", "note": "Measured on eval/cases/detector with the 0.2.13 detector. Near-duplicates it misses (word order, plural, typo) have expected [] and a note: they are E5 targets, not counted as misses yet." }
+  },
+  "cycle": {
+    "duplicate_claims": { "max": 0 },
+    "uncertain_ratio": { "max": 0.05, "minSample": 5 },
+    "completed_ratio": { "min": 0.8, "minSample": 5 },
+    "completed_ratio_drop": { "max": 0.1, "minSample": 5 },
+    "missed_ratio": { "max": 0.2, "minSample": 5 },
+    "policy_stale_runs": {}
+  }
+}

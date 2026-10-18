@@ -2,6 +2,8 @@
 // 0.2.12 schema (migrations 0001-0003) with a run in every 0.2.12 status and every Kanban sync state, then 0004. Every
 // row of every table must be byte-equal after it, the indexes and constraints must be back, and the 0.2.13 code must
 // work on the result. `scripts/upgrade-check.ts` runs the same comparison on a COPY of a real 0.2.12 data file.
+// C250 Release B: 0005 adds eval_runs on 0.2.13 data (0001-0004, a run in every status incl. policy_stale and missed
+// rows without a version): every existing row unchanged, and the 0.3.0 ledger reads the old rows.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
@@ -10,6 +12,7 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import type { Caller, Db } from "@opt2-tealbrick/miniapp-sdk";
 import { migrationsDir } from "../src/app.ts";
+import * as cycles from "../src/cycles.ts";
 import * as r from "../src/routines.ts";
 import * as store from "../src/store.ts";
 import { AGENT_A } from "./helpers.ts";
@@ -115,13 +118,76 @@ test("the 0.2.13 code works on migrated 0.2.12 data", () => {
   assert.equal(r.claim(db, BOUND, job?.occurrence as string, now).claimed, true, "the schedule runs on");
 });
 
-test("the migration files are gap-free and 0001-0003 are unchanged since 0.2.12 (the SDK refuses a changed file)", () => {
-  assert.deepEqual(files, ["0001_init.sql", "0002_routines.sql", "0003_detector_state.sql", "0004_policy_stale_runs.sql"]);
-  // sha256 of the files in tag v0.2.12 (the SDK stores these in tb_migrations and refuses a changed applied file)
-  const V0212: Record<string, string> = {
+test("the migration files are gap-free and 0001-0004 are unchanged since 0.2.13 (the SDK refuses a changed file)", () => {
+  assert.deepEqual(files, ["0001_init.sql", "0002_routines.sql", "0003_detector_state.sql", "0004_policy_stale_runs.sql", "0005_eval_runs.sql"]);
+  // sha256 of the files in tags v0.2.12 / v0.2.13 (the SDK stores these in tb_migrations and refuses a changed applied file)
+  const RELEASED: Record<string, string> = {
     "0001_init.sql": "61853b592934920222d86bd1ec3d658822aa3307eec6d7faa2888f4a97615a68",
     "0002_routines.sql": "fb84ff74b28f2d82740b0a7065890faa8a181f07ac5f76cb330921784061f7da",
     "0003_detector_state.sql": "81cc359d49e0a1690a9e7adad321ba6a57882b667d558448219c91169cef98f7",
+    "0004_policy_stale_runs.sql": "97acdd6d8bfbae587ec4aa2e95ca29c50ac62447b7d9151db8c447baf2cda6ad",
   };
-  for (const [f, sum] of Object.entries(V0212)) assert.equal(createHash("sha256").update(readFileSync(join(migrationsDir, f))).digest("hex"), sum, f);
+  for (const [f, sum] of Object.entries(RELEASED)) assert.equal(createHash("sha256").update(readFileSync(join(migrationsDir, f))).digest("hex"), sum, f);
+});
+
+/** 0.2.13 data: the 0.2.12 rows above migrated by 0004, plus a policy_stale run and a v2 promoted after the runs. */
+function seed0213(raw: DatabaseSync): void {
+  seed0212(raw);
+  raw.exec(readFileSync(join(migrationsDir, "0004_policy_stale_runs.sql"), "utf8"));
+  const db = dbAt(raw);
+  const [wf] = store.listWorkflows(db);
+  const d = store.getDraft(db, wf?.draftId as string);
+  const u = store.updateDraft(db, d.id, d.revision, { instruction: "Roll up, v2." }, D0);
+  // 0.2.13 promote (no eval_runs yet): the version row only
+  raw
+    .prepare("INSERT INTO workflow_versions (workflow_id, version, snapshot, draft_id, draft_revision, promoted_at) VALUES (?, 2, ?, ?, ?, ?)")
+    .run(wf?.id as string, JSON.stringify(store.snapshotOf(u)), d.id, u.revision, T("2026-10-05T12:00:00Z"));
+  raw.prepare("UPDATE workflows SET active_version = 2 WHERE id = ?").run(wf?.id as string);
+  const [a] = r.listAutomations(db, D0);
+  const due = T("2026-10-08T08:00:00Z");
+  raw
+    .prepare("INSERT INTO routine_runs (occurrence, automation_id, revision, due_at, status, workflow_id, workflow_version, summary, updated_at) VALUES (?, ?, ?, ?, 'policy_stale', ?, 2, 'skipped', ?)")
+    .run(r.occurrenceOf(a?.id as string, a?.revision as number, due), a?.id as string, a?.revision as number, due, wf?.id as string, due);
+}
+
+test("0005 on 0.2.13 data: every row unchanged, eval_runs and its indexes and constraints exist", () => {
+  const raw = new DatabaseSync(":memory:");
+  seed0213(raw);
+  const before = tables(raw);
+  assert.equal((before.routine_runs as unknown[]).length, 7);
+  raw.exec("BEGIN");
+  raw.exec(readFileSync(join(migrationsDir, "0005_eval_runs.sql"), "utf8"));
+  raw.exec("COMMIT");
+  const after = tables(raw);
+  assert.deepEqual(after.eval_runs, []);
+  delete after.eval_runs;
+  assert.deepEqual(after, before, "same tables (plus eval_runs), same rows, same order");
+  const idx = (raw.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'eval_runs' AND name NOT LIKE 'sqlite_%' ORDER BY name").all() as { name: string }[]).map((x) => x.name);
+  assert.deepEqual(idx, ["eval_runs_by_cycle", "eval_runs_by_key"]);
+  assert.deepEqual(raw.prepare("PRAGMA foreign_key_check").all(), []);
+  assert.equal((raw.prepare("PRAGMA integrity_check").get() as Record<string, string>).integrity_check, "ok");
+  const wf = (before.workflows as { id: string }[])[0]?.id as string;
+  const ins = raw.prepare('INSERT INTO eval_runs (id, workflow_id, version, suite, tier, verdict, results, app_version, "trigger", idempotency_key, created_at) VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, ?, 0)');
+  ins.run("evr_1", wf, "s", "T2", "pass", "[]", "0.3.0", "owner", "key-1");
+  assert.throws(() => ins.run("evr_2", wf, "s", "T2", "maybe", "[]", "0.3.0", "owner", null), /CHECK constraint/);
+  assert.throws(() => ins.run("evr_3", wf, "s", "T2", "pass", "[]", "0.3.0", "timer", null), /CHECK constraint/);
+  assert.throws(() => ins.run("evr_4", "wfl_missing", "s", "T2", "pass", "[]", "0.3.0", "owner", null), /FOREIGN KEY/);
+  assert.throws(() => ins.run("evr_5", wf, "s", "T2", "pass", "[]", "0.3.0", "owner", "key-1"), /UNIQUE/, "one eval per idempotency key");
+  ins.run("evr_6", wf, "s", "T2", "pass", "[]", "0.3.0", "owner", null);
+  ins.run("evr_7", wf, "s", "T2", "pass", "[]", "0.3.0", "owner", null);
+});
+
+test("the 0.3.0 ledger reads migrated 0.2.13 rows: version-less missed rows go to the version active at their due time", () => {
+  const raw = new DatabaseSync(":memory:");
+  seed0213(raw);
+  raw.exec(readFileSync(join(migrationsDir, "0005_eval_runs.sql"), "utf8"));
+  const db = dbAt(raw);
+  const now = T("2026-10-12T08:00:30Z");
+  const [v1, v2] = cycles.workflowCycles(db, store.listWorkflows(db)[0]?.id as string, now);
+  // 0.2.12 rows: every run of version 1 (the seed stored version 1 on claimed runs); the missed row (due 10-06, no
+  // version) belongs to v2, promoted 10-05; the policy_stale row names v2
+  assert.deepEqual(v1?.counts, { total: 5, completed: 1, failed: 1, uncertain: 3, missed: 0, policyStale: 0, open: 0 });
+  assert.deepEqual(v2?.counts, { total: 2, completed: 0, failed: 0, uncertain: 0, missed: 1, policyStale: 1, open: 0 });
+  assert.equal(v1?.retiredAt, v2?.promotedAt);
+  assert.equal(v2?.active, true);
 });

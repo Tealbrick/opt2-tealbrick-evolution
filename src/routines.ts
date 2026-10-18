@@ -331,7 +331,8 @@ export function listRuns(db: Db, f: { automationId?: string; limit: number }, no
   return rows.map(toRun).map((r) => (isStale(r.status, Date.parse(r.updatedAt), now) ? { ...r, status: "uncertain" as const } : r));
 }
 
-function isStale(status: string, updatedAt: number, now: number): boolean {
+/** The one stale rule: listRuns shows these as uncertain, sweep stores it, the cycle ledger counts them so. */
+export function isStale(status: string, updatedAt: number, now: number): boolean {
   return (status === "claimed" && now - updatedAt > CLAIMED_TIMEOUT_MS) || (status === "dispatched" && now - updatedAt > DISPATCHED_TIMEOUT_MS);
 }
 
@@ -460,10 +461,30 @@ function resolveVersionAt(db: Db, workflowId: string, version: number): Version 
   }
 }
 
+/** The version a due time of this schedule resolves to: the pin, else the version that was active at `dueAt` (the
+ *  ledger rule of src/cycles.ts), else the active one. */
+function versionAtDue(db: Db, a: Row, dueAt: number): number | null {
+  if (a.versionPin !== null) return a.versionPin;
+  const r = db.prepare("SELECT max(version) AS v FROM workflow_versions WHERE workflow_id = ? AND promoted_at <= ?").get(a.workflowId, dueAt);
+  if (r && r.v !== null) return Number(r.v);
+  return resolveVersion(db, a)?.version ?? null;
+}
+
+/** 0.3.0 (C250 Release B): a missed row also stores the version it belongs to (0.2.x rows have none; the cycle ledger
+ *  attributes those by due time). */
 function recordMissed(db: Db, a: Row, dueAt: number, now: number): void {
   db.prepare(
-    "INSERT OR IGNORE INTO routine_runs (occurrence, automation_id, revision, due_at, status, workflow_id, summary, updated_at) VALUES (?, ?, ?, ?, 'missed', ?, ?, ?)",
-  ).run(occurrenceOf(a.id, a.revision, dueAt), a.id, a.revision, dueAt, a.workflowId, "Not claimed within the misfire grace; later periods collapsed into this record.", now);
+    "INSERT OR IGNORE INTO routine_runs (occurrence, automation_id, revision, due_at, status, workflow_id, workflow_version, summary, updated_at) VALUES (?, ?, ?, ?, 'missed', ?, ?, ?, ?)",
+  ).run(
+    occurrenceOf(a.id, a.revision, dueAt),
+    a.id,
+    a.revision,
+    dueAt,
+    a.workflowId,
+    versionAtDue(db, a, dueAt),
+    "Not claimed within the misfire grace; later periods collapsed into this record.",
+    now,
+  );
 }
 
 /** The due occurrence `dueAt` of a policy-stale version: the pending due time moves to the next period, like a claim.

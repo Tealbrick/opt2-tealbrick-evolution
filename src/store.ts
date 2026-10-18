@@ -2,9 +2,11 @@
 // against a migrated database. State machine (harvest of the v1 runtime store):
 //   suggestion  open → approved | rejected | archived   (approved/rejected → archived; rejected → approved on review)
 //   draft       open ⇄ promoted                          (any edit returns it to open; promotion snapshots it)
-//   workflow    versions 1..n, immutable; active = latest promoted
+//   workflow    versions 1..n, immutable; active = latest promoted; promoting n+1 closes the cycle of n and stores its
+//               eval in the same transaction (src/cycles.ts, eval_runs trigger 'promotion')
 import { ulid } from "@opt2-tealbrick/manifest";
 import type { Db } from "@opt2-tealbrick/miniapp-sdk";
+import { storeEval } from "./cycles.ts";
 import { type Allowed, checkPromotable, normalizeAllowed, normalizeSteps, type Snapshot, type Step, type StepInput, sameSnapshot } from "./model.ts";
 
 export type SuggestionStatus = "open" | "approved" | "rejected" | "archived";
@@ -386,7 +388,8 @@ export function listVersions(db: Db, workflowId: string): Version[] {
   return db.prepare("SELECT * FROM workflow_versions WHERE workflow_id = ? ORDER BY version").all(workflowId).map(toVersion);
 }
 
-/** Draft → permanent workflow: version 1 on first promotion, then the next version of the same workflow. */
+/** Draft → permanent workflow: version 1 on first promotion, then the next version of the same workflow, which closes
+ *  the previous version's cycle: its closing eval is stored in the same transaction. */
 export function promote(db: Db, draftId: string, revision: number, now: number = Date.now()): { workflow: Workflow; version: Version } {
   return db.transaction(() => {
     const d = getDraft(db, draftId);
@@ -423,6 +426,7 @@ export function promote(db: Db, draftId: string, revision: number, now: number =
       now,
     );
     db.prepare("UPDATE drafts SET workflow_id = ?, state = 'promoted', promoted_version = ?, updated_at = ? WHERE id = ?").run(workflowId, version, now, draftId);
+    if (version > 1) storeEval(db, workflowId, version - 1, "promotion", now);
     return { workflow: getWorkflow(db, workflowId), version: getVersion(db, workflowId, version) };
   });
 }

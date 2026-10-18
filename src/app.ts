@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import { type AppDefinition, type Caller, type Db, defineApp, type HandlerSpec, type OpContext, type SdkAppDefinition, type SdkOpContext, TbError } from "@opt2-tealbrick/miniapp-sdk";
 import type * as K from "#kit";
 import { OP, type OpId } from "#kit";
+import * as cycles from "./cycles.ts";
 import { DEFAULT_MIN_REPEATS, KANBAN } from "./detector.ts";
 import { ALLOWLIST_NOTICE, allowedFromSteps, diffNotice, diffSnapshots, ModelError, type Snapshot } from "./model.ts";
 import { buildRecipe } from "./recipe.ts";
@@ -352,6 +353,26 @@ export const handlers = {
   [OP.runsList]: op<K.RunsListInput, K.RunsListOutput>({
     async run(input, ctx) {
       return { runs: routines.listRuns(ctx.db, { automationId: input.automationId, limit: input.limit ?? 50 }) };
+    },
+  }),
+
+  // ── cycles (0.3.0, C250 Release B): ledger computed on read, evals live; stored evals in eval_runs ──
+  [OP.cyclesList]: op<K.CyclesListInput, K.CyclesListOutput>({
+    async run(input, ctx) {
+      return { cycles: cycles.listCycles(ctx.db, { workflowId: input.workflowId }) };
+    },
+  }),
+  [OP.cycleGet]: op<K.CycleGetInput, K.CycleGetOutput>({
+    async run(input, ctx) {
+      return { cycle: cycles.getCycle(ctx.db, input.workflowId, input.version), evals: cycles.storedEvals(ctx.db, input.workflowId, input.version) };
+    },
+  }),
+  [OP.cycleEvalRun]: op<K.CycleEvalRunInput, K.CycleEvalRunOutput>({
+    // Idempotency (manifest "required") is the SDK's; the key is also stored with the eval, so a repeated key never
+    // stores a second eval even past the SDK's own record.
+    redact: (input, output) => `Eval of ${input.workflowId} v${input.version}${output ? `: ${output.verdict}` : ""}`,
+    async run(input, ctx) {
+      return ctx.db.transaction(() => cycles.storeEval(ctx.db, input.workflowId, input.version, "owner", Date.now(), ctx.idempotencyKey ?? null));
     },
   }),
 } satisfies Record<OpId, HandlerSpec>;

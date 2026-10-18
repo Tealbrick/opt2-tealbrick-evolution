@@ -4729,6 +4729,961 @@
       "idempotency": "none",
       "receipt": false,
       "audience": "person"
+    },
+    {
+      "id": "cycles_list",
+      "title": "Workflow cycles",
+      "description": "The cycle ledger: one cycle per workflow version, from its promotion until the next version is promoted. Run counts, ratios and the live eval (gates: no duplicate claim, uncertain at most 5%, completed at least 80%, no drop over 10 points from the previous version). Newest promotion first, at most 500.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "workflowId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z]{3}_[0-9A-Za-z]{1,60}$"
+          }
+        }
+      },
+      "output": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "cycles"
+        ],
+        "properties": {
+          "cycles": {
+            "type": "array",
+            "maxItems": 500,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "workflowId",
+                "workflowTitle",
+                "version",
+                "parentVersion",
+                "promotedAt",
+                "retiredAt",
+                "active",
+                "suggestionId",
+                "evidenceCount",
+                "approvalDelayMs",
+                "draftRevisions",
+                "widensAccess",
+                "counts",
+                "completedRatio",
+                "uncertainRatio",
+                "failedRatio",
+                "missedRatio",
+                "claimLatencyP50Ms",
+                "durationP50Ms",
+                "kanbanClosedRatio",
+                "duplicateClaims",
+                "last10",
+                "evalLive",
+                "evalStored"
+              ],
+              "properties": {
+                "workflowId": {
+                  "type": "string"
+                },
+                "workflowTitle": {
+                  "type": "string"
+                },
+                "version": {
+                  "type": "integer"
+                },
+                "parentVersion": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "promotedAt": {
+                  "type": "string"
+                },
+                "retiredAt": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "active": {
+                  "type": "boolean"
+                },
+                "suggestionId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "evidenceCount": {
+                  "type": "integer"
+                },
+                "approvalDelayMs": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "draftRevisions": {
+                  "type": "integer"
+                },
+                "widensAccess": {
+                  "type": "boolean"
+                },
+                "counts": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "total",
+                    "completed",
+                    "failed",
+                    "uncertain",
+                    "missed",
+                    "policyStale",
+                    "open"
+                  ],
+                  "properties": {
+                    "total": {
+                      "type": "integer"
+                    },
+                    "completed": {
+                      "type": "integer"
+                    },
+                    "failed": {
+                      "type": "integer"
+                    },
+                    "uncertain": {
+                      "type": "integer"
+                    },
+                    "missed": {
+                      "type": "integer"
+                    },
+                    "policyStale": {
+                      "type": "integer"
+                    },
+                    "open": {
+                      "type": "integer"
+                    }
+                  }
+                },
+                "completedRatio": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "uncertainRatio": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "failedRatio": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "missedRatio": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "claimLatencyP50Ms": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "durationP50Ms": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "kanbanClosedRatio": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "duplicateClaims": {
+                  "type": "integer"
+                },
+                "last10": {
+                  "type": "array",
+                  "maxItems": 10,
+                  "items": {
+                    "type": "string",
+                    "enum": [
+                      "claimed",
+                      "dispatched",
+                      "completed",
+                      "failed",
+                      "missed",
+                      "uncertain",
+                      "policy_stale"
+                    ]
+                  }
+                },
+                "evalLive": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "verdict",
+                    "results"
+                  ],
+                  "properties": {
+                    "verdict": {
+                      "type": "string",
+                      "enum": [
+                        "pass",
+                        "fail",
+                        "insufficient"
+                      ]
+                    },
+                    "results": {
+                      "type": "array",
+                      "maxItems": 20,
+                      "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "app",
+                          "version",
+                          "suite",
+                          "tier",
+                          "metric",
+                          "value",
+                          "threshold",
+                          "baseline",
+                          "pass",
+                          "ts"
+                        ],
+                        "properties": {
+                          "app": {
+                            "type": "string"
+                          },
+                          "version": {
+                            "type": "string"
+                          },
+                          "suite": {
+                            "type": "string"
+                          },
+                          "tier": {
+                            "type": "string",
+                            "enum": [
+                              "T1",
+                              "T2",
+                              "T3"
+                            ]
+                          },
+                          "metric": {
+                            "type": "string"
+                          },
+                          "value": {
+                            "type": [
+                              "number",
+                              "null"
+                            ]
+                          },
+                          "threshold": {
+                            "type": [
+                              "number",
+                              "null"
+                            ]
+                          },
+                          "baseline": {
+                            "type": [
+                              "number",
+                              "null"
+                            ]
+                          },
+                          "pass": {
+                            "type": [
+                              "boolean",
+                              "null"
+                            ]
+                          },
+                          "ts": {
+                            "type": "string"
+                          }
+                        }
+                      }
+                    }
+                  }
+                },
+                "evalStored": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "id",
+                        "verdict",
+                        "trigger",
+                        "createdAt"
+                      ],
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "verdict": {
+                          "type": "string",
+                          "enum": [
+                            "pass",
+                            "fail",
+                            "insufficient"
+                          ]
+                        },
+                        "trigger": {
+                          "type": "string",
+                          "enum": [
+                            "promotion",
+                            "owner"
+                          ]
+                        },
+                        "createdAt": {
+                          "type": "string"
+                        }
+                      }
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
+      "crud": [
+        "read"
+      ],
+      "effect": "read",
+      "idempotency": "none",
+      "receipt": false,
+      "audience": "person"
+    },
+    {
+      "id": "cycle_get",
+      "title": "One workflow cycle",
+      "description": "One cycle (workflow version) with its live eval and its stored evals, newest first (at most 50).",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "workflowId",
+          "version"
+        ],
+        "properties": {
+          "workflowId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z]{3}_[0-9A-Za-z]{1,60}$"
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100000
+          }
+        }
+      },
+      "output": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "cycle",
+          "evals"
+        ],
+        "properties": {
+          "cycle": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "workflowId",
+              "workflowTitle",
+              "version",
+              "parentVersion",
+              "promotedAt",
+              "retiredAt",
+              "active",
+              "suggestionId",
+              "evidenceCount",
+              "approvalDelayMs",
+              "draftRevisions",
+              "widensAccess",
+              "counts",
+              "completedRatio",
+              "uncertainRatio",
+              "failedRatio",
+              "missedRatio",
+              "claimLatencyP50Ms",
+              "durationP50Ms",
+              "kanbanClosedRatio",
+              "duplicateClaims",
+              "last10",
+              "evalLive",
+              "evalStored"
+            ],
+            "properties": {
+              "workflowId": {
+                "type": "string"
+              },
+              "workflowTitle": {
+                "type": "string"
+              },
+              "version": {
+                "type": "integer"
+              },
+              "parentVersion": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "promotedAt": {
+                "type": "string"
+              },
+              "retiredAt": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "active": {
+                "type": "boolean"
+              },
+              "suggestionId": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "evidenceCount": {
+                "type": "integer"
+              },
+              "approvalDelayMs": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "draftRevisions": {
+                "type": "integer"
+              },
+              "widensAccess": {
+                "type": "boolean"
+              },
+              "counts": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "total",
+                  "completed",
+                  "failed",
+                  "uncertain",
+                  "missed",
+                  "policyStale",
+                  "open"
+                ],
+                "properties": {
+                  "total": {
+                    "type": "integer"
+                  },
+                  "completed": {
+                    "type": "integer"
+                  },
+                  "failed": {
+                    "type": "integer"
+                  },
+                  "uncertain": {
+                    "type": "integer"
+                  },
+                  "missed": {
+                    "type": "integer"
+                  },
+                  "policyStale": {
+                    "type": "integer"
+                  },
+                  "open": {
+                    "type": "integer"
+                  }
+                }
+              },
+              "completedRatio": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "uncertainRatio": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "failedRatio": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "missedRatio": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "claimLatencyP50Ms": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "durationP50Ms": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "kanbanClosedRatio": {
+                "type": [
+                  "number",
+                  "null"
+                ]
+              },
+              "duplicateClaims": {
+                "type": "integer"
+              },
+              "last10": {
+                "type": "array",
+                "maxItems": 10,
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "claimed",
+                    "dispatched",
+                    "completed",
+                    "failed",
+                    "missed",
+                    "uncertain",
+                    "policy_stale"
+                  ]
+                }
+              },
+              "evalLive": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "verdict",
+                  "results"
+                ],
+                "properties": {
+                  "verdict": {
+                    "type": "string",
+                    "enum": [
+                      "pass",
+                      "fail",
+                      "insufficient"
+                    ]
+                  },
+                  "results": {
+                    "type": "array",
+                    "maxItems": 20,
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "app",
+                        "version",
+                        "suite",
+                        "tier",
+                        "metric",
+                        "value",
+                        "threshold",
+                        "baseline",
+                        "pass",
+                        "ts"
+                      ],
+                      "properties": {
+                        "app": {
+                          "type": "string"
+                        },
+                        "version": {
+                          "type": "string"
+                        },
+                        "suite": {
+                          "type": "string"
+                        },
+                        "tier": {
+                          "type": "string",
+                          "enum": [
+                            "T1",
+                            "T2",
+                            "T3"
+                          ]
+                        },
+                        "metric": {
+                          "type": "string"
+                        },
+                        "value": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        },
+                        "threshold": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        },
+                        "baseline": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        },
+                        "pass": {
+                          "type": [
+                            "boolean",
+                            "null"
+                          ]
+                        },
+                        "ts": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              "evalStored": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "id",
+                      "verdict",
+                      "trigger",
+                      "createdAt"
+                    ],
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "verdict": {
+                        "type": "string",
+                        "enum": [
+                          "pass",
+                          "fail",
+                          "insufficient"
+                        ]
+                      },
+                      "trigger": {
+                        "type": "string",
+                        "enum": [
+                          "promotion",
+                          "owner"
+                        ]
+                      },
+                      "createdAt": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            }
+          },
+          "evals": {
+            "type": "array",
+            "maxItems": 50,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "id",
+                "workflowId",
+                "version",
+                "verdict",
+                "trigger",
+                "results",
+                "appVersion",
+                "createdAt"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "workflowId": {
+                  "type": "string"
+                },
+                "version": {
+                  "type": "integer"
+                },
+                "verdict": {
+                  "type": "string",
+                  "enum": [
+                    "pass",
+                    "fail",
+                    "insufficient"
+                  ]
+                },
+                "trigger": {
+                  "type": "string",
+                  "enum": [
+                    "promotion",
+                    "owner"
+                  ]
+                },
+                "results": {
+                  "type": "array",
+                  "maxItems": 20,
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "app",
+                      "version",
+                      "suite",
+                      "tier",
+                      "metric",
+                      "value",
+                      "threshold",
+                      "baseline",
+                      "pass",
+                      "ts"
+                    ],
+                    "properties": {
+                      "app": {
+                        "type": "string"
+                      },
+                      "version": {
+                        "type": "string"
+                      },
+                      "suite": {
+                        "type": "string"
+                      },
+                      "tier": {
+                        "type": "string",
+                        "enum": [
+                          "T1",
+                          "T2",
+                          "T3"
+                        ]
+                      },
+                      "metric": {
+                        "type": "string"
+                      },
+                      "value": {
+                        "type": [
+                          "number",
+                          "null"
+                        ]
+                      },
+                      "threshold": {
+                        "type": [
+                          "number",
+                          "null"
+                        ]
+                      },
+                      "baseline": {
+                        "type": [
+                          "number",
+                          "null"
+                        ]
+                      },
+                      "pass": {
+                        "type": [
+                          "boolean",
+                          "null"
+                        ]
+                      },
+                      "ts": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                },
+                "appVersion": {
+                  "type": "string"
+                },
+                "createdAt": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      },
+      "crud": [
+        "read"
+      ],
+      "effect": "read",
+      "idempotency": "none",
+      "receipt": false,
+      "audience": "person"
+    },
+    {
+      "id": "cycle_eval_run",
+      "title": "Store a cycle eval",
+      "description": "Store the eval of one cycle as it is now (trigger owner). Promotion of the next version stores the closing eval of the previous one by itself.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "workflowId",
+          "version"
+        ],
+        "properties": {
+          "workflowId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z]{3}_[0-9A-Za-z]{1,60}$"
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100000
+          }
+        }
+      },
+      "output": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "workflowId",
+          "version",
+          "verdict",
+          "trigger",
+          "results",
+          "appVersion",
+          "createdAt"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "workflowId": {
+            "type": "string"
+          },
+          "version": {
+            "type": "integer"
+          },
+          "verdict": {
+            "type": "string",
+            "enum": [
+              "pass",
+              "fail",
+              "insufficient"
+            ]
+          },
+          "trigger": {
+            "type": "string",
+            "enum": [
+              "promotion",
+              "owner"
+            ]
+          },
+          "results": {
+            "type": "array",
+            "maxItems": 20,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "app",
+                "version",
+                "suite",
+                "tier",
+                "metric",
+                "value",
+                "threshold",
+                "baseline",
+                "pass",
+                "ts"
+              ],
+              "properties": {
+                "app": {
+                  "type": "string"
+                },
+                "version": {
+                  "type": "string"
+                },
+                "suite": {
+                  "type": "string"
+                },
+                "tier": {
+                  "type": "string",
+                  "enum": [
+                    "T1",
+                    "T2",
+                    "T3"
+                  ]
+                },
+                "metric": {
+                  "type": "string"
+                },
+                "value": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "threshold": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "baseline": {
+                  "type": [
+                    "number",
+                    "null"
+                  ]
+                },
+                "pass": {
+                  "type": [
+                    "boolean",
+                    "null"
+                  ]
+                },
+                "ts": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "appVersion": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "string"
+          }
+        }
+      },
+      "crud": [
+        "create"
+      ],
+      "effect": "write",
+      "idempotency": "required",
+      "receipt": true,
+      "audience": "person"
     }
   ],
   "companions": [
