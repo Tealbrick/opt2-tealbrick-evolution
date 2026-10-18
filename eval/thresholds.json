@@ -2,9 +2,9 @@
   "schema": "evolution.eval-thresholds/1",
   "note": "The single source of the eval thresholds (G6 §6.0, C250 Release B). src/evals.ts reads the cycle block; eval/run.ts reads both. A cycle metric below its minSample answers pass null (not enough data).",
   "detector": {
-    "precision": 0.9,
-    "recall": 0.8,
-    "baseline": { "precision": 1, "recall": 1, "measured": "2026-10-18", "note": "Measured on eval/cases/detector with the 0.2.13 detector. Near-duplicates it misses (word order, plural, typo) have expected [] and a note: they are E5 targets, not counted as misses yet." }
+    "precision": 1,
+    "recall": 1,
+    "baseline": { "precision": 1, "recall": 1, "measured": "2026-10-18", "note": "Thresholds = the measured baseline of the 0.2.13 detector on eval/cases/detector (G6 floors: precision 0.9, recall 0.8). Besides these, eval/run.ts fails on ANY case mismatch. Cases with knownMiss: true (near-duplicates: word order, plural, typo) carry the gold group as expected; they are E5 targets, reported as known misses and kept out of precision and recall." }
   },
   "cycle": {
     "duplicate_claims": { "max": 0 },

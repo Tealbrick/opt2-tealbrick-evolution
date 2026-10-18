@@ -8,7 +8,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { type CycleCase, type DetectorCase, detectorKeys, loadCases, runAll, runCycleSuite, runDetectorSuite } from "../eval/run.ts";
+import { type CycleCase, type Detect, type DetectorCase, detectorKeys, exitCode, loadCases, runAll, runCycleSuite, runDetectorSuite } from "../eval/run.ts";
+import { buildGroups, parseDoneIssues } from "../src/detector.ts";
 import { APP_VERSION, type CycleStats, cycleEval, type EvalResult, THRESHOLDS, type Thresholds, verdictOf } from "../src/evals.ts";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
@@ -40,7 +41,7 @@ test("thresholds have one source: eval/thresholds.json, as the spec sets them", 
   assert.deepEqual(THRESHOLDS.cycle.completed_ratio, { min: 0.8, minSample: 5 });
   assert.deepEqual(THRESHOLDS.cycle.completed_ratio_drop, { max: 0.1, minSample: 5 });
   assert.deepEqual(THRESHOLDS.cycle.missed_ratio, { max: 0.2, minSample: 5 });
-  assert.ok(THRESHOLDS.detector.precision >= 0.9 && THRESHOLDS.detector.recall >= 0.8);
+  assert.deepEqual([THRESHOLDS.detector.precision, THRESHOLDS.detector.recall], [1, 1], "the measured baseline (G6 floors 0.9 / 0.8)");
 });
 
 test("every result is a tealbrick.eval/1 line of the cycle", () => {
@@ -103,6 +104,20 @@ test("policy_stale_runs: information, no threshold, never a verdict", () => {
   assert.equal(verdictOf(run(stats(10, 0, 0, { policyStale: 3 }))), "pass");
 });
 
+test("the minimum sample is inclusive: exactly 5 terminal runs are judged, 4 are not (fires on a > mutation)", () => {
+  const five = run(stats(4, 1));
+  assert.deepEqual([metric(five, "completed_ratio")?.pass, metric(five, "uncertain_ratio")?.pass], [true, true]);
+  assert.equal(verdictOf(five), "pass");
+  const four = run(stats(3, 1));
+  assert.deepEqual([metric(four, "completed_ratio")?.pass, metric(four, "uncertain_ratio")?.pass], [null, null]);
+  assert.equal(verdictOf(four), "insufficient");
+  const drop = metric(run(stats(4, 1, 0, { version: 2 }), stats(5)), "completed_ratio_drop");
+  assert.deepEqual([drop?.value, drop?.pass], [0.2, false], "judged with exactly 5 in both");
+  assert.equal(metric(run(stats(4, 1, 0, { version: 2 }), stats(4)), "completed_ratio_drop")?.pass, null, "4 in the parent");
+  assert.equal(metric(run(stats(5, 0, 0, { missed: 0 })), "missed_ratio")?.pass, true);
+  assert.equal(metric(run(stats(3, 0, 0, { missed: 1 })), "missed_ratio")?.pass, null);
+});
+
 test("verdict: pass when every gate passes, fail on any gate failure, insufficient when a gate lacks data", () => {
   assert.equal(verdictOf(run(stats(10))), "pass");
   assert.equal(verdictOf(run(stats(9, 1, 0, { version: 2 }), stats(10))), "pass");
@@ -134,7 +149,11 @@ test("corpus: at least 30 detector and 10 cycle cases, synthetic ids only", () =
   assert.ok(c.length >= 10, `${c.length} cycle cases`);
   const text = JSON.stringify([d, c]);
   for (const m of text.matchAll(/\b(agt|per|iss|aut|wfl)_[0-9A-Za-z]+/g)) assert.match(m[0], /^[a-z]{3}_01J0+[0-9A-Z]?$|^iss_01J\d+$/, `synthetic id: ${m[0]}`);
-  assert.ok(d.some((x) => x.note?.includes("E5 target")), "known misses are recorded");
+  const known = d.filter((x) => x.knownMiss);
+  assert.equal(known.length, 3, "the near-duplicate E5 targets");
+  assert.ok(known.every((x) => x.expected.length > 0 && x.note?.includes("E5 target")), "a known miss carries its gold group");
+  const positive = d.filter((x) => !x.knownMiss).reduce((n, x) => n + x.expected.length, 0);
+  assert.ok(positive >= 25, `${positive} must-suggest groups`);
 });
 
 test("runner quiet: the committed corpus passes both suites with the committed thresholds", () => {
@@ -144,6 +163,66 @@ test("runner quiet: the committed corpus passes both suites with the committed t
   const rc = r.lines.find((l) => l.suite === "detector" && l.metric === "recall");
   assert.ok(p?.pass && rc?.pass);
   assert.equal(r.lines.filter((l) => l.suite === "cycles").length, cycleCases().length);
+});
+
+// ── broken detectors (in memory; the corpus is never edited): each must make the run exit 1 ──
+
+type Raw = Record<string, unknown>;
+/** applies `f` to every issue object of a kanban.issues_list output ({issues} or {items}) */
+function mapIssues(output: unknown, f: (i: Raw) => Raw): unknown {
+  if (!output || typeof output !== "object") return output;
+  const o = output as { issues?: unknown; items?: unknown };
+  const map = (l: unknown) => (Array.isArray(l) ? l.map((i) => (i && typeof i === "object" && !Array.isArray(i) ? f(i as Raw) : i)) : l);
+  return { ...o, ...(o.issues !== undefined ? { issues: map(o.issues) } : {}), ...(o.items !== undefined ? { items: map(o.items) } : {}) };
+}
+const BROKEN: Record<string, { detect: Detect; fails: string }> = {
+  "status not done counted": { detect: (c) => detectorKeys({ ...c, output: mapIssues(c.output, (i) => ({ ...i, status: "done" })) }), fails: "status not done is skipped" },
+  "covered issues ignored": { detect: (c) => detectorKeys({ ...c, covered: [] }), fails: "covered issues: all covered" },
+  "any flat assignee is an agent (owner / person ids too)": {
+    detect: (c) => detectorKeys({ ...c, output: mapIssues(c.output, (i) => (typeof i.assignee === "string" ? { ...i, assignee: { kind: "agent", id: i.assignee } } : i)) }),
+    fails: "a flat assignee that is not an agent id",
+  },
+  "no number normalisation": {
+    // numbers no longer collapse to #: digits become letters before the real normalisation
+    detect: (c) =>
+      buildGroups(
+        parseDoneIssues(c.output).map((i) => ({ ...i, title: i.title.replace(/\d/g, (x) => String.fromCharCode(97 + Number(x))) })),
+        new Set(c.covered),
+      )
+        .filter((g) => g.issues.length >= c.minRepeats)
+        .map((g) => g.key),
+    fails: "numbered titles",
+  },
+};
+for (const [name, b] of Object.entries(BROKEN))
+  test(`runner fires on a broken detector: ${name}`, () => {
+    const r = runAll({ ts: TS, detect: b.detect });
+    assert.equal(exitCode(r), 1);
+    assert.ok(
+      r.failures.some((f) => f.startsWith(`detector case "${b.fails}"`)),
+      `names the case: ${r.failures.join(" | ")}`,
+    );
+  });
+
+test("runner quiet: the real detector exits 0; known misses are reported, never counted as passes", () => {
+  const r = runAll({ ts: TS });
+  assert.equal(exitCode(r), 0);
+  assert.equal(r.lines.find((l) => l.metric === "known_misses")?.value, 3);
+  assert.equal(r.notes.filter((n) => n.startsWith("known miss")).length, 3);
+  const d = runDetectorSuite(detectorCases(), THRESHOLDS, TS);
+  assert.equal(d.tp, detectorCases().filter((c) => !c.knownMiss).reduce((n, c) => n + c.expected.length, 0), "known-miss gold is not in tp");
+  // a detector that reached the gold: still not a failure, but the note asks to drop knownMiss
+  const gold: Detect = (c) => (c.knownMiss ? c.expected : detectorKeys(c));
+  const g = runDetectorSuite(detectorCases(), THRESHOLDS, TS, gold);
+  assert.deepEqual(g.failures, []);
+  assert.ok(g.notes.every((n) => n.endsWith("drop knownMiss")));
+});
+
+test("runner fires: one false positive or one miss fails, though precision would stay above 0.9", () => {
+  const extra: Detect = (c) => (c.name === "below N" ? [...detectorKeys(c), "agt_01J0000000000000000000000A|title:back up the wiki"] : detectorKeys(c));
+  assert.equal(exitCode(runAll({ ts: TS, detect: extra })), 1);
+  const miss: Detect = (c) => (c.name === "exactly N" ? [] : detectorKeys(c));
+  assert.equal(exitCode(runAll({ ts: TS, detect: miss })), 1);
 });
 
 test("runner fires: a mutated detector threshold fails the suite", () => {
@@ -159,7 +238,7 @@ test("runner fires: a deliberately wrong expected list (a broken detector looks 
   const wrong = detectorCases().map((c) => ({ ...c, expected: c.expected.length ? c.expected.map((k) => `${k}-wrong`) : c.expected }));
   const r = runDetectorSuite(wrong, THRESHOLDS, TS);
   assert.equal(r.tp, 0);
-  assert.equal(r.notes.length, wrong.filter((c) => c.expected.length).length, "each wrong case is named");
+  assert.equal(r.failures.filter((f) => f.startsWith("detector case")).length, wrong.filter((c) => c.expected.length && !c.knownMiss).length, "each wrong case is named");
   assert.ok(r.failures.some((f) => f.startsWith("detector precision")));
   assert.ok(r.failures.some((f) => f.startsWith("detector recall")));
 });

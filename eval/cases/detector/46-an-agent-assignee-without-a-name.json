@@ -1,0 +1,39 @@
+{
+  "name": "an agent assignee without a name",
+  "minRepeats": 3,
+  "covered": [],
+  "output": {
+    "issues": [
+      {
+        "id": "iss_01J00000000000000000000189",
+        "title": "Refresh the dashboard",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000B"
+        }
+      },
+      {
+        "id": "iss_01J00000000000000000000190",
+        "title": "Refresh the dashboard",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000B"
+        }
+      },
+      {
+        "id": "iss_01J00000000000000000000191",
+        "title": "Refresh the dashboard",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000B"
+        }
+      }
+    ]
+  },
+  "expected": [
+    "agt_01J0000000000000000000000B|title:refresh the dashboard"
+  ]
+}

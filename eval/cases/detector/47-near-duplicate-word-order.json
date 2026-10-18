@@ -1,24 +1,14 @@
 {
   "name": "near-duplicate: word order",
-  "note": "Known miss of the 0.2.13 detector (exact normalised title only): a human sees one repeated task. E5 target; expected stays empty until the detector groups it. Ideal group: agt_01J0000000000000000000000A 'weekly status report'.",
+  "note": "Known miss of the 0.2.13 detector (exact normalised title only): a human sees one repeated task. E5 target: expected is the group the detector should reach; eval/run.ts reports it as a known miss and never counts it as a pass.",
+  "knownMiss": true,
   "minRepeats": 3,
   "covered": [],
   "output": {
     "issues": [
       {
-        "id": "iss_01J00000000000000000000163",
+        "id": "iss_01J00000000000000000000192",
         "title": "Weekly status report",
-        "status": "done",
-        "assignee": {
-          "kind": "agent",
-          "id": "agt_01J0000000000000000000000A",
-          "name": "Agent A"
-        },
-        "updatedAt": "2026-09-24T10:00:00Z"
-      },
-      {
-        "id": "iss_01J00000000000000000000164",
-        "title": "Status report, weekly",
         "status": "done",
         "assignee": {
           "kind": "agent",
@@ -28,8 +18,8 @@
         "updatedAt": "2026-09-25T10:00:00Z"
       },
       {
-        "id": "iss_01J00000000000000000000165",
-        "title": "Report: weekly status",
+        "id": "iss_01J00000000000000000000193",
+        "title": "Status report, weekly",
         "status": "done",
         "assignee": {
           "kind": "agent",
@@ -37,8 +27,21 @@
           "name": "Agent A"
         },
         "updatedAt": "2026-09-26T10:00:00Z"
+      },
+      {
+        "id": "iss_01J00000000000000000000194",
+        "title": "Report: weekly status",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000A",
+          "name": "Agent A"
+        },
+        "updatedAt": "2026-09-27T10:00:00Z"
       }
     ]
   },
-  "expected": []
+  "expected": [
+    "agt_01J0000000000000000000000A|title:weekly status report"
+  ]
 }

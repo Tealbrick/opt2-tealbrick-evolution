@@ -1,0 +1,18 @@
+{
+  "now": "2026-10-20T00:00:00.000Z",
+  "name": "exactly the sample: 5 terminal runs are judged",
+  "note": "Next to 'below the sample' (4 runs, pass null): the minimum sample is inclusive, so a > instead of >= mutation fails this case.",
+  "parent": null,
+  "runs": [
+    { "status": "completed", "count": 4 },
+    { "status": "failed" }
+  ],
+  "expected": {
+    "verdict": "pass",
+    "metrics": {
+      "completed_ratio": { "value": 0.8, "pass": true },
+      "uncertain_ratio": { "value": 0, "pass": true },
+      "missed_ratio": { "value": 0, "pass": true }
+    }
+  }
+}

@@ -1,7 +1,8 @@
 // T1 evals (G6 §6.0, C250 Release B): deterministic, no model, synthetic public-safe fixtures. Runs both suites through
 // the REAL src code and prints one tealbrick.eval/1 line (JSON) per metric to stdout:
 //   detector: eval/cases/detector/*.json → parseDoneIssues + buildGroups + the N filter, exactly as src/scan.ts does;
-//             precision and recall over all cases vs eval/thresholds.json (detector.precision / detector.recall)
+//             EVERY case must match (knownMiss cases excepted: reported, never passed); precision and recall over the
+//             other cases vs eval/thresholds.json (detector.precision / detector.recall, the measured 1.0 / 1.0)
 //   cycles:   eval/cases/cycles/*.json (run histories) → runStats (src/cycles.ts) + cycleEval + verdictOf (src/evals.ts);
 //             every expected verdict and metric value must match
 // Exit 1 on any failure. Usage: node eval/run.ts [--out <file>] [--cases <dir>] [--thresholds <file>]
@@ -17,6 +18,8 @@ import type { RunStatus } from "../src/routines.ts";
 export interface DetectorCase {
   name: string;
   note?: string;
+  /** an E5 target the detector does not reach yet: expected is the gold, the case never counts as a pass */
+  knownMiss?: boolean;
   minRepeats: number;
   covered: string[];
   output: unknown;
@@ -65,25 +68,43 @@ export function detectorKeys(c: DetectorCase): string[] {
     .sort();
 }
 
-export function runDetectorSuite(cases: readonly DetectorCase[], t: Thresholds, ts: string): SuiteResult & { tp: number; fp: number; fn: number } {
+/** The detector under test: case → suggested group keys. Tests pass a broken one to prove the gate fires. */
+export type Detect = (c: DetectorCase) => string[];
+
+/** Every case must match exactly (ANY difference fails the run), except `knownMiss` cases: their expected list is the
+ *  gold the detector should reach (E5); they are reported as known misses, never counted as passes, and kept out of
+ *  precision and recall. Precision and recall over the other cases are reported against thresholds.json too. */
+export function runDetectorSuite(
+  cases: readonly DetectorCase[],
+  t: Thresholds,
+  ts: string,
+  detect: Detect = detectorKeys,
+): SuiteResult & { tp: number; fp: number; fn: number; knownMisses: string[] } {
   let tp = 0;
   let fp = 0;
   let fn = 0;
   const failures: string[] = [];
   const notes: string[] = [];
+  const knownMisses: string[] = [];
   for (const c of cases) {
-    const got = new Set(detectorKeys(c));
+    const got = new Set(detect(c));
     const want = new Set(c.expected);
     const extra = [...got].filter((k) => !want.has(k));
     const missing = [...want].filter((k) => !got.has(k));
+    const diff = `unexpected ${JSON.stringify(extra)}, missing ${JSON.stringify(missing)}`;
+    if (c.knownMiss) {
+      knownMisses.push(c.name);
+      notes.push(extra.length || missing.length ? `known miss "${c.name}": ${diff}` : `known miss "${c.name}" now matches its gold: drop knownMiss`);
+      continue;
+    }
     tp += [...got].filter((k) => want.has(k)).length;
     fp += extra.length;
     fn += missing.length;
-    if (extra.length || missing.length) notes.push(`detector case "${c.name}": unexpected ${JSON.stringify(extra)}, missing ${JSON.stringify(missing)}`);
+    if (extra.length || missing.length) failures.push(`detector case "${c.name}": ${diff}`);
   }
   const precision = tp + fp === 0 ? 1 : round(tp / (tp + fp));
   const recall = tp + fn === 0 ? 1 : round(tp / (tp + fn));
-  const line = (metric: string, value: number, threshold: number, baseline: number | null): EvalResult => ({
+  const line = (metric: string, value: number, threshold: number | null, baseline: number | null): EvalResult => ({
     app: "evolution",
     version: APP_VERSION,
     suite: "detector",
@@ -92,12 +113,16 @@ export function runDetectorSuite(cases: readonly DetectorCase[], t: Thresholds, 
     value,
     threshold,
     baseline,
-    pass: value >= threshold,
+    pass: threshold === null ? null : value >= threshold,
     ts,
   });
-  const lines = [line("precision", precision, t.detector.precision, t.detector.baseline?.precision ?? null), line("recall", recall, t.detector.recall, t.detector.baseline?.recall ?? null)];
-  for (const l of lines) if (!l.pass) failures.push(`detector ${l.metric} ${l.value} < ${l.threshold}`);
-  return { lines, failures, notes, tp, fp, fn };
+  const lines = [
+    line("precision", precision, t.detector.precision, t.detector.baseline?.precision ?? null),
+    line("recall", recall, t.detector.recall, t.detector.baseline?.recall ?? null),
+    line("known_misses", knownMisses.length, null, null),
+  ];
+  for (const l of lines) if (l.pass === false) failures.push(`detector ${l.metric} ${l.value} < ${l.threshold}`);
+  return { lines, failures, notes, tp, fp, fn, knownMisses };
 }
 
 const HOUR = 3_600_000;
@@ -154,11 +179,16 @@ export function runCycleSuite(cases: readonly CycleCase[], t: Thresholds, ts: st
   return { lines, failures, notes: [] };
 }
 
-export function runAll(opts: { casesDir?: string; thresholds?: Thresholds; ts?: string } = {}): SuiteResult {
+/** The process exit code of a run: 1 on any failure. */
+export function exitCode(r: SuiteResult): 0 | 1 {
+  return r.failures.length ? 1 : 0;
+}
+
+export function runAll(opts: { casesDir?: string; thresholds?: Thresholds; ts?: string; detect?: Detect } = {}): SuiteResult {
   const t = opts.thresholds ?? (JSON.parse(readFileSync(THRESHOLDS_FILE, "utf8")) as Thresholds);
   const dir = opts.casesDir ?? CASES_DIR;
   const ts = opts.ts ?? new Date().toISOString();
-  const d = runDetectorSuite(loadCases<DetectorCase>(join(dir, "detector")), t, ts);
+  const d = runDetectorSuite(loadCases<DetectorCase>(join(dir, "detector")), t, ts, opts.detect);
   const c = runCycleSuite(loadCases<CycleCase>(join(dir, "cycles")), t, ts);
   return { lines: [...d.lines, ...c.lines], failures: [...d.failures, ...c.failures], notes: [...d.notes, ...c.notes] };
 }
@@ -182,5 +212,5 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   for (const n of r.notes) console.error(n);
   for (const f of r.failures) console.error(`FAIL ${f}`);
   console.error(r.failures.length ? `eval: ${r.failures.length} failure(s)` : `eval: pass (${r.lines.length} lines)`);
-  process.exit(r.failures.length ? 1 : 0);
+  process.exit(exitCode(r));
 }

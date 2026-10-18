@@ -1,24 +1,14 @@
 {
   "name": "near-duplicate: typo",
-  "note": "Known miss of the 0.2.13 detector (exact normalised title only): a human sees one repeated task. E5 target; expected stays empty until the detector groups it. Ideal group: agt_01J0000000000000000000000C 'reconcile ledger'.",
+  "note": "Known miss of the 0.2.13 detector (exact normalised title only): a human sees one repeated task. E5 target: expected is the group the detector should reach; eval/run.ts reports it as a known miss and never counts it as a pass.",
+  "knownMiss": true,
   "minRepeats": 3,
   "covered": [],
   "output": {
     "issues": [
       {
-        "id": "iss_01J00000000000000000000169",
+        "id": "iss_01J00000000000000000000198",
         "title": "Reconcile ledger",
-        "status": "done",
-        "assignee": {
-          "kind": "agent",
-          "id": "agt_01J0000000000000000000000C",
-          "name": "Agent C"
-        },
-        "updatedAt": "2026-09-02T10:00:00Z"
-      },
-      {
-        "id": "iss_01J00000000000000000000170",
-        "title": "Reconcile ledgr",
         "status": "done",
         "assignee": {
           "kind": "agent",
@@ -28,8 +18,8 @@
         "updatedAt": "2026-09-03T10:00:00Z"
       },
       {
-        "id": "iss_01J00000000000000000000171",
-        "title": "Reconcile the ledger",
+        "id": "iss_01J00000000000000000000199",
+        "title": "Reconcile ledgr",
         "status": "done",
         "assignee": {
           "kind": "agent",
@@ -37,8 +27,21 @@
           "name": "Agent C"
         },
         "updatedAt": "2026-09-04T10:00:00Z"
+      },
+      {
+        "id": "iss_01J00000000000000000000200",
+        "title": "Reconcile the ledger",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000C",
+          "name": "Agent C"
+        },
+        "updatedAt": "2026-09-05T10:00:00Z"
       }
     ]
   },
-  "expected": []
+  "expected": [
+    "agt_01J0000000000000000000000C|title:reconcile ledger"
+  ]
 }
