@@ -211,11 +211,34 @@ test("runner quiet: the real detector exits 0; known misses are reported, never 
   assert.equal(r.notes.filter((n) => n.startsWith("known miss")).length, 3);
   const d = runDetectorSuite(detectorCases(), THRESHOLDS, TS);
   assert.equal(d.tp, detectorCases().filter((c) => !c.knownMiss).reduce((n, c) => n + c.expected.length, 0), "known-miss gold is not in tp");
-  // a detector that reached the gold: still not a failure, but the note asks to drop knownMiss
-  const gold: Detect = (c) => (c.knownMiss ? c.expected : detectorKeys(c));
-  const g = runDetectorSuite(detectorCases(), THRESHOLDS, TS, gold);
-  assert.deepEqual(g.failures, []);
-  assert.ok(g.notes.every((n) => n.endsWith("drop knownMiss")));
+});
+
+const KNOWN_MISSES = ["near-duplicate: word order", "near-duplicate: plural and article", "near-duplicate: typo"];
+
+test("known misses are pinned: exactly these three cases carry knownMiss", () => {
+  assert.deepEqual(
+    detectorCases()
+      .filter((c) => c.knownMiss)
+      .map((c) => c.name),
+    KNOWN_MISSES,
+  );
+});
+
+test("runner fires: a known miss that fully matches its gold fails (remove knownMiss to lock in E5 progress)", () => {
+  const gold: Detect = (c) => (c.name === KNOWN_MISSES[0] ? c.expected : detectorKeys(c));
+  const r = runAll({ ts: TS, detect: gold });
+  assert.equal(exitCode(r), 1);
+  assert.deepEqual(r.failures, [`detector case "${KNOWN_MISSES[0]}": known miss now passes: remove knownMiss`]);
+});
+
+test("runner fires: a wrong (extra) group in a known-miss case fails; only missing gold groups are tolerated", () => {
+  const wrong: Detect = (c) => (c.name === KNOWN_MISSES[1] ? [...detectorKeys(c), "agt_01J0000000000000000000000B|title:send invoices to acme"] : detectorKeys(c));
+  const r = runAll({ ts: TS, detect: wrong });
+  assert.equal(exitCode(r), 1);
+  assert.equal(r.failures.length, 1);
+  assert.match(r.failures[0] ?? "", /near-duplicate: plural and article" \(known miss\): unexpected/);
+  // quiet: the real detector (gold group missing, nothing wrong) is tolerated
+  assert.deepEqual(runAll({ ts: TS }).failures, []);
 });
 
 test("runner fires: one false positive or one miss fails, though precision would stay above 0.9", () => {

@@ -72,8 +72,9 @@ export function detectorKeys(c: DetectorCase): string[] {
 export type Detect = (c: DetectorCase) => string[];
 
 /** Every case must match exactly (ANY difference fails the run), except `knownMiss` cases: their expected list is the
- *  gold the detector should reach (E5); they are reported as known misses, never counted as passes, and kept out of
- *  precision and recall. Precision and recall over the other cases are reported against thresholds.json too. */
+ *  gold the detector should reach (E5). In those only missing gold groups are tolerated (reported as known misses,
+ *  never counted as passes, kept out of precision and recall); a wrong group fails, and so does a full match ("known
+ *  miss now passes: remove knownMiss"). Precision and recall over the other cases are reported against thresholds.json. */
 export function runDetectorSuite(
   cases: readonly DetectorCase[],
   t: Thresholds,
@@ -93,8 +94,12 @@ export function runDetectorSuite(
     const missing = [...want].filter((k) => !got.has(k));
     const diff = `unexpected ${JSON.stringify(extra)}, missing ${JSON.stringify(missing)}`;
     if (c.knownMiss) {
+      // only MISSING gold groups are tolerated: a wrong group fails like anywhere else, and a full match fails too, so
+      // E5 progress is locked in by removing the marker
       knownMisses.push(c.name);
-      notes.push(extra.length || missing.length ? `known miss "${c.name}": ${diff}` : `known miss "${c.name}" now matches its gold: drop knownMiss`);
+      if (extra.length) failures.push(`detector case "${c.name}" (known miss): ${diff}`);
+      else if (!missing.length) failures.push(`detector case "${c.name}": known miss now passes: remove knownMiss`);
+      else notes.push(`known miss "${c.name}": ${diff}`);
       continue;
     }
     tp += [...got].filter((k) => want.has(k)).length;
@@ -146,6 +151,7 @@ export function expandRuns(specs: readonly RunSpec[], now: number): LedgerRun[] 
         workflowVersion: 1,
         claimedAt,
         updatedAt,
+        reportedAt: s.status === "completed" || s.status === "failed" || s.status === "uncertain" ? updatedAt : null,
         kanbanIssueId: s.kanban && s.kanban !== "none" ? `iss_01J${String(i).padStart(23, "0")}` : null,
         kanbanSync: s.kanban ?? "none",
       });
