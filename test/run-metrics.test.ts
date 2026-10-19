@@ -412,7 +412,7 @@ test("fires (schema layer): a bad name, a value that is not a number, more than 
   const base = { ok: true, minutes: 1 };
   const twenty = Object.fromEntries(Array.from({ length: 20 }, (_, i) => [`m_${i}`, i]));
   assert.deepEqual(schemaErrors({ ...base, metrics: twenty, issue: "iss_1" }), []);
-  assert.deepEqual(schemaErrors({ ...base, metrics: { ab: 1, [`a${"b".repeat(40)}`]: -0.5, a1_: 1e300 } }), [], "2 and 41 characters, negative and large numbers pass");
+  assert.deepEqual(schemaErrors({ ...base, metrics: { ab: 1, [`a${"b".repeat(40)}`]: -0.5, a1_: 1e12, z9: -1e12 } }), [], "2 and 41 characters; negative numbers and the bounds 1e12 and -1e12 pass");
   const cases: [string, unknown][] = [
     ["upper case", { Bad: 1 }],
     ["one character", { a: 1 }],
@@ -502,4 +502,95 @@ test("the table itself refuses what the handler would: a 21st name, an infinite 
   for (let i = 0; i < 20; i++) ins.run(occ, `m_${i}`, i);
   assert.throws(() => ins.run(occ, "m_20", 1), /at most 20/);
   assert.throws(() => ins.run(occ, "m_0", 1), /UNIQUE|PRIMARY|at most 20/);
+});
+
+// ── review round: distinct names per version, value bound, name rule, atomicity ──
+
+const twenty = (prefix: string): Record<string, number> => Object.fromEntries(Array.from({ length: 20 }, (_, i) => [`${prefix}${String(i).padStart(2, "0")}`, i]));
+
+test("S1: a workflow version keeps at most 20 DISTINCT names over all its runs (422 metric_names_full); existing names still pass; the cycle ops keep answering", async () => {
+  const { db, wf, automationId, occ } = setup();
+  const first = twenty("na");
+  r.report(db, BOUND.id, occ, "completed", null, NOW, { ok: true, minutes: 1, metrics: first });
+  const o2 = claimedRun(db, wf, automationId, 13, 1);
+  const t = refusal(() => r.report(db, BOUND.id, o2, "completed", null, NOW, { ok: true, minutes: 1, metrics: { na00: 5, nb01: 2 } }));
+  assert.deepEqual([t?.code, t?.httpStatus, (t?.details as { pointer?: string })?.pointer], ["metric_names_full", 422, "/metrics/metrics/nb01"]);
+  assert.match(t?.message ?? "", /already has 20 metric names/);
+  assert.match(t?.message ?? "", /send the report again without metrics/);
+  assert.equal(r.getRun(db, o2)?.status, "claimed", "the run stays claimed");
+  assert.equal(namedRows(db).filter((x) => x.occurrence === o2).length, 0, "nothing of the refused report is stored");
+  // the same names (all 20 or a few) pass, in the same run version
+  r.report(db, BOUND.id, o2, "completed", null, NOW, { ok: true, minutes: 1, metrics: { na00: 5, na19: 7 } });
+  const o3 = claimedRun(db, wf, automationId, 14, 1);
+  r.report(db, BOUND.id, o3, "completed", null, NOW, { ok: true, minutes: 1, metrics: first });
+  // a repeat of a report that is already in carries no new name: no refusal
+  assert.equal(r.report(db, BOUND.id, o3, "completed", null, NOW, { ok: true, minutes: 1, metrics: first }).changed, false);
+  // the cycle ops answer (their output schema holds at most 20 names)
+  const list = await call<K.CyclesListOutput>(H, "cycles_list", {}, ctxFor(db, OWNER));
+  assert.equal(list.cycles[0]?.runMetrics.namedMetrics.length, 20);
+  assert.equal((await call<K.CycleGetOutput>(H, "cycle_get", { workflowId: wf, version: 1 }, ctxFor(db, OWNER))).cycle.runMetrics.namedMetrics.length, 20);
+  // another version of the workflow has its own 20
+  const d = store.getDraft(db, store.getWorkflow(db, wf).draftId);
+  const u = store.updateDraft(db, d.id, d.revision, { instruction: "v2" }, T("2026-10-16T00:00:00Z"));
+  store.promote(db, d.id, u.revision, T("2026-10-16T00:00:00Z"));
+  const o4 = claimedRun(db, wf, automationId, 17, 2);
+  r.report(db, BOUND.id, o4, "completed", null, NOW, { ok: true, minutes: 1, metrics: twenty("nc") });
+  assert.equal((await call<K.CycleGetOutput>(H, "cycle_get", { workflowId: wf, version: 2 }, ctxFor(db, OWNER))).cycle.runMetrics.namedMetrics.length, 20);
+  // 19 names then two new ones in ONE report: the first that does not fit is named
+  const small = setup();
+  r.report(small.db, BOUND.id, small.occ, "completed", null, NOW, { ok: true, minutes: 1, metrics: Object.fromEntries(Object.entries(twenty("nd")).slice(0, 19)) });
+  const o5 = claimedRun(small.db, small.wf, small.automationId, 13, 1);
+  const t2 = refusal(() => r.report(small.db, BOUND.id, o5, "completed", null, NOW, { ok: true, minutes: 1, metrics: { ne01: 1, ne02: 2 } }));
+  assert.equal((t2?.details as { pointer?: string })?.pointer, "/metrics/metrics/ne02", "one new name fits, the second does not");
+});
+
+test("S2: values are bounded to 1e12 in the schema, the handler and the table; the mean of several 1e12 values is finite; a non-finite mean falls back to the median", async () => {
+  const base = { ok: true, minutes: 1 };
+  assert.deepEqual(schemaErrors({ ...base, metrics: { aa: 1e12, bb: -1e12, cc: 0.000001 } }), []);
+  for (const v of [1e12 + 1, -1e13, 1e300, 1.7976931348623157e308])
+    assert.ok(validateInput(reportOp, { occurrence: "a".repeat(64), status: "completed", metrics: { ...base, metrics: { aa: v } } } as never).ok === false, `schema refuses ${v}`);
+  const { db, wf, automationId, occ } = setup();
+  for (const v of [1e12 + 1, -1e13, 1e300, 1.7976931348623157e308, -1.7976931348623157e308]) {
+    const t = refusal(() => r.report(db, BOUND.id, occ, "completed", null, NOW, { ok: true, minutes: 1, metrics: { aa: v } }));
+    assert.deepEqual([t?.code, (t?.details as { pointer?: string })?.pointer], ["validation_failed", "/metrics/metrics/aa"], String(v));
+  }
+  assert.equal(r.getRun(db, occ)?.status, "claimed");
+  r.report(db, BOUND.id, occ, "completed", null, NOW, { ok: true, minutes: 1, metrics: { aa: 1e12 } });
+  for (let day = 13; day < 18; day++) r.report(db, BOUND.id, claimedRun(db, wf, automationId, day, 1), "completed", null, NOW, { ok: true, minutes: 1, metrics: { aa: 1e12 } });
+  const list = await call<K.CyclesListOutput>(H, "cycles_list", {}, ctxFor(db, OWNER));
+  assert.deepEqual(list.cycles[0]?.runMetrics.namedMetrics, [{ name: "aa", reports: 6, median: 1e12, mean: 1e12, min: 1e12, max: 1e12 }]);
+  // the table
+  const ins = db.prepare("INSERT INTO run_metric_values (occurrence, name, value) VALUES (?, ?, ?)");
+  const other = claimedRun(db, wf, automationId, 20, 1);
+  r.report(db, BOUND.id, other, "completed", null, NOW, { ok: true, minutes: 1 });
+  assert.throws(() => ins.run(other, "bb", 1e12 + 1), /CHECK/);
+  assert.throws(() => ins.run(other, "bb", -1e13), /CHECK/);
+  ins.run(other, "bb", -1e12);
+  // pure: a mean that overflows (cannot be stored today) is the median, never Infinity
+  const rolled = cycles.namedRollup([{ named: [["aa", 1e308]] }, { named: [["aa", 1e308]] }]);
+  assert.deepEqual(rolled, [{ name: "aa", reports: 2, median: 1e308, mean: 1e308, min: 1e308, max: 1e308 }]);
+  assert.ok(Number.isFinite(rolled[0]?.mean));
+});
+
+test("S3: the name rule is the same in the schema and the handler for edge names (newline, accents, digits first, length 2 and 41 and 42)", () => {
+  const cases: [string, boolean][] = [
+    ["ab", true], ["a_", true], ["a".repeat(41), true], ["a1", true],
+    ["a", false], ["a-b", false], ["Ab", false], ["aé", false], ["ab\n", false], ["1a", false], ["_a", false], ["a".repeat(42), false], ["a b", false], [" ab", false], ["ab ", false], ["", false],
+  ];
+  for (const [name, ok] of cases) {
+    const schema = validateInput(reportOp, { occurrence: "a".repeat(64), status: "completed", metrics: { ok: true, minutes: 1, metrics: { [name]: 1 } } } as never).ok;
+    const { db, occ } = setup();
+    const handler = refusal(() => r.report(db, BOUND.id, occ, "completed", null, NOW, { ok: true, minutes: 1, metrics: { [name]: 1 } })) === null;
+    assert.equal(schema, ok, `schema: ${JSON.stringify(name)}`);
+    assert.equal(handler, ok, `handler: ${JSON.stringify(name)}`);
+    if (ok) assert.deepEqual(namedRows(db).map((x) => x.name), [name], "stored under the table's own name CHECK");
+  }
+});
+
+test("S3: a failure while the named values are written rolls the whole report back (status, run_metrics, values)", () => {
+  const { db, occ } = setup();
+  db.exec("CREATE TRIGGER boom BEFORE INSERT ON run_metric_values WHEN NEW.name = 'zz' BEGIN SELECT RAISE(ABORT, 'boom'); END");
+  assert.throws(() => r.report(db, BOUND.id, occ, "completed", null, NOW, { ok: true, minutes: 1, metrics: { aa: 1, zz: 2 } }), /boom/);
+  assert.equal(r.getRun(db, occ)?.status, "claimed");
+  assert.deepEqual([metricsRows(db).length, namedRows(db).length], [0, 0]);
 });

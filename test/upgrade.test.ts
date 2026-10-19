@@ -269,6 +269,7 @@ test("0006 on 0.3.0 data: every row of every table unchanged, run_metrics is new
   assert.throws(() => val.run(occ, "Candidates", 1), /CHECK constraint/, "name pattern");
   assert.throws(() => val.run(occ, "a", 1), /CHECK constraint/);
   assert.throws(() => val.run(occ, "candidates_seen", Number.POSITIVE_INFINITY), /CHECK constraint/, "finite numbers only");
+  assert.throws(() => val.run(occ, "candidates_seen", 1e12 + 1), /CHECK constraint/, "at most 1e12 in size");
   val.run(occ, "candidates_seen", 12);
   assert.throws(() => val.run(occ, "candidates_seen", 13), /UNIQUE|PRIMARY KEY/);
   for (let i = 0; i < 19; i++) val.run(occ, `m_${i}`, i);

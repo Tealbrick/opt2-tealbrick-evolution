@@ -22,9 +22,11 @@ CREATE TABLE run_metrics (
 CREATE TABLE run_metric_values (
   occurrence TEXT NOT NULL REFERENCES run_metrics (occurrence),
   name TEXT NOT NULL CHECK (length(name) BETWEEN 2 AND 41 AND name GLOB '[a-z]*' AND name NOT GLOB '*[^a-z0-9_]*'),
-  value REAL NOT NULL CHECK (typeof(value) = 'real' AND value BETWEEN -1.7976931348623157e308 AND 1.7976931348623157e308),
+  value REAL NOT NULL CHECK (typeof(value) = 'real' AND value BETWEEN -1e12 AND 1e12),
   PRIMARY KEY (occurrence, name)
 );
+-- Values are bounded to |v| <= 1e12 (a sum of many stays finite; the schema and the handler have the same bound). Edited in place
+-- a second time: 0006 is still unreleased (no tag; never on dev, qa1 or prod; only ephemeral CI databases have applied it).
 CREATE TRIGGER run_metric_values_at_most_20 BEFORE INSERT ON run_metric_values
 WHEN (SELECT count(*) FROM run_metric_values WHERE occurrence = NEW.occurrence) >= 20
 BEGIN

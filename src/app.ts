@@ -39,7 +39,7 @@ function op<I, O>(spec: HandlerSpec<I, O>): HandlerSpec {
   } as unknown as HandlerSpec;
 }
 
-const STATUS: Record<store.StoreError["code"], number> = { not_found: 404, conflict: 409, revision_conflict: 409, validation_failed: 422, kanban_project_required: 422, metrics_need_terminal_status: 422, pipeline_id_mismatch: 409, confirm_replace_required: 409, contract_too_large: 422, metric_not_declared: 422 };
+const STATUS: Record<store.StoreError["code"], number> = { not_found: 404, conflict: 409, revision_conflict: 409, validation_failed: 422, kanban_project_required: 422, metrics_need_terminal_status: 422, metric_names_full: 422, pipeline_id_mismatch: 409, confirm_replace_required: 409, contract_too_large: 422, metric_not_declared: 422 };
 export function toTbError(e: unknown): unknown {
   if (e instanceof store.StoreError) return new TbError(e.code, e.message, STATUS[e.code], e.details);
   if (e instanceof ModelError) return new TbError("validation_failed", e.message, 422, { pointer: e.pointer });
