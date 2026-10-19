@@ -56,8 +56,10 @@ interface Stub {
   gate: Record<string, Promise<void> | undefined>;
   networkDown: boolean;
   cycles: Record<string, unknown>[];
+  /** the lessons cycle_get answers (C288 R8) */
+  lessons: { occurrence: string; reportedAt: string; text: string }[];
 }
-const stub: Stub = { holds: [], calls: [], fail: {}, gate: {}, networkDown: false, cycles: [] };
+const stub: Stub = { holds: [], calls: [], fail: {}, gate: {}, networkDown: false, cycles: [], lessons: [] };
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
 globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
@@ -74,6 +76,10 @@ globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) =>
   if (failure) return json(failure.status, { error: { code: failure.code, message: `raw upstream text for ${failure.code}`, requestId: "req_1" } });
   if (op === "automation_set") return json(200, { status: "ok", output: {} });
   if (op === "cycles_list") return json(200, { status: "ok", output: { cycles: stub.cycles } });
+  if (op === "cycle_get") {
+    const { workflowId, version } = body.input as { workflowId: string; version: number };
+    return json(200, { status: "ok", output: { cycle: stub.cycles.find((c) => c.workflowId === workflowId && c.version === version), evals: [], lessons: stub.lessons } });
+  }
   if (op === "cycle_eval_run") {
     const { workflowId, version } = body.input as { workflowId: string; version: number };
     const stored = { id: "evr_01HZX3K8Q2V4N6P8R0S2T4V6W8", verdict: "pass", trigger: "owner", createdAt: "2026-10-18T09:00:00.000Z" };
@@ -141,6 +147,7 @@ const reset = (holds: StubHold[]) => {
   stub.gate = {};
   stub.networkDown = false;
   stub.cycles = [];
+  stub.lessons = [];
 };
 
 describe("Holds page", () => {
@@ -370,15 +377,20 @@ describe("Cycles page (C250 Release B)", () => {
     kanbanClosedRatio: 1,
     duplicateClaims: 0,
     last10: ["completed", "failed", "missed"],
+    runMetrics: { runs: 0, okRuns: 0, okRatio: null, minutesMedian: null, minutesMean: null, retriesTotal: 0, questionsToMartinTotal: 0, lessonCount: 0, namedMetrics: [] },
     evalLive: { verdict: "pass", results: [] },
     evalStored: null,
     ...extra,
   });
   const LIST = () => [
-    cycle(WF, "Morning rollup", 2, { widensAccess: true, completedRatio: 1 }),
-    cycle(WF, "Morning rollup", 1, { active: false, retiredAt: "2026-10-02T08:00:00.000Z", completedRatio: 0.8, approvalDelayMs: 7_200_000, evalStored: { id: "evr_1", verdict: "fail", trigger: "promotion", createdAt: "2026-10-02T08:00:00.000Z" }, evalLive: { verdict: "fail", results: [] } }),
+    cycle(WF, "Morning rollup", 2, { widensAccess: true, completedRatio: 1, runMetrics: { runs: 8, okRuns: 6, okRatio: 0.75, minutesMedian: 12, minutesMean: 14.5, retriesTotal: 3, questionsToMartinTotal: 1, lessonCount: 2, namedMetrics: [] } }),
+    cycle(WF, "Morning rollup", 1, { active: false, runMetrics: { runs: 5, okRuns: 3, okRatio: 0.6, minutesMedian: 20, minutesMean: 22, retriesTotal: 0, questionsToMartinTotal: 0, lessonCount: 0, namedMetrics: [] }, retiredAt: "2026-10-02T08:00:00.000Z", completedRatio: 0.8, approvalDelayMs: 7_200_000, evalStored: { id: "evr_1", verdict: "fail", trigger: "promotion", createdAt: "2026-10-02T08:00:00.000Z" }, evalLive: { verdict: "fail", results: [] } }),
     cycle(WF2, "Invoice run", 1, { completedRatio: null, last10: [], evalLive: { verdict: "insufficient", results: [] }, counts: { total: 0, completed: 0, failed: 0, uncertain: 0, missed: 0, policyStale: 0, open: 0 } }),
   ];
+  const cycleOf = (runs: number) => ({
+    version: 1,
+    runMetrics: { runs, okRuns: runs, okRatio: runs ? 1 : null, minutesMedian: runs ? 5 : null, minutesMean: runs ? 5 : null, retriesTotal: 0, questionsToMartinTotal: 0, lessonCount: 0, namedMetrics: [] },
+  });
   const tableRows = (host: Element) => [...host.querySelectorAll("tbody > tr:not(.cycle-detail)")];
 
   it("quiet: one row per workflow (its active cycle) with ticks, completed ratio, trend and the live verdict", async () => {
@@ -447,6 +459,90 @@ describe("Cycles page (C250 Release B)", () => {
     await flush();
     assert.match(alerts(m.host)[0] ?? "", /The eval could not be stored/);
     assert.ok(!button(m.host, "Store eval now").disabled);
+    await m.unmount();
+  });
+
+  it("C288 R8 quiet: each version says what the runners reported and how it compares with the previous version; no report says so", async () => {
+    reset([]);
+    stub.cycles = LIST();
+    const m = await mount(h(cyc.Cycles, {}));
+    await click(button(m.host, "Show versions"));
+    const [v2, v1] = [...m.host.querySelectorAll(".timeline > li")];
+    assert.match(v2?.textContent ?? "", /8 run reports with metrics: 75% reported as done well, typical time 12 min, average 14.5 min · 3 retries, 1 question to you, 2 lessons/);
+    assert.match(v2?.textContent ?? "", /Compared with version 1: share reported as done well up 15 points, typical time 8 min shorter\./);
+    assert.match(v1?.textContent ?? "", /5 run reports with metrics: 60% reported as done well, typical time 20 min/);
+    assert.doesNotMatch(v1?.textContent ?? "", /Compared with/, "version 1 has no parent");
+    assert.equal(cyc.compareText({ runMetrics: LIST()[1]?.runMetrics as never }, { version: 1, runMetrics: LIST()[0]?.runMetrics as never }), "Compared with version 1: share reported as done well down 15 points, typical time 8 min longer.");
+    const TOO_FEW = "Too few reports to compare yet (needs 5 per version).";
+    assert.equal(cyc.compareText(cycleOf(0), cycleOf(5)), TOO_FEW, "no numbers when one version has no reports");
+    assert.equal(cyc.compareText(cycleOf(4), cycleOf(9)), TOO_FEW, "4 reports are under the floor");
+    assert.equal(cyc.compareText(cycleOf(9), cycleOf(4)), TOO_FEW);
+    assert.match(cyc.compareText(cycleOf(5), cycleOf(5)) ?? "", /^Compared with version 1: share reported as done well the same, typical time the same\.$/, "exactly 5 in both compares");
+    assert.equal(cyc.compareText(cycleOf(0), cycleOf(0)), null, "nothing reported anywhere: nothing to say");
+    assert.equal(cyc.compareText(cycleOf(9), null), null, "version 1 has no parent");
+    assert.equal(cyc.metricsText(cycleOf(0).runMetrics), "No run reports with metrics yet.");
+    assert.equal(cyc.minutesText(150), "2.5 h");
+    assert.deepEqual(alerts(m.host), []);
+    await m.unmount();
+  });
+
+  it("named metrics: each version lists them by name (underscores read as spaces) and compares typical values by name once both versions have 5 reports of that name", async () => {
+    reset([]);
+    const named = (name: string, reports: number, median: number) => ({ name, reports, median, mean: median + 0.5, min: median - 1, max: median + 4 });
+    const list = LIST();
+    (list[0] as { runMetrics: { namedMetrics: unknown[] } }).runMetrics.namedMetrics = [named("candidates_seen", 8, 15), named("shortlist_size", 8, 4), named("new_this_week", 2, 1)];
+    (list[1] as { runMetrics: { namedMetrics: unknown[] } }).runMetrics.namedMetrics = [named("candidates_seen", 5, 12), named("shortlist_size", 3, 3)];
+    stub.cycles = list;
+    const m = await mount(h(cyc.Cycles, {}));
+    await click(button(m.host, "Show versions"));
+    const [v2, v1] = [...m.host.querySelectorAll(".timeline > li")];
+    const text2 = v2?.textContent ?? "";
+    assert.match(text2, /candidates seen: 8 reports, typical 15, average 15\.5, lowest 14, highest 19/);
+    assert.match(text2, /candidates seen: typical 12 → 15/);
+    assert.match(text2, /shortlist size: too few reports to compare yet \(needs 5 per version\)/);
+    assert.match(text2, /new this week: too few reports to compare yet/, "a name only the new version has");
+    assert.doesNotMatch(text2, /candidates_seen/, "never the raw name");
+    assert.match(v1?.textContent ?? "", /candidates seen: 5 reports, typical 12/);
+    assert.doesNotMatch(v1?.querySelector('[aria-label^="Named metrics compared"]')?.textContent ?? "", /./, "version 1 has no parent to compare with");
+    assert.deepEqual(cyc.namedCompare(cycleOf(9), null), []);
+    assert.equal(cyc.humanName("questions_to_martin"), "questions to martin");
+    assert.deepEqual(alerts(m.host), []);
+    await m.unmount();
+  });
+
+  it("C288 R8: Show lessons reads the lessons of that version (owner op) and shows them as plain text", async () => {
+    reset([]);
+    stub.cycles = LIST();
+    stub.lessons = [
+      { occurrence: "a".repeat(64), reportedAt: "2026-10-09T08:00:00.000Z", text: "Check the <b>calendar</b> first" },
+      { occurrence: "b".repeat(64), reportedAt: "2026-10-08T08:00:00.000Z", text: "Ask once" },
+    ];
+    const m = await mount(h(cyc.Cycles, {}));
+    await click(button(m.host, "Show versions"));
+    assert.equal(m.host.querySelectorAll(".lessons").length, 0, "nothing is read before the owner asks");
+    assert.equal(stub.calls.filter((c) => c.op === "cycle_get").length, 0);
+    assert.equal([...m.host.querySelectorAll("button")].filter((b) => /Show lessons/.test(b.textContent ?? "")).length, 1, "only the version with lessons has the button");
+    await click(button(m.host, "Show lessons (2)"));
+    await flush();
+    assert.deepEqual(stub.calls.filter((c) => c.op === "cycle_get").map((c) => c.input), [{ workflowId: WF, version: 2 }]);
+    const items = [...m.host.querySelectorAll(".lessons > li")];
+    assert.deepEqual(items.map((li) => li.textContent), ["Check the <b>calendar</b> first", "Ask once"]);
+    assert.equal(m.host.querySelector(".lessons b"), null, "agent text is never markup");
+    assert.match(m.host.textContent ?? "", /written by agents and shown to you only/);
+    assert.deepEqual(alerts(m.host), []);
+    await m.unmount();
+  });
+
+  it("C288 R8 fires: lessons that cannot be loaded show a plain message and the button stays", async () => {
+    reset([]);
+    stub.cycles = LIST();
+    stub.fail.cycle_get = { status: 500, code: "internal_error" };
+    const m = await mount(h(cyc.Cycles, {}));
+    await click(button(m.host, "Show versions"));
+    await click(button(m.host, "Show lessons (2)"));
+    await flush();
+    assert.match(alerts(m.host)[0] ?? "", /The lessons could not be loaded/);
+    assert.ok(!button(m.host, "Show lessons (2)").disabled);
     await m.unmount();
   });
 

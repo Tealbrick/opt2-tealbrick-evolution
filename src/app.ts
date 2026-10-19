@@ -38,7 +38,7 @@ function op<I, O>(spec: HandlerSpec<I, O>): HandlerSpec {
   } as unknown as HandlerSpec;
 }
 
-const STATUS: Record<store.StoreError["code"], number> = { not_found: 404, conflict: 409, revision_conflict: 409, validation_failed: 422, kanban_project_required: 422 };
+const STATUS: Record<store.StoreError["code"], number> = { not_found: 404, conflict: 409, revision_conflict: 409, validation_failed: 422, kanban_project_required: 422, metrics_need_terminal_status: 422, metric_names_full: 422 };
 export function toTbError(e: unknown): unknown {
   if (e instanceof store.StoreError) return new TbError(e.code, e.message, STATUS[e.code], e.details);
   if (e instanceof ModelError) return new TbError("validation_failed", e.message, 422, { pointer: e.pointer });
@@ -207,10 +207,11 @@ export const handlers = {
     },
   }),
   [OP.routineReport]: op<K.RoutineReportInput, K.RoutineReportOutput>({
-    redact: (input) => `Run ${input.occurrence.slice(0, 12)}: ${input.status}`,
+    // never the metrics themselves: lessons are free text from the agent (C88 / L12)
+    redact: (input) => `Run ${input.occurrence.slice(0, 12)}: ${input.status}${input.metrics ? " (with metrics)" : ""}`,
     async run(input, ctx) {
       const callApp = ctx.callApp.bind(ctx);
-      const { run, changed } = routines.report(ctx.db, ctx.caller.id, input.occurrence, input.status, input.summary?.trim() || null);
+      const { run, changed } = routines.report(ctx.db, ctx.caller.id, input.occurrence, input.status, input.summary?.trim() || null, Date.now(), input.metrics ?? null);
       if (changed) await closeRunIssue(ctx.db, callApp, run);
       await flushKanban(ctx.db, callApp);
       return routines.getRun(ctx.db, input.occurrence) ?? run;
@@ -364,7 +365,9 @@ export const handlers = {
   }),
   [OP.cycleGet]: op<K.CycleGetInput, K.CycleGetOutput>({
     async run(input, ctx) {
-      return { cycle: cycles.getCycle(ctx.db, input.workflowId, input.version), evals: cycles.storedEvals(ctx.db, input.workflowId, input.version) };
+      // the lessons are free text from agents: person op only (C88 / L12), never in an agent op
+      const cycle = cycles.getCycle(ctx.db, input.workflowId, input.version);
+      return { cycle, evals: cycles.storedEvals(ctx.db, input.workflowId, input.version), lessons: cycles.cycleLessons(ctx.db, input.workflowId, input.version) };
     },
   }),
   [OP.cycleEvalRun]: op<K.CycleEvalRunInput, K.CycleEvalRunOutput>({

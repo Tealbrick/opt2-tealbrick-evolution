@@ -30,6 +30,8 @@ Known edge cases of the ledger (accepted for 0.3.0):
 - `workflowTitle` may come from a Kanban-derived suggestion title (C88): owner-only, like `workflows_list`. The ledger has no Kanban evidence titles.
 - The closing eval at promotion is best effort (savepoint): if it fails, the promotion stands and the cycle has no stored closing eval.
 
+Run metrics (C288 R8): `routine_report` may carry the `RunReport` metrics with the terminal report; they are stored with it in `run_metrics` (the named per-pipeline numbers in `run_metric_values`) and rolled up per cycle (also by name) (`runMetrics` in `src/cycles.ts`). The lessons are free text from agents (C88 / L12): only `cycle_get` (person op) returns them.
+
 Run semantics: the primary key of `routine_runs` is the occurrence (sha256 of automation id, revision and due time), so claims are at most once. A misfire grace of 120 s collapses missed periods into one `missed` row (no catch-up burst). `claimed` over 10 minutes or `dispatched` over 30 minutes without a report becomes `uncertain` and is never re-offered. Nothing starts runs on a timer. The runner is external: `tealbrick agent serve` in routines mode.
 
 ## Operations (from `tealbrick.manifest.json`)
@@ -51,7 +53,7 @@ None. No keys. Default agent harness choice in the UI is "Other agent (MCP)".
 
 ## Data
 
-- **Stored:** Migrations 0001 to 0005 (0004 rebuilds `routine_runs` with the `policy_stale` status, rows unchanged; 0005 adds `eval_runs` and the nullable `routine_runs.reported_at`, null on old rows; `test/upgrade.test.ts`, `scripts/upgrade-check.ts`): `suggestions`, `suggestion_events`, `detector_covered`, `drafts`, `workflows`, `workflow_versions` (immutable snapshots), `agent_names`, `automations`, `routine_runs`, `detector_state`, `eval_runs` (stored cycle evals: verdict and `tealbrick.eval/1` results, no Kanban titles). The cycle ledger is not stored: it is computed on read. Kanban issue titles are stored as suggestion evidence and shown to the owner only (a workflow title made from a detector suggestion can carry one; `cycles_list` shows it to the owner only).
+- **Stored:** Migrations 0001 to 0006 (0004 rebuilds `routine_runs` with the `policy_stale` status, rows unchanged; 0005 adds `eval_runs` and the nullable `routine_runs.reported_at`, null on old rows; 0006 adds `run_metrics` (C288 R8: one row per run with the metrics of its terminal `routine_report`; no existing table changes); `test/upgrade.test.ts`, `scripts/upgrade-check.ts`): `suggestions`, `suggestion_events`, `detector_covered`, `drafts`, `workflows`, `workflow_versions` (immutable snapshots), `agent_names`, `automations`, `routine_runs`, `detector_state`, `eval_runs` (stored cycle evals: verdict and `tealbrick.eval/1` results, no Kanban titles), `run_metrics` (ok, minutes, retries, questions to the owner, lessons: free text from agents, read by person ops only). The cycle ledger is not stored: it is computed on read. Kanban issue titles are stored as suggestion evidence and shown to the owner only (a workflow title made from a detector suggestion can carry one; `cycles_list` shows it to the owner only).
 - **Never stored:** Anything from Kanban beyond the evidence the owner reviews.
 
 ## External calls and background work

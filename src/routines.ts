@@ -539,12 +539,131 @@ const NEXT_STATUS: Record<RunStatus, RunStatus[]> = {
 export type ReportStatus = "dispatched" | "completed" | "failed" | "uncertain";
 export const TERMINAL: ReadonlySet<RunStatus> = new Set(["completed", "failed", "uncertain"]);
 
-/** routine_report: only the claimer; repeating the current status is a no-op; terminal states are final. */
-export function report(db: Db, callerId: string, occurrence: string, status: ReportStatus, summary: string | null, now: number = Date.now()): { run: Run; changed: boolean } {
+/** The optional `metrics` of routine_report (C288 R8): the RunReport of the Henry contracts. `pipeline` and `version` are
+ *  accepted for 1:1 compatibility and IGNORED (Henry's pipeline ids and contract version are not ours); the stored truth
+ *  is the run row's own workflow id and version. */
+export interface MetricsInput {
+  pipeline?: string;
+  version?: number;
+  ok: boolean;
+  minutes: number;
+  retries?: number;
+  questions_to_martin?: number;
+  lessons?: string[];
+  /** the named per-pipeline numbers: name -> number (at most 20 per report, at most 20 distinct names per workflow version; |value| <= 1e12) */
+  metrics?: Record<string, number>;
+  /** the Task Board issue id of the run: accepted and IGNORED (the run row's kanban_issue_id is the truth) */
+  issue?: string;
+}
+export interface StoredMetrics {
+  ok: boolean;
+  minutes: number;
+  retries: number | null;
+  questionsToMartin: number | null;
+  lessons: string[];
+  /** the named numbers, sorted by name */
+  named: [string, number][];
+}
+export const NAMED_MAX = 20;
+export const NAMED_VALUE_MAX = 1e12;
+export const NAME_PATTERN = /^[a-z][a-z0-9_]{1,40}$/;
+export const MINUTES_MAX = 10080;
+export const COUNT_MAX = 1000;
+export const LESSONS_MAX = 20;
+export const LESSON_MAX_CHARS = 280;
+
+const refuse = (pointer: string, message: string): StoreError => new StoreError("validation_failed", message, { pointer });
+
+/** Invisible "filler" characters that are letters or symbols by category but show nothing (braille blank, Hangul fillers,
+ *  Khmer inherent vowels). A lesson of only these is blank. Keep in step with the pattern in the manifest. */
+const FILLERS = new Set(["\u2800", "\u3164", "\u115F", "\u1160", "\uFFA0", "\u17B4", "\u17B5"]);
+const MEANINGFUL = /[\p{L}\p{N}\p{P}\p{S}]/u;
+/** A lesson must show at least one letter, digit, punctuation or symbol. */
+export const isMeaningful = (s: string): boolean => Array.from(s).some((ch) => MEANINGFUL.test(ch) && !FILLERS.has(ch));
+
+function namedOf(map: unknown): [string, number][] {
+  if (map === undefined) return [];
+  if (typeof map !== "object" || map === null || Array.isArray(map)) throw refuse("/metrics/metrics", "metrics.metrics must be an object of names and numbers.");
+  const entries = Object.entries(map);
+  if (entries.length > NAMED_MAX) throw refuse("/metrics/metrics", `metrics.metrics has at most ${NAMED_MAX} names.`);
+  for (const [name, v] of entries) {
+    if (!NAME_PATTERN.test(name)) throw refuse(`/metrics/metrics/${name}`, "A metric name starts with a lower case letter and has 2 to 41 characters: lower case letters, digits and underscore.");
+    if (typeof v !== "number" || !Number.isFinite(v) || Math.abs(v) > NAMED_VALUE_MAX) throw refuse(`/metrics/metrics/${name}`, `metrics.metrics.${name} must be a number from -1e12 to 1e12.`);
+  }
+  return entries.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+}
+
+/** Checks `metrics` and returns what is stored (lessons trimmed). The manifest schema already refuses bad shapes with a
+ *  pointer before the handler runs; the bounds are checked here too, so a direct call of `report` cannot store a value
+ *  the table's CHECKs would refuse. Lesson length counts code points, like the schema.
+ *  - terminal status only: completed or failed (an `uncertain` report is not a result of the run);
+ *  - `pipeline`, `version` and `issue` are ignored: they are not compared with the run (the run row is the truth);
+ *  - `metrics` (the named map): at most 20 names, each ^[a-z][a-z0-9_]{1,40}$, finite numbers with |v| <= 1e12. Which names a
+ *    pipeline may declare is not checked here: any patterned name is stored (a caller may check declared names, R10).
+ *    `report` also keeps a workflow version to at most 20 distinct names over all its runs (metric_names_full).
+ *  `ok` is not cross-checked with the status: it is the runner's own word on the outcome (a completed run can say ok: false). */
+export function checkMetrics(m: MetricsInput, status: ReportStatus): StoredMetrics {
+  if (status !== "completed" && status !== "failed")
+    throw new StoreError("metrics_need_terminal_status", "Send metrics only with the report that ends the run: status completed or failed.", { pointer: "/metrics", status });
+  if (typeof m.ok !== "boolean") throw refuse("/metrics/ok", "metrics.ok must be true or false.");
+  if (typeof m.minutes !== "number" || !Number.isFinite(m.minutes) || m.minutes < 0 || m.minutes > MINUTES_MAX) throw refuse("/metrics/minutes", `metrics.minutes must be a number from 0 to ${MINUTES_MAX}.`);
+  const count = (k: "retries" | "questions_to_martin"): number | null => {
+    const v = m[k];
+    if (v === undefined) return null;
+    if (!Number.isInteger(v) || v < 0 || v > COUNT_MAX) throw refuse(`/metrics/${k}`, `metrics.${k} must be a whole number from 0 to ${COUNT_MAX}.`);
+    return v;
+  };
+  const retries = count("retries");
+  const questionsToMartin = count("questions_to_martin");
+  const lessons = m.lessons ?? [];
+  if (!Array.isArray(lessons) || lessons.length > LESSONS_MAX) throw refuse("/metrics/lessons", `metrics.lessons has at most ${LESSONS_MAX} entries.`);
+  const trimmed = lessons.map((l, i) => {
+    const t = typeof l === "string" ? l.trim() : "";
+    const n = Array.from(t).length;
+    if (n < 1 || n > LESSON_MAX_CHARS || !isMeaningful(t)) throw refuse(`/metrics/lessons/${i}`, `Each lesson has 1 to ${LESSON_MAX_CHARS} characters and shows at least one letter, digit or symbol.`);
+    return t;
+  });
+  const named = namedOf(m.metrics);
+  return { ok: m.ok, minutes: m.minutes, retries, questionsToMartin, lessons: trimmed, named };
+}
+
+/** routine_report: only the claimer; repeating the current status is a no-op; terminal states are final.
+ *  `metrics` (C288 R8) are stored with the report that moves the run to completed / failed, in the same transaction.
+ *  They are checked on every call (a bad payload is refused even on a repeat), but a REPEAT of the current status
+ *  changes nothing: metrics that arrive on it, same or different, are not stored (the first terminal report decides). */
+export function report(
+  db: Db,
+  callerId: string,
+  occurrence: string,
+  status: ReportStatus,
+  summary: string | null,
+  now: number = Date.now(),
+  metrics: MetricsInput | null = null,
+): { run: Run; changed: boolean } {
   return db.transaction(() => {
     sweep(db, now);
     const run = getRun(db, occurrence);
     if (!run || run.claimedBy !== callerId) throw new StoreError("not_found", "No run of yours with this occurrence.");
+    const stored = metrics ? checkMetrics(metrics, status) : null;
+    // at most 20 distinct names per workflow version, over all its runs: the cycle ledger lists them (cycles_list answers at most 20)
+    if (stored?.named.length) {
+      const have = new Set(
+        db
+          .prepare("SELECT DISTINCT v.name FROM run_metric_values v JOIN routine_runs r ON r.occurrence = v.occurrence WHERE r.workflow_id = ? AND r.workflow_version IS ?")
+          .all(run.workflowId, run.workflowVersion)
+          .map((x) => String(x.name)),
+      );
+      let free = NAMED_MAX - have.size;
+      for (const [name] of stored.named) {
+        if (have.has(name)) continue;
+        if (free-- <= 0)
+          throw new StoreError(
+            "metric_names_full",
+            `This workflow version already has ${NAMED_MAX} metric names. Send only those names, or send the report again without metrics.`,
+            { pointer: `/metrics/metrics/${name}` },
+          );
+      }
+    }
     if (run.status === status) return { run, changed: false };
     if (!NEXT_STATUS[run.status].includes(status)) throw new StoreError("conflict", `A ${run.status} run cannot become ${status}.`, { status: run.status });
     const sync = TERMINAL.has(status) && run.kanbanIssueId ? "pending" : run.kanbanSync;
@@ -553,6 +672,18 @@ export function report(db: Db, callerId: string, occurrence: string, status: Rep
     db.prepare(
       "UPDATE routine_runs SET status = ?, summary = COALESCE(?, summary), kanban_sync = ?, updated_at = ?, reported_at = CASE WHEN ? THEN ? ELSE reported_at END WHERE occurrence = ?",
     ).run(status, summary, sync, now, TERMINAL.has(status) ? 1 : 0, now, occurrence);
+    if (stored) {
+      db.prepare("INSERT INTO run_metrics (occurrence, ok, minutes, retries, questions_to_martin, lessons, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)").run(
+        occurrence,
+        stored.ok ? 1 : 0,
+        stored.minutes,
+        stored.retries,
+        stored.questionsToMartin,
+        JSON.stringify(stored.lessons),
+        now,
+      );
+      for (const [name, value] of stored.named) db.prepare("INSERT INTO run_metric_values (occurrence, name, value) VALUES (?, ?, ?)").run(occurrence, name, value);
+    }
     return { run: getRun(db, occurrence) as Run, changed: true };
   });
 }

@@ -5,6 +5,7 @@
 // C250 Release B: 0005 adds eval_runs and routine_runs.reported_at on 0.2.13 data (0001-0004, a run in every status
 // incl. policy_stale and missed rows without a version): every existing value unchanged, the new column null, and the
 // 0.3.0 ledger reads the old rows.
+// C288 R8: 0006 adds run_metrics on 0.3.0 data (0001-0005): one new table, every existing row of every table unchanged.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
@@ -119,14 +120,15 @@ test("the 0.2.13 code works on migrated 0.2.12 data", () => {
   assert.equal(r.claim(db, BOUND, job?.occurrence as string, now).claimed, true, "the schedule runs on");
 });
 
-test("the migration files are gap-free and 0001-0004 are unchanged since 0.2.13 (the SDK refuses a changed file)", () => {
-  assert.deepEqual(files, ["0001_init.sql", "0002_routines.sql", "0003_detector_state.sql", "0004_policy_stale_runs.sql", "0005_eval_runs.sql"]);
-  // sha256 of the files in tags v0.2.12 / v0.2.13 (the SDK stores these in tb_migrations and refuses a changed applied file)
+test("the migration files are gap-free and 0001-0005 are unchanged since their release (the SDK refuses a changed file)", () => {
+  assert.deepEqual(files, ["0001_init.sql", "0002_routines.sql", "0003_detector_state.sql", "0004_policy_stale_runs.sql", "0005_eval_runs.sql", "0006_run_metrics.sql"]);
+  // sha256 of the files in tags v0.2.12 / v0.2.13 / v0.3.0 (the SDK stores these in tb_migrations and refuses a changed applied file)
   const RELEASED: Record<string, string> = {
     "0001_init.sql": "61853b592934920222d86bd1ec3d658822aa3307eec6d7faa2888f4a97615a68",
     "0002_routines.sql": "fb84ff74b28f2d82740b0a7065890faa8a181f07ac5f76cb330921784061f7da",
     "0003_detector_state.sql": "81cc359d49e0a1690a9e7adad321ba6a57882b667d558448219c91169cef98f7",
     "0004_policy_stale_runs.sql": "97acdd6d8bfbae587ec4aa2e95ca29c50ac62447b7d9151db8c447baf2cda6ad",
+    "0005_eval_runs.sql": "93039a548c3d1ef5a26ab1cdc33fb62f0432fec376cc39cf6d75b6d1369fb30c",
   };
   for (const [f, sum] of Object.entries(RELEASED)) assert.equal(createHash("sha256").update(readFileSync(join(migrationsDir, f))).digest("hex"), sum, f);
 });
@@ -182,10 +184,11 @@ test("0005 on 0.2.13 data: every row unchanged (reported_at null), eval_runs and
   ins.run("evr_7", wf, "s", "T2", "pass", "[]", "0.3.0", "owner", null);
 });
 
-test("the 0.3.0 ledger reads migrated 0.2.13 rows: version-less missed rows go to the version active at their due time", () => {
+test("the ledger reads migrated 0.2.13 rows: version-less missed rows go to the version active at their due time", () => {
   const raw = new DatabaseSync(":memory:");
   seed0213(raw);
   raw.exec(readFileSync(join(migrationsDir, "0005_eval_runs.sql"), "utf8"));
+  raw.exec(readFileSync(join(migrationsDir, "0006_run_metrics.sql"), "utf8"));
   const db = dbAt(raw);
   const now = T("2026-10-12T08:00:30Z");
   const [v1, v2] = cycles.workflowCycles(db, store.listWorkflows(db)[0]?.id as string, now);
@@ -195,4 +198,79 @@ test("the 0.3.0 ledger reads migrated 0.2.13 rows: version-less missed rows go t
   assert.deepEqual(v2?.counts, { total: 2, completed: 0, failed: 0, uncertain: 0, missed: 1, policyStale: 1, open: 0 });
   assert.equal(v1?.retiredAt, v2?.promotedAt);
   assert.equal(v2?.active, true);
+  // no run reported metrics before 0006: the rollup is empty, not wrong
+  for (const c of [v1, v2]) assert.deepEqual(c?.runMetrics, { runs: 0, okRuns: 0, okRatio: null, minutesMedian: null, minutesMean: null, retriesTotal: 0, questionsToMartinTotal: 0, lessonCount: 0, namedMetrics: [] });
+});
+
+/** 0.3.0 data: the 0.2.13 rows migrated by 0005 (a 0.3.0 runner has also reported: reported_at set on one run). */
+function seed030(raw: DatabaseSync): void {
+  seed0213(raw);
+  raw.exec(readFileSync(join(migrationsDir, "0005_eval_runs.sql"), "utf8"));
+  raw.prepare("UPDATE routine_runs SET reported_at = updated_at WHERE status IN ('completed', 'failed')").run();
+  const wf = (raw.prepare("SELECT id FROM workflows").get() as { id: string }).id;
+  raw
+    .prepare('INSERT INTO eval_runs (id, workflow_id, version, suite, tier, verdict, results, app_version, "trigger", idempotency_key, created_at) VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, NULL, 0)')
+    .run("evr_030", wf, "cycle:x@v1", "T2", "pass", "[]", "0.3.0", "promotion");
+}
+
+test("0006 on 0.3.0 data: every row of every table unchanged, run_metrics is new and empty, its constraints hold", () => {
+  const raw = new DatabaseSync(":memory:");
+  raw.exec("PRAGMA foreign_keys = ON");
+  seed030(raw);
+  const before = tables(raw);
+  assert.equal((before.routine_runs as unknown[]).length, 7);
+  assert.equal((before.eval_runs as unknown[]).length, 1);
+  raw.exec("BEGIN");
+  raw.exec(readFileSync(join(migrationsDir, "0006_run_metrics.sql"), "utf8"));
+  raw.exec("COMMIT");
+  const after = tables(raw);
+  assert.deepEqual(after.run_metrics, [], "new table, no rows");
+  assert.deepEqual(after.run_metric_values, [], "new table, no rows");
+  delete after.run_metrics;
+  delete after.run_metric_values;
+  assert.deepEqual(after, before, "same tables, same rows, same order, same columns");
+  assert.deepEqual(raw.prepare("PRAGMA foreign_key_check").all(), []);
+  assert.equal((raw.prepare("PRAGMA integrity_check").get() as Record<string, string>).integrity_check, "ok");
+  const idx = (raw.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'routine_runs' AND name NOT LIKE 'sqlite_%' ORDER BY name").all() as { name: string }[]).map((x) => x.name);
+  assert.deepEqual(idx, ["routine_runs_by_automation", "routine_runs_open"], "routine_runs is not touched");
+
+  const occ = (before.routine_runs as { occurrence: string; status: string }[]).filter((x) => x.status === "completed")[0]?.occurrence as string;
+  const ins = raw.prepare("INSERT INTO run_metrics (occurrence, ok, minutes, retries, questions_to_martin, lessons, created_at) VALUES (?, ?, ?, ?, ?, ?, 0)");
+  assert.throws(() => ins.run("run_missing", 1, 5, null, null, "[]"), /FOREIGN KEY/);
+  assert.throws(() => ins.run(occ, 2, 5, null, null, "[]"), /CHECK constraint/, "ok is 0 or 1");
+  assert.throws(() => ins.run(occ, 1, -0.1, null, null, "[]"), /CHECK constraint/);
+  assert.throws(() => ins.run(occ, 1, 10080.5, null, null, "[]"), /CHECK constraint/);
+  assert.throws(() => ins.run(occ, 1, 5, 1001, null, "[]"), /CHECK constraint/);
+  assert.throws(() => ins.run(occ, 1, 5, 1.5, null, "[]"), /CHECK constraint/, "retries is a whole number");
+  assert.throws(() => ins.run(occ, 1, 5, null, -1, "[]"), /CHECK constraint/);
+  assert.throws(() => ins.run(occ, 1, 5, null, null, "not json"), /CHECK constraint/);
+  assert.throws(() => ins.run(occ, 1, 5, null, null, '{"a":1}'), /CHECK constraint/, "lessons is an array");
+  assert.throws(() => ins.run(occ, 1, 5, null, null, JSON.stringify(Array(21).fill("x"))), /CHECK constraint/);
+  ins.run(occ, 1, 10080, 1000, 0, JSON.stringify(Array(20).fill("x")));
+  assert.throws(() => ins.run(occ, 0, 1, null, null, "[]"), /UNIQUE|PRIMARY KEY/, "one metrics row per run");
+  // the named values of the same report (also in 0006): constraints hold, one row per run and name, at most 20 names
+  const val = raw.prepare("INSERT INTO run_metric_values (occurrence, name, value) VALUES (?, ?, ?)");
+  assert.throws(() => val.run("run_missing", "candidates_seen", 1), /FOREIGN KEY/);
+  assert.throws(() => val.run(occ, "Candidates", 1), /CHECK constraint/, "name pattern");
+  assert.throws(() => val.run(occ, "a", 1), /CHECK constraint/);
+  assert.throws(() => val.run(occ, "candidates_seen", Number.POSITIVE_INFINITY), /CHECK constraint/, "finite numbers only");
+  assert.throws(() => val.run(occ, "candidates_seen", 1e12 + 1), /CHECK constraint/, "at most 1e12 in size");
+  val.run(occ, "candidates_seen", 12);
+  assert.throws(() => val.run(occ, "candidates_seen", 13), /UNIQUE|PRIMARY KEY/);
+  for (let i = 0; i < 19; i++) val.run(occ, `m_${i}`, i);
+  assert.throws(() => val.run(occ, "one_more", 1), /at most 20/);
+});
+
+test("the code works on migrated 0.3.0 data: a late report of an old uncertain run stores metrics, the ledger rolls them up, the old rows still read", () => {
+  const raw = new DatabaseSync(":memory:");
+  seed030(raw);
+  raw.exec(readFileSync(join(migrationsDir, "0006_run_metrics.sql"), "utf8"));
+  const db = dbAt(raw);
+  const now = T("2026-10-12T08:00:30Z");
+  const uncertain = (raw.prepare("SELECT occurrence FROM routine_runs WHERE status = 'uncertain'").all() as { occurrence: string }[]).map((x) => x.occurrence)[0] as string;
+  const done = r.report(db, BOUND.id, uncertain, "completed", "late", now, { ok: true, minutes: 12, retries: 1, lessons: [" late but fine "] });
+  assert.equal(done.changed, true);
+  const [v1] = cycles.workflowCycles(db, store.listWorkflows(db)[0]?.id as string, now);
+  assert.deepEqual(v1?.runMetrics, { runs: 1, okRuns: 1, okRatio: 1, minutesMedian: 12, minutesMean: 12, retriesTotal: 1, questionsToMartinTotal: 0, lessonCount: 1, namedMetrics: [] });
+  assert.deepEqual(v1?.counts, { total: 5, completed: 2, failed: 1, uncertain: 2, missed: 0, policyStale: 0, open: 0 });
 });
