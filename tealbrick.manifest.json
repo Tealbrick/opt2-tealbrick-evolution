@@ -2756,7 +2756,7 @@
     {
       "id": "draft_get",
       "title": "Draft detail",
-      "description": "One workflow draft.",
+      "description": "One workflow draft. `pipeline` says which pipeline contract it was imported from (null for a draft that was not imported).",
       "input": {
         "type": "object",
         "additionalProperties": false,
@@ -2790,7 +2790,8 @@
           "state",
           "promotedVersion",
           "createdAt",
-          "updatedAt"
+          "updatedAt",
+          "pipeline"
         ],
         "properties": {
           "id": {
@@ -2948,6 +2949,170 @@
           },
           "updatedAt": {
             "type": "string"
+          },
+          "pipeline": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "id",
+                  "version",
+                  "importedAt",
+                  "report"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "version": {
+                    "type": "integer"
+                  },
+                  "importedAt": {
+                    "type": "string"
+                  },
+                  "report": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "mapped",
+                      "unmapped",
+                      "kept_as_data",
+                      "schedule_hint",
+                      "metrics_keys",
+                      "notes"
+                    ],
+                    "properties": {
+                      "mapped": {
+                        "type": "array",
+                        "maxItems": 600,
+                        "items": {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "required": [
+                            "from",
+                            "to"
+                          ],
+                          "properties": {
+                            "from": {
+                              "type": "string"
+                            },
+                            "to": {
+                              "type": "string"
+                            }
+                          }
+                        }
+                      },
+                      "unmapped": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "tools"
+                        ],
+                        "properties": {
+                          "tools": {
+                            "type": "array",
+                            "maxItems": 600,
+                            "items": {
+                              "type": "object",
+                              "additionalProperties": false,
+                              "required": [
+                                "step",
+                                "tool"
+                              ],
+                              "properties": {
+                                "step": {
+                                  "type": "string"
+                                },
+                                "tool": {
+                                  "type": "string"
+                                }
+                              }
+                            }
+                          }
+                        }
+                      },
+                      "kept_as_data": {
+                        "type": "array",
+                        "maxItems": 100,
+                        "items": {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "required": [
+                            "field"
+                          ],
+                          "properties": {
+                            "field": {
+                              "type": "string"
+                            },
+                            "steps": {
+                              "type": "array",
+                              "maxItems": 600,
+                              "items": {
+                                "type": "string"
+                              }
+                            }
+                          }
+                        }
+                      },
+                      "schedule_hint": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "cron",
+                          "timezone",
+                          "event",
+                          "once"
+                        ],
+                        "properties": {
+                          "cron": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "timezone": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "event": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "once": {
+                            "type": [
+                              "boolean",
+                              "null"
+                            ]
+                          }
+                        }
+                      },
+                      "metrics_keys": {
+                        "type": "array",
+                        "maxItems": 200,
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "notes": {
+                        "type": "array",
+                        "maxItems": 50,
+                        "items": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            ]
           }
         }
       },
@@ -3517,6 +3682,593 @@
       "audience": "person"
     },
     {
+      "id": "pipeline_import",
+      "title": "Import a pipeline contract",
+      "description": "Import a typed pipeline contract (tealbrick.agents/pipeline-contract/0.1) as a new workflow draft. Teal Brick tools of the steps become the step operations and the allowed operations; every other tool is listed as not mapped; the rest of the contract is kept as data and is not enforced. No schedule is created: the report gives the trigger as a hint. With asDraftOf the draft is a new draft of that workflow.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "contract"
+        ],
+        "properties": {
+          "contract": {
+            "type": "object",
+            "description": "The pipeline contract JSON object."
+          },
+          "asDraftOf": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z]{3}_[0-9A-Za-z]{1,60}$",
+            "description": "A workflow that was imported from the same pipeline id (or never imported): the draft becomes its next version when promoted."
+          }
+        }
+      },
+      "output": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "draft",
+          "report"
+        ],
+        "properties": {
+          "draft": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "suggestionId",
+              "templateId",
+              "workflowId",
+              "title",
+              "summary",
+              "instruction",
+              "trigger",
+              "steps",
+              "allowed",
+              "revision",
+              "state",
+              "promotedVersion",
+              "createdAt",
+              "updatedAt",
+              "pipeline"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "suggestionId": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "templateId": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "workflowId": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "title": {
+                "type": "string"
+              },
+              "summary": {
+                "type": "string"
+              },
+              "instruction": {
+                "type": "string"
+              },
+              "trigger": {
+                "type": "string"
+              },
+              "steps": {
+                "type": "array",
+                "maxItems": 50,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "id",
+                    "title",
+                    "instruction",
+                    "ops"
+                  ],
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 40
+                    },
+                    "title": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 200
+                    },
+                    "instruction": {
+                      "type": "string"
+                    },
+                    "ops": {
+                      "type": "array",
+                      "maxItems": 32,
+                      "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "product",
+                          "operation"
+                        ],
+                        "properties": {
+                          "product": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 40,
+                            "pattern": "^[a-z][a-z0-9-]{0,39}$"
+                          },
+                          "operation": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 40,
+                            "pattern": "^[a-z][a-z0-9_]{0,39}$"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              "allowed": {
+                "type": "array",
+                "maxItems": 32,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "product",
+                    "operations",
+                    "crud"
+                  ],
+                  "properties": {
+                    "product": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 40,
+                      "pattern": "^[a-z][a-z0-9-]{0,39}$"
+                    },
+                    "operations": {
+                      "type": "array",
+                      "minItems": 1,
+                      "maxItems": 64,
+                      "items": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 40,
+                        "pattern": "^[a-z][a-z0-9_]{0,39}$"
+                      }
+                    },
+                    "crud": {
+                      "type": "array",
+                      "minItems": 1,
+                      "maxItems": 4,
+                      "items": {
+                        "type": "string",
+                        "enum": [
+                          "create",
+                          "read",
+                          "update",
+                          "delete"
+                        ]
+                      }
+                    }
+                  }
+                }
+              },
+              "revision": {
+                "type": "integer"
+              },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "open",
+                  "promoted"
+                ]
+              },
+              "promotedVersion": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "createdAt": {
+                "type": "string"
+              },
+              "updatedAt": {
+                "type": "string"
+              },
+              "pipeline": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "id",
+                      "version",
+                      "importedAt",
+                      "report"
+                    ],
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "version": {
+                        "type": "integer"
+                      },
+                      "importedAt": {
+                        "type": "string"
+                      },
+                      "report": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "mapped",
+                          "unmapped",
+                          "kept_as_data",
+                          "schedule_hint",
+                          "metrics_keys",
+                          "notes"
+                        ],
+                        "properties": {
+                          "mapped": {
+                            "type": "array",
+                            "maxItems": 600,
+                            "items": {
+                              "type": "object",
+                              "additionalProperties": false,
+                              "required": [
+                                "from",
+                                "to"
+                              ],
+                              "properties": {
+                                "from": {
+                                  "type": "string"
+                                },
+                                "to": {
+                                  "type": "string"
+                                }
+                              }
+                            }
+                          },
+                          "unmapped": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": [
+                              "tools"
+                            ],
+                            "properties": {
+                              "tools": {
+                                "type": "array",
+                                "maxItems": 600,
+                                "items": {
+                                  "type": "object",
+                                  "additionalProperties": false,
+                                  "required": [
+                                    "step",
+                                    "tool"
+                                  ],
+                                  "properties": {
+                                    "step": {
+                                      "type": "string"
+                                    },
+                                    "tool": {
+                                      "type": "string"
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          },
+                          "kept_as_data": {
+                            "type": "array",
+                            "maxItems": 100,
+                            "items": {
+                              "type": "object",
+                              "additionalProperties": false,
+                              "required": [
+                                "field"
+                              ],
+                              "properties": {
+                                "field": {
+                                  "type": "string"
+                                },
+                                "steps": {
+                                  "type": "array",
+                                  "maxItems": 600,
+                                  "items": {
+                                    "type": "string"
+                                  }
+                                }
+                              }
+                            }
+                          },
+                          "schedule_hint": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": [
+                              "cron",
+                              "timezone",
+                              "event",
+                              "once"
+                            ],
+                            "properties": {
+                              "cron": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "timezone": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "event": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "once": {
+                                "type": [
+                                  "boolean",
+                                  "null"
+                                ]
+                              }
+                            }
+                          },
+                          "metrics_keys": {
+                            "type": "array",
+                            "maxItems": 200,
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "notes": {
+                            "type": "array",
+                            "maxItems": 50,
+                            "items": {
+                              "type": "string"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          },
+          "report": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "mapped",
+              "unmapped",
+              "kept_as_data",
+              "schedule_hint",
+              "metrics_keys",
+              "notes"
+            ],
+            "properties": {
+              "mapped": {
+                "type": "array",
+                "maxItems": 600,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "from",
+                    "to"
+                  ],
+                  "properties": {
+                    "from": {
+                      "type": "string"
+                    },
+                    "to": {
+                      "type": "string"
+                    }
+                  }
+                }
+              },
+              "unmapped": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "tools"
+                ],
+                "properties": {
+                  "tools": {
+                    "type": "array",
+                    "maxItems": 600,
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "step",
+                        "tool"
+                      ],
+                      "properties": {
+                        "step": {
+                          "type": "string"
+                        },
+                        "tool": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              "kept_as_data": {
+                "type": "array",
+                "maxItems": 100,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "field"
+                  ],
+                  "properties": {
+                    "field": {
+                      "type": "string"
+                    },
+                    "steps": {
+                      "type": "array",
+                      "maxItems": 600,
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              },
+              "schedule_hint": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "cron",
+                  "timezone",
+                  "event",
+                  "once"
+                ],
+                "properties": {
+                  "cron": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "timezone": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "event": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "once": {
+                    "type": [
+                      "boolean",
+                      "null"
+                    ]
+                  }
+                }
+              },
+              "metrics_keys": {
+                "type": "array",
+                "maxItems": 200,
+                "items": {
+                  "type": "string"
+                }
+              },
+              "notes": {
+                "type": "array",
+                "maxItems": 50,
+                "items": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      },
+      "crud": [
+        "create"
+      ],
+      "effect": "write",
+      "idempotency": "required",
+      "receipt": true,
+      "audience": "person"
+    },
+    {
+      "id": "pipeline_export",
+      "title": "Export a pipeline contract",
+      "description": "A pipeline contract (tealbrick.agents/pipeline-contract/0.1) rebuilt from one version of a workflow. A workflow imported from a contract gives that contract back, except the fields Evolution owns (status, and the purpose, steps and Teal Brick tools you edited). A workflow that was never imported gets documented defaults for the required fields.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "workflowId"
+        ],
+        "properties": {
+          "workflowId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z]{3}_[0-9A-Za-z]{1,60}$"
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100000
+          }
+        }
+      },
+      "output": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "contract",
+          "filename",
+          "imported",
+          "omitted",
+          "notice"
+        ],
+        "properties": {
+          "contract": {
+            "type": "object"
+          },
+          "filename": {
+            "type": "string"
+          },
+          "imported": {
+            "type": "boolean"
+          },
+          "omitted": {
+            "type": "array",
+            "maxItems": 2100,
+            "items": {
+              "type": "string"
+            },
+            "description": "Allowed operations (product.operation) that no step uses: a contract lists tools per step, so they are not in it."
+          },
+          "notice": {
+            "type": "string"
+          }
+        }
+      },
+      "crud": [
+        "read"
+      ],
+      "effect": "read",
+      "idempotency": "none",
+      "receipt": false,
+      "audience": "person"
+    },
+    {
       "id": "workflows_list",
       "title": "Workflows",
       "description": "All permanent workflows.",
@@ -3585,7 +4337,7 @@
     {
       "id": "workflow_versions",
       "title": "Workflow versions",
-      "description": "Every version of one workflow, oldest first.",
+      "description": "Every version of one workflow, oldest first. `pipelines` lists the versions that came from an imported pipeline contract.",
       "input": {
         "type": "object",
         "additionalProperties": false,
@@ -3606,7 +4358,8 @@
         "additionalProperties": false,
         "required": [
           "workflow",
-          "versions"
+          "versions",
+          "pipelines"
         ],
         "properties": {
           "workflow": {
@@ -3792,6 +4545,30 @@
                 },
                 "promotedAt": {
                   "type": "string"
+                }
+              }
+            }
+          },
+          "pipelines": {
+            "type": "array",
+            "maxItems": 1000,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "version",
+                "id",
+                "pipelineVersion"
+              ],
+              "properties": {
+                "version": {
+                  "type": "integer"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "pipelineVersion": {
+                  "type": "integer"
                 }
               }
             }

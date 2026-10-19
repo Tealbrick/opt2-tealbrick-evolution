@@ -1,0 +1,21 @@
+{
+  "$schema": "../schemas/pipeline-contract.schema.json",
+  "id": "p6-onboarding-sequences", "version": 1, "status": "draft", "owner": "henry",
+  "purpose": "People who click 'join the newsletter feed' get Mautic onboarding (welcome, weekly recap); the Listmonk list stays the base list.",
+  "dictation_refs": ["#part3 newsletter", "#part4 Q4"],
+  "trigger": { "event": "listmonk.subscribed_to_feed", "cron": "0 8 * * *", "timezone": "Asia/Bangkok" },
+  "inputs": [
+    { "source": "connect:listmonk", "what": "new feed subscribers" },
+    { "source": "connect:mautic", "what": "contacts, segments, campaigns (after the Connect release)" }
+  ],
+  "steps": [
+    { "id": "sync", "do": "New feed subscribers → Mautic contact + segment 'Community onboarding'", "skills": ["mautic-sequences"] },
+    { "id": "sequences", "do": "Keep the welcome and weekly-recap campaigns current (content from P5)", "lead": "editorial-lead" }
+  ],
+  "outputs": ["every feed subscriber in the onboarding segment within 24 h"],
+  "done_when": ["no subscriber older than 24 h missing from the segment"],
+  "approvals": { "outward": "held_first_3_weeks", "delete": "held" },
+  "escalation": [{ "to": "martin", "when": "sequence content changes", "via": "inbox_ask" }],
+  "metrics": ["new_subscribers", "synced", "bounces"],
+  "taskboard": { "project": "Henry", "issue_title": "P6 onboarding {date}" }
+}

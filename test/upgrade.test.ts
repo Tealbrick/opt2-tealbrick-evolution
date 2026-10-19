@@ -6,15 +6,18 @@
 // incl. policy_stale and missed rows without a version): every existing value unchanged, the new column null, and the
 // 0.3.0 ledger reads the old rows.
 // C288 R8: 0006 adds run_metrics on 0.3.0 data (0001-0005): one new table, every existing row of every table unchanged.
+// C288 R10: 0007 adds pipeline_sources and workflow_version_pipelines on 0.3.0 + R8 data (0001-0006): two new tables, nothing else changes.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
+import { ulid } from "@opt2-tealbrick/manifest";
 import type { Caller, Db } from "@opt2-tealbrick/miniapp-sdk";
 import { migrationsDir } from "../src/app.ts";
 import * as cycles from "../src/cycles.ts";
+import * as pipeline from "../src/pipeline.ts";
 import * as r from "../src/routines.ts";
 import * as store from "../src/store.ts";
 import { AGENT_A } from "./helpers.ts";
@@ -50,13 +53,24 @@ function tables(raw: DatabaseSync): Record<string, unknown[]> {
   return Object.fromEntries(names.map(({ name }) => [name, raw.prepare(`SELECT * FROM "${name}" ORDER BY rowid`).all()]));
 }
 
+/** The promotion of 0.2.12, as SQL on its own tables (store.promote of today also writes the R10 pipeline tables,
+ *  which a 0.2.12 database does not have yet: the app always migrates first, a seed of old data must not). */
+function promote0212(raw: DatabaseSync, d: store.Draft): string {
+  const wf = `wfl_${ulid(D0)}`;
+  const snap = store.snapshotOf(d);
+  raw.prepare("INSERT INTO workflows (id, title, summary, active_version, draft_id, created_at, updated_at) VALUES (?, ?, ?, 1, ?, ?, ?)").run(wf, snap.title, snap.summary, d.id, D0, D0);
+  raw.prepare("INSERT INTO workflow_versions (workflow_id, version, snapshot, draft_id, draft_revision, promoted_at) VALUES (?, 1, ?, ?, ?, ?)").run(wf, JSON.stringify(snap), d.id, d.revision, D0);
+  raw.prepare("UPDATE drafts SET workflow_id = ?, state = 'promoted', promoted_version = 1, updated_at = ? WHERE id = ?").run(wf, D0, d.id);
+  return wf;
+}
+
 /** 0.2.12 data: schema 0001-0003, one run per status and Kanban sync state, written with the run-row SQL of 0.2.12. */
 function seed0212(raw: DatabaseSync): void {
   raw.exec("PRAGMA foreign_keys = ON");
   for (const f of files.filter((x) => x < "0004")) raw.exec(readFileSync(join(migrationsDir, f), "utf8"));
   const db = dbAt(raw);
   const d = store.createDraft(db, { suggestionId: null, templateId: null, snapshot: { title: "Rollup", summary: "", instruction: "Roll up.", trigger: "", steps: [], allowed: [{ product: "kanban", operations: ["issues_list"], crud: ["read"] }] } }, D0);
-  const wf = store.promote(db, d.id, d.revision, D0).workflow.id;
+  const wf = promote0212(raw, d);
   const a = r.setAutomation(db, { workflowId: wf, agentId: BOUND.id, cron: "0 8 * * *", kanbanProject: "prj_shared" }, D0);
   const ins = raw.prepare(
     "INSERT INTO routine_runs (occurrence, automation_id, revision, due_at, status, claimed_by, workflow_id, workflow_version, summary, kanban_issue_id, kanban_sync, claimed_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -121,7 +135,7 @@ test("the 0.2.13 code works on migrated 0.2.12 data", () => {
 });
 
 test("the migration files are gap-free and 0001-0005 are unchanged since their release (the SDK refuses a changed file)", () => {
-  assert.deepEqual(files, ["0001_init.sql", "0002_routines.sql", "0003_detector_state.sql", "0004_policy_stale_runs.sql", "0005_eval_runs.sql", "0006_run_metrics.sql"]);
+  assert.deepEqual(files, ["0001_init.sql", "0002_routines.sql", "0003_detector_state.sql", "0004_policy_stale_runs.sql", "0005_eval_runs.sql", "0006_run_metrics.sql", "0007_pipeline_contract.sql"]);
   // sha256 of the files in tags v0.2.12 / v0.2.13 / v0.3.0 (the SDK stores these in tb_migrations and refuses a changed applied file)
   const RELEASED: Record<string, string> = {
     "0001_init.sql": "61853b592934920222d86bd1ec3d658822aa3307eec6d7faa2888f4a97615a68",
@@ -260,4 +274,73 @@ test("the code works on migrated 0.3.0 data: a late report of an old uncertain r
   const [v1] = cycles.workflowCycles(db, store.listWorkflows(db)[0]?.id as string, now);
   assert.deepEqual(v1?.runMetrics, { runs: 1, okRuns: 1, okRatio: 1, minutesMedian: 12, minutesMean: 12, retriesTotal: 1, questionsToMartinTotal: 0, lessonCount: 1 });
   assert.deepEqual(v1?.counts, { total: 5, completed: 2, failed: 1, uncertain: 2, missed: 0, policyStale: 0, open: 0 });
+});
+
+/** 0.3.0 + R8 data: the 0.3.0 rows migrated by 0006, plus a metrics row on the completed run. */
+function seedR8(raw: DatabaseSync): void {
+  seed030(raw);
+  raw.exec(readFileSync(join(migrationsDir, "0006_run_metrics.sql"), "utf8"));
+  const occ = (raw.prepare("SELECT occurrence FROM routine_runs WHERE status = 'completed'").get() as { occurrence: string }).occurrence;
+  raw.prepare("INSERT INTO run_metrics (occurrence, ok, minutes, retries, questions_to_martin, lessons, created_at) VALUES (?, 1, 7, 0, 0, '[\"a lesson\"]', 0)").run(occ);
+}
+
+test("0007 on 0.3.0 + R8 data: every row of every table unchanged, the two pipeline tables are new and empty, their constraints hold", () => {
+  const raw = new DatabaseSync(":memory:");
+  raw.exec("PRAGMA foreign_keys = ON");
+  seedR8(raw);
+  const before = tables(raw);
+  assert.equal((before.routine_runs as unknown[]).length, 7);
+  assert.equal((before.run_metrics as unknown[]).length, 1);
+  raw.exec("BEGIN");
+  raw.exec(readFileSync(join(migrationsDir, "0007_pipeline_contract.sql"), "utf8"));
+  raw.exec("COMMIT");
+  const after = tables(raw);
+  assert.deepEqual(after.pipeline_sources, [], "new table, no rows");
+  assert.deepEqual(after.workflow_version_pipelines, [], "new table, no rows");
+  delete after.pipeline_sources;
+  delete after.workflow_version_pipelines;
+  assert.deepEqual(after, before, "same tables, same rows, same order, same columns");
+  assert.deepEqual(raw.prepare("PRAGMA foreign_key_check").all(), []);
+  assert.equal((raw.prepare("PRAGMA integrity_check").get() as Record<string, string>).integrity_check, "ok");
+  for (const t of ["drafts", "workflows", "workflow_versions"]) {
+    const cols = (raw.prepare(`PRAGMA table_info(${t})`).all() as { name: string }[]).map((c) => c.name);
+    assert.ok(!cols.some((c) => /pipeline/.test(c)), `${t} gets no pipeline column`);
+  }
+  const idx = (raw.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name IN ('pipeline_sources', 'workflow_version_pipelines') AND name NOT LIKE 'sqlite_%' ORDER BY name").all() as { name: string }[]).map((x) => x.name);
+  assert.deepEqual(idx, ["pipeline_sources_by_pipeline", "workflow_version_pipelines_by_pipeline"]);
+
+  const wf = (before.workflows as { id: string; draft_id: string }[])[0] as { id: string; draft_id: string };
+  const ins = raw.prepare("INSERT INTO workflow_version_pipelines (workflow_id, version, pipeline_id, pipeline_version, source) VALUES (?, ?, ?, ?, ?)");
+  assert.throws(() => ins.run(wf.id, 9, "p1-x", 1, "{}"), /FOREIGN KEY/, "only an existing version");
+  assert.throws(() => ins.run(wf.id, 1, "ab", 1, "{}"), /CHECK/);
+  assert.throws(() => ins.run(wf.id, 1, "p1-x", 0, "{}"), /CHECK/);
+  assert.throws(() => ins.run(wf.id, 1, "p1-x", 1, "[]"), /CHECK/);
+  ins.run(wf.id, 1, "p1-x", 1, "{}");
+  assert.throws(() => ins.run(wf.id, 1, "p1-y", 1, "{}"), /UNIQUE|PRIMARY/, "one contract per version");
+});
+
+test("the code works on migrated 0.3.0 + R8 data: import as a new draft of the old workflow, promote (v3), export; the old versions read as not imported", () => {
+  const raw = new DatabaseSync(":memory:");
+  seedR8(raw);
+  raw.exec(readFileSync(join(migrationsDir, "0007_pipeline_contract.sql"), "utf8"));
+  const db = dbAt(raw);
+  const [wf] = store.listWorkflows(db);
+  assert.ok(wf);
+  assert.deepEqual(pipeline.versionPipelines(db, wf.id), []);
+  assert.equal(pipeline.versionSource(db, wf.id, 1), null);
+  assert.deepEqual(pipeline.pipelineIdsOfWorkflow(db, wf.id), []);
+  const contract = JSON.parse(readFileSync(new URL("./fixtures/pipelines/p2-source-vetting.json", import.meta.url), "utf8")) as Record<string, unknown>;
+  const imp = pipeline.importPipeline(db, { contract, asDraftOf: wf.id }, D0);
+  // the seeded 0.2.12 workflow has the kanban.issues_list allow-list; the import adds the contract's own operations
+  assert.equal(imp.draft.workflowId, wf.id);
+  const v = store.promote(db, imp.draft.id, imp.draft.revision, D0 + 1000).version;
+  assert.equal(v.version, 3, "versions 1 and 2 existed");
+  assert.deepEqual(pipeline.versionPipelines(db, wf.id).map((x) => [x.version, x.id]), [[3, "p2-source-vetting"]]);
+  const out = pipeline.exportContract({ workflowId: wf.id, version: 3, active: true, snapshot: store.snapshotOf(v), imported: pipeline.versionSource(db, wf.id, 3), automationCron: null });
+  assert.equal(out.contract.id, "p2-source-vetting");
+  const old = pipeline.exportContract({ workflowId: wf.id, version: 2, active: false, snapshot: store.snapshotOf(store.getVersion(db, wf.id, 2)), imported: pipeline.versionSource(db, wf.id, 2), automationCron: null });
+  assert.equal(old.contract.status, "retired");
+  assert.equal(old.contract.owner, "unassigned", "an old version that was not imported gets the defaults");
+  // the runs, schedules and metrics of the old data still read
+  assert.equal(r.listRuns(db, { limit: 50 }, T("2026-10-12T08:00:30Z")).length, 7);
 });

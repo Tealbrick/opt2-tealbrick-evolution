@@ -78,7 +78,7 @@ export interface Version extends Snapshot {
 
 /** Store-level refusal; the app maps `code` to the CORE §8 envelope. */
 export class StoreError extends Error {
-  readonly code: "not_found" | "conflict" | "revision_conflict" | "validation_failed" | "kanban_project_required" | "metrics_need_terminal_status";
+  readonly code: "not_found" | "conflict" | "revision_conflict" | "validation_failed" | "kanban_project_required" | "metrics_need_terminal_status" | "pipeline_id_mismatch";
   readonly details: Record<string, unknown> | undefined;
   constructor(code: StoreError["code"], message: string, details?: Record<string, unknown>) {
     super(message);
@@ -275,17 +275,21 @@ export function snapshotOf(d: Snapshot): Snapshot {
 
 export function createDraft(
   db: Db,
-  input: { suggestionId: string | null; templateId: string | null; snapshot: Snapshot },
+  input: { suggestionId: string | null; templateId: string | null; snapshot: Snapshot; workflowId?: string | null },
   now: number = Date.now(),
 ): Draft {
   const s = input.snapshot;
+  // workflowId: a new draft OF an existing workflow (pipeline_import asDraftOf); promoting it makes that workflow's next version
+  const workflowId = input.workflowId ?? null;
+  if (workflowId) getWorkflow(db, workflowId);
   const id = `wfd_${ulid(now)}`;
   db.prepare(
-    "INSERT INTO drafts (id, suggestion_id, template_id, workflow_id, title, summary, instruction, trigger_text, steps, allowed, revision, state, created_at, updated_at) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, 1, 'open', ?, ?)",
+    "INSERT INTO drafts (id, suggestion_id, template_id, workflow_id, title, summary, instruction, trigger_text, steps, allowed, revision, state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 'open', ?, ?)",
   ).run(
     id,
     input.suggestionId,
     input.templateId,
+    workflowId,
     s.title,
     s.summary,
     s.instruction,
@@ -431,6 +435,12 @@ export function promote(db: Db, draftId: string, revision: number, now: number =
       now,
     );
     db.prepare("UPDATE drafts SET workflow_id = ?, state = 'promoted', promoted_version = ?, updated_at = ? WHERE id = ?").run(workflowId, version, now, draftId);
+    // C288 R10: the pipeline contract the draft was imported from (if any) is frozen with this version
+    db.prepare("INSERT INTO workflow_version_pipelines (workflow_id, version, pipeline_id, pipeline_version, source) SELECT ?, ?, pipeline_id, pipeline_version, source FROM pipeline_sources WHERE draft_id = ?").run(
+      workflowId,
+      version,
+      draftId,
+    );
     // The closing eval is best effort: a nested transaction (an SDK savepoint) so a failure rolls back the eval only,
     // never the promotion. Without a logger (store-level callers, tests) the failure is dropped: the live eval of the
     // retired cycle stays computed on read, and the owner can store one with cycle_eval_run.

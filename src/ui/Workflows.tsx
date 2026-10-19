@@ -3,6 +3,7 @@ import { HARNESS_OPTION_IDS, type HarnessOptionId } from "@opt2-tealbrick/spec/r
 import { AppIcon, appArt, appName, Button, CopyBlock, EmptyState, Field, Ink, Notice, Select, Tag, TextInput } from "@opt2-tealbrick/ui";
 import { Fragment, useCallback, useEffect, useState } from "react";
 import { ALLOWLIST_TEXT, day, errorText, type Out, person } from "./ops.ts";
+import { downloadJson, importedFrom } from "./Pipeline.tsx";
 
 /** EVO-01: one label per spec harness option id (HARNESS_OPTION_IDS); a new id fails the typecheck until it has a label. */
 const HARNESS_LABELS: Record<HarnessOptionId, string> = {
@@ -96,6 +97,7 @@ function Detail({ id, stills }: { id: string; stills: string }) {
   const [agentName, setAgentName] = useState("");
   const [harness, setHarness] = useState("generic-mcp");
   const [recipe, setRecipe] = useState<Out<"recipe_export"> | null>(null);
+  const [pipelineNote, setPipelineNote] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const load = useCallback(async () => {
     const r = await person("workflow_versions", { workflowId: id });
@@ -109,6 +111,8 @@ function Detail({ id, stills }: { id: string; stills: string }) {
   useEffect(() => {
     load().catch((e) => setError(errorText(e)));
   }, [load]);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the note belongs to the version that was exported
+  useEffect(() => setPipelineNote(null), [shown]);
   if (!data)
     return error ? (
       <Notice tone="needs-you" role="alert">
@@ -148,6 +152,17 @@ function Detail({ id, stills }: { id: string; stills: string }) {
     a.click();
     URL.revokeObjectURL(url);
   };
+  const exportPipeline = async () => {
+    try {
+      const r = await person("pipeline_export", { workflowId: id, version: v.version });
+      downloadJson(r.filename, r.contract);
+      setPipelineNote(r.omitted.length ? `${r.notice} Not in the file, because no step uses ${r.omitted.length === 1 ? "it" : "them"}: ${r.omitted.join(", ")}.` : r.notice);
+      setError(null);
+    } catch (e) {
+      setError(errorText(e));
+    }
+  };
+  const fromPipeline = data.pipelines.find((p) => p.version === v.version);
   const previous = data.versions.find((x) => x.version === v.version - 1);
   const widened = previous ? widens(previous.allowed, v.allowed) : false;
   const changes = diff
@@ -273,6 +288,18 @@ function Detail({ id, stills }: { id: string; stills: string }) {
             <CopyBlock text={JSON.stringify(recipe.recipe, null, 2)} label="recipe" />
           </>
         ) : null}
+      </section>
+      <section className="tb-section">
+        <h3>Pipeline contract (version {v.version})</h3>
+        <p className="tb-soft">
+          {fromPipeline
+            ? `${importedFrom(fromPipeline.id, fromPipeline.pipelineVersion)}. Export gives you the contract back with the changes you made here.`
+            : "This version was not imported from a pipeline contract. Export builds a contract from it and fills what Evolution does not know with defaults."}
+        </p>
+        <div className="tb-ctas">
+          <Button onClick={() => void exportPipeline()}>Export pipeline contract</Button>
+        </div>
+        {pipelineNote ? <Notice role="status">{pipelineNote}</Notice> : null}
       </section>
       {error ? (
         <Notice tone="needs-you" role="alert">

@@ -1,0 +1,23 @@
+{
+  "$schema": "../schemas/pipeline-contract.schema.json",
+  "id": "p2-source-vetting", "version": 1, "status": "draft", "owner": "henry",
+  "purpose": "Keep a vetted list of news sources: find candidates, trial them in research notebooks, and ask Martin to promote good ones.",
+  "dictation_refs": ["#part3 sources"],
+  "trigger": { "cron": "0 9 * * 1", "timezone": "Asia/Bangkok" },
+  "inputs": [
+    { "source": "knowledge", "what": "document 'Vetted sources'", "type": "Source" },
+    { "source": "knowledge.research", "what": "trial notebooks; new_source_candidates from P1/P4 research runs", "type": "Source" }
+  ],
+  "steps": [
+    { "id": "collect", "do": "Gather candidates proposed during the week (only X, arXiv, mainstream media, Reddit)", "out": "Source[]" },
+    { "id": "trial", "do": "Score each trial source on 2+ weeks of items (freshness, signal, accuracy, overlap)", "lead": "research-lead", "skills": ["source-policy", "knowledge-research"], "out": "Source[]" },
+    { "id": "ask", "do": "One Inbox question: promote / reject listed sources, with evidence", "tools": ["mcp__tealbrick__inbox__inbox_ask"], "when": "any source scored ≥ 4 or a vetted one dropped < 2" },
+    { "id": "update", "do": "Apply Martin's answer to 'Vetted sources'", "tools": ["mcp__tealbrick__knowledge__document_update"] }
+  ],
+  "outputs": ["updated 'Vetted sources' (only with Martin's yes)", "trial notes in research notebooks"],
+  "done_when": ["every candidate has a status", "Martin's answer applied or still pending (issue blocked, not closed)"],
+  "approvals": { "outward": "free", "notes": "No outward action. Promotion to vetted needs Martin." },
+  "escalation": [{ "to": "martin", "when": "promote/reject decisions", "via": "inbox_ask" }],
+  "metrics": ["candidates", "promoted", "rejected"],
+  "taskboard": { "project": "Henry", "issue_title": "P2 sources {week}" }
+}

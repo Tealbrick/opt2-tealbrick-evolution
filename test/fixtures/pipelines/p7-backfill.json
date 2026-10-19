@@ -1,0 +1,118 @@
+{
+  "$schema": "../schemas/pipeline-contract.schema.json",
+  "id": "p7-backfill",
+  "version": 2,
+  "status": "draft",
+  "owner": "henry",
+  "purpose": "One-time, in batches: build Henry's knowledge of past meetups from the YouTube channel (15 streams, 2026-05-20 to 2026-10-15) and Martin's decks. Each run handles at most 4 streams that are not done yet.",
+  "dictation_refs": [
+    "#part3 history"
+  ],
+  "trigger": {
+    "once": true
+  },
+  "inputs": [
+    {
+      "source": "local:transcribe",
+      "what": "mcp__transcribe__transcribe_list_channel (default channel, with dates) and mcp__transcribe__transcribe_list_done (done = transcript with knowledge_doc)"
+    },
+    {
+      "source": "buzz",
+      "what": "decks Martin drops in Buzz"
+    }
+  ],
+  "steps": [
+    {
+      "id": "list",
+      "do": "List the streams and the done transcripts; pick at most 4 streams that are not done yet (oldest first); count the streams left after this batch (remaining_count)",
+      "tools": [
+        "mcp__transcribe__transcribe_list_channel",
+        "mcp__transcribe__transcribe_list_done"
+      ],
+      "skills": [
+        "transcribe-vod"
+      ]
+    },
+    {
+      "id": "transcribe",
+      "do": "For each picked stream: transcribe_video {url, store:true} (transcript and its Knowledge document in one call). Never paste transcript text into a document yourself. status no_speech = silent: skip it, it counts as done",
+      "tools": [
+        "mcp__transcribe__transcribe_video",
+        "mcp__transcribe__transcribe_store_knowledge"
+      ],
+      "skills": [
+        "transcribe-vod"
+      ],
+      "on_fail": "skip"
+    },
+    {
+      "id": "summary",
+      "do": "For each stored stream: read it with transcribe_read (part 1..n as needed) and write ONE summary document (at most 400 words: topics, Martin's explanations, audience questions) in Knowledge 'Meetup transcripts', linked to the transcript document; remember recurring topics in the brain",
+      "tools": [
+        "mcp__transcribe__transcribe_read",
+        "mcp__tealbrick__knowledge__document_create",
+        "mcp__tealbrick__knowledge__link_add",
+        "mcp__tealbrick__knowledge__remember"
+      ],
+      "skills": [
+        "brain-flow"
+      ]
+    },
+    {
+      "id": "topics",
+      "do": "Create or update the topic index document (one line per meetup: date, topics, document links)",
+      "when": "remaining_count is 0",
+      "tools": [
+        "mcp__tealbrick__knowledge__document_create",
+        "mcp__tealbrick__knowledge__document_update"
+      ]
+    },
+    {
+      "id": "decks",
+      "do": "Decks → Nextcloud + Knowledge reference",
+      "when": "Martin dropped decks in Buzz",
+      "skills": [
+        "nextcloud-files"
+      ]
+    },
+    {
+      "id": "report",
+      "do": "Put remaining_count in the last issue comment and in the run report lessons. If remaining_count > 0, block the issue with 'continue: <n> left' (Martin or Lane C re-runs !run p7-backfill)"
+    }
+  ],
+  "outputs": [
+    "one transcript document + one summary document per past meetup (Knowledge 'Meetup transcripts')",
+    "brain memories: recurring topics, Martin's style, audience questions",
+    "topic index document (in the run that finishes the backfill)",
+    "remaining_count per run"
+  ],
+  "done_when": [
+    "no stream left"
+  ],
+  "approvals": {
+    "outward": "free"
+  },
+  "escalation": [
+    {
+      "to": "martin",
+      "when": "a deck has no matching stream",
+      "via": "inbox_ask"
+    },
+    {
+      "to": "martin",
+      "when": "streams remain after this run: the issue is blocked 'continue: <n> left'",
+      "via": "buzz_martin"
+    }
+  ],
+  "metrics": [
+    "streams",
+    "transcribed",
+    "skipped",
+    "remaining_count",
+    "minutes"
+  ],
+  "taskboard": {
+    "project": "Henry",
+    "issue_title": "P7 backfill"
+  }
+}

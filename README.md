@@ -32,7 +32,7 @@ owner (person ops): review → approve → draft (steps, allowed ops per product
 
 The UI says it plainly: **the agent may call these operations** (the bridge blocks every other one); the steps are reviewed guidance, not an enforced program. The allow-list is enforced by the bridge. Temporal and the v1 step runner are not part of opt2.
 
-30 operations:
+32 operations:
 
 | Operation | Audience | Purpose |
 |---|---|---|
@@ -43,6 +43,7 @@ The UI says it plainly: **the agent may call these operations** (the bridge bloc
 | `detector_scan`, `detector_status` | person | read done Task Board issues (companion `kanban.issues_list`) and suggest repeated work; last scan result |
 | `templates_list`, `draft_create`, `drafts_list`, `draft_get`, `draft_update` | person | drafts from a suggestion, a seed template or blank; revisioned edits |
 | `workflow_promote`, `workflows_list`, `workflow_versions`, `workflow_diff` | person | versions (immutable snapshots) and diffs |
+| `pipeline_import`, `pipeline_export` | person | typed pipeline contract in and out (see "Pipeline contract (C288 R10)"); `pipeline_import` needs an idempotency key |
 | `recipe_export` | person | `agents.create` + `agents.policy_set` (bound, workflow ops) + `edges.create` per product |
 | `routines_due` | agent | Bound caller's due runs, the runner's poll target (Free callers get none); claims nothing, only books missed and policy_stale periods |
 | `routine_claim` | agent | `{occurrence}` → at most one claim ever succeeds; answers the reviewed workflow, or `claimed: false` + reason (`already_claimed`, `missed`, `not_due`, `paused`, `not_bound`, `version_missing`, `policy_stale`) |
@@ -77,6 +78,34 @@ The UI says it plainly: **the agent may call these operations** (the bridge bloc
 - Stored in the new table `run_metrics` (migration 0006, one row per run, keyed by the occurrence). The run row stays the truth for the workflow and version. The rollup `runMetrics` of every cycle (`cycles_list`, `cycle_get`, the Cycles page): `runs` (with metrics), `okRuns`, `okRatio`, `minutesMedian` (nearest-rank, lower middle), `minutesMean`, `retriesTotal`, `questionsToMartinTotal` (a run that left a field out counts 0), `lessonCount`. Two versions of one workflow are compared through `parentVersion`; the Timeline on the Cycles page says how the share reported as done well and the typical (median) time moved against the previous version, once BOTH versions have at least 5 run reports with metrics (the floor of the evals); before that it says "Too few reports to compare yet". There is no eval gate on these numbers.
 - C88 / L12: `lessons` are free text from agents. Only the owner reads them: `cycle_get` (person op, newest first, at most 500; `runMetrics.lessonCount` is the full count) and "Show lessons" on the Cycles page (plain text, never markup). `test/run-metrics.test.ts` proves that no agent op returns metrics or lessons.
 
+### Pipeline contract (C288 R10)
+
+Martin: workflow definitions import or map 1:1 the typed pipeline contract. The contract is `tealbrick.agents/pipeline-contract/0.1` (the Henry typed contracts). Its JSON Schema is vendored in `contracts/pipeline-contract-0.1.schema.json` (provenance in its `$comment`; the test pins a digest of its content). Contracts are checked with `validateAgainstSchema` of `@opt2-tealbrick/manifest` (the SDK's own JSON Schema 2020-12 validator): every keyword of the schema is enforced, there is no hand-written subset. A leading `$schema` text (the example files carry one) is set aside before the check, as the reference validator of the contracts does, and is kept.
+
+**`pipeline_import`** (person, `{contract, asDraftOf?}`, idempotency required, receipt names only the pipeline id) answers `{draft, report}`. The draft is an ordinary open draft the owner edits and promotes as today. It does NOT create a schedule.
+
+| Contract | Becomes |
+|---|---|
+| `id` | the pipeline key, stored with the draft (the title is the id made readable, for example "P1 daily tidbit") |
+| `version` | stored as data (`pipelineVersion`); Evolution versions stay its own |
+| `purpose` | the summary |
+| `steps[].id`, `steps[].do` | step id (a duplicate id is refused), step instruction (all of `do`) and step title (first line, at most 100 characters) |
+| `steps[].tools` named `mcp__tealbrick__<product>__<operation>` | the step operations and the allowed operations (access guessed by `guessCrud`, the owner can change it before promotion) |
+| every other tool (local tools, `buzz ...`, `mcp__<other>__...`, `connect ...`, a malformed Teal Brick name) | NOT mapped: listed in `report.unmapped.tools` as `{step, tool}`. They are not enforced and not in the allow-list (C288 R5 and R6 are owned by the contracts lead and the Agents lane) |
+| `trigger` | trigger text in words only. `report.schedule_hint` gives `{cron, timezone, event, once}` (timezone `Asia/Bangkok` when the contract has a cron and no zone, the schema default) for the owner to create the schedule by hand: Evolution schedules run in UTC and have no zone (V1-PARITY Q5 is open) |
+| `metrics` | `report.metrics_keys`, plus a note that names which keys `routine_report` `metrics` (R8) takes (ok, minutes, retries, questions_to_martin, lessons) and which have no field yet |
+| `owner`, `status`, `dictation_refs`, `inputs`, `outputs`, `done_when`, `approvals`, `escalation`, `taskboard`, `steps[].lead`, `skills`, `in`, `out`, `when`, `on_fail` | kept as data, not enforced (`report.kept_as_data`). The typed interpreter of in / out / when / on_fail is C264 |
+
+The whole contract is stored as it came in (`pipeline_sources.source`), so nothing is lost. Refusals: an invalid contract is `422 validation_failed` with `details.pointer` (JSON pointer of the first problem, for example `/steps/1/on_fail`; an unknown field is named, `/steps/0/foo`) and `details.errors`; a contract that is valid but maps to a draft beyond the draft limits (a step `do` over 4000 characters, more than 50 steps) is refused the same way, with the pointer in contract terms (`/steps/0/do`). `asDraftOf` makes the draft a new draft of that workflow (promotion makes its next version; the workflow's own title and instruction are kept, the rest comes from the contract). If the workflow already carries another pipeline key, the answer is `409 pipeline_id_mismatch`; a workflow that was never imported accepts any and takes the key. Importing a key again without `asDraftOf` creates a separate draft and says in the report which workflow already has it.
+
+**`pipeline_export`** (person, `{workflowId, version?}`) answers `{contract, filename, imported, omitted, notice}`: a pipeline contract 0.1 object rebuilt from the version snapshot and the contract frozen with that version. It always validates against the schema (checked before it leaves).
+
+- Imported version: starts from the stored contract, so everything Evolution does not own comes back as it came in. Evolution owns exactly three things: `status` (`active` for the active version, `retired` for an older one; the stored status is not returned), `purpose` (the summary: an edit shows; a value that only differs by surrounding spaces comes back as imported), `steps` (which steps exist, their order, `do` = the step instruction, and the Teal Brick `tools` = the step operations: a removed operation goes, an added one is appended; unmapped tools and `lead / skills / in / out / when / on_fail` stay with the step id they were imported with; a step added in Evolution gets its id made valid and unique). An unchanged import round-trips: import, promote, export gives the same object except `status`. The test does this for all 8 example pipelines.
+- Not exported, because the contract has no place for them: the draft title, the instruction for the Bound agent, the trigger text, and allowed operations that no step uses (named in `omitted`; the contract lists tools per step).
+- A workflow that was never imported (or a version promoted from a draft that was not) gets defaults for the required fields: `id` from the title (or `wfl-<id>`), `version` = the Evolution version number, `owner` `unassigned`, `purpose` = summary (else the title), `trigger` = the cron of its first schedule or a cron-like trigger text with timezone `UTC` (else `{event: "manual"}`), `inputs` = the Task Board run issue, `outputs` and `done_when` = the run issue closed with the result, `approvals` `{}`, `escalation` `[]`, `metrics` = the R8 keys, and one step `run` when there are no steps.
+
+Where it lives: migration `0007_pipeline_contract.sql` adds two tables and changes nothing else: `pipeline_sources` (per draft: key, version, the contract, the import report) and `workflow_version_pipelines` (the contract frozen with each promoted version, copied by `workflow_promote` in its transaction). It is not part of the version snapshot, so diffs, `workflow_get` and everything an agent reads are unchanged. C88 / L12: the stored contract holds dictation refs, owners and purposes. Only person ops read it (`draft_get` adds `pipeline`, `workflow_versions` adds `pipelines`, `pipeline_export`). No agent op returns it; the purpose is the workflow summary the owner promoted, as for any workflow. Agents are not affected by R10: `skills/use-evolution/SKILL.md` is unchanged. UI: Drafts has "Import pipeline contract" (paste JSON, optional "new version of"), the draft shows "Imported from pipeline contract <id> v<n>" and the report in plain words; the Workflows page has "Export pipeline contract" (downloads the JSON).
+
 ### T1 evals (`eval/`)
 
 `node eval/run.ts [--out <file>]` runs two synthetic, public-safe suites through the real code and prints one `tealbrick.eval/1` line (JSON) per metric; exit 1 on any failure. CI runs it on every pipeline (`tealbrick-ci.json` `preReleaseChecks`, ci-v9.6+).
@@ -109,13 +138,15 @@ New code is TypeScript (Node 24+).
 | `src/scan.ts` | the detector's background refresh and on-demand scan |
 | `src/recipe.ts` | Bound-agent recipe builder |
 | `src/routines.ts` | schedules, due/claim/report, missed records, sweep (cron rule from the manifest package) |
+| `src/pipeline.ts` | typed pipeline contract: validation, mapping, storage, export (C288 R10); reads `contracts/pipeline-contract-0.1.schema.json` |
+| `contracts/` | the vendored pipeline contract schema |
 | `src/cycles.ts` | cycle ledger computed on read (with the run-metrics rollup and lessons); stored evals (`eval_runs`) |
 | `src/evals.ts` | pure eval of a cycle (gates, verdict); reads `eval/thresholds.json` |
 | `eval/` | T1 evals: `run.ts`, `thresholds.json`, `cases/detector/`, `cases/cycles/` |
 | `src/templates.ts` | seed workflow templates |
 | `src/ui/` | owner UI in `<AppShell>`: Suggestions, Drafts, Workflows, Schedules, Cycles, Holds, Agents |
-| `migrations/` | 6 forward-only migrations: `0001_init.sql` (0.1), `0002_routines.sql` (0.2), `0003_detector_state.sql`, `0004_policy_stale_runs.sql` (0.2.13: rebuilds `routine_runs` to allow `policy_stale`), `0005_eval_runs.sql` (0.3.0: stored cycle evals, `routine_runs.reported_at`), `0006_run_metrics.sql` (C288 R8: the table `run_metrics`, nothing else changes). Never edit a released file. |
-| `scripts/upgrade-check.ts` | upgrade check on a COPY of a real 0.2.12, 0.2.13 or 0.3.0 `app.db`: applies the new migrations like the SDK and compares every row; prints counts only |
+| `migrations/` | 7 forward-only migrations: `0001_init.sql` (0.1), `0002_routines.sql` (0.2), `0003_detector_state.sql`, `0004_policy_stale_runs.sql` (0.2.13: rebuilds `routine_runs` to allow `policy_stale`), `0005_eval_runs.sql` (0.3.0: stored cycle evals, `routine_runs.reported_at`), `0006_run_metrics.sql` (C288 R8: the table `run_metrics`, nothing else changes), `0007_pipeline_contract.sql` (C288 R10: the tables `pipeline_sources` and `workflow_version_pipelines`, nothing else changes). Never edit a released file. |
+| `scripts/upgrade-check.ts` | upgrade check on a COPY of a real 0.2.12, 0.2.13, 0.3.0 or 0.3.0 + R8 `app.db`: applies the new migrations like the SDK and compares every row; prints counts only |
 | `skills/use-evolution/SKILL.md` | agent skill: when to suggest, Bound-agent behaviour |
 | `Dockerfile` | the one opt2 app Dockerfile pattern |
 | `.woodpecker/ci.yaml`, `.github/workflows/opt2-release.yml` | the opt2 CI template ci-v9.9, generated from `Tealbrick/opt2-tealbrick-platform`; do not edit |
