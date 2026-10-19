@@ -68,7 +68,8 @@ export interface ImportReport {
   kept_as_data: { field: string; steps?: string[] }[];
   /** The trigger, for the owner to create the schedule by hand (Evolution schedules run in UTC). */
   schedule_hint: { cron: string | null; timezone: string | null; event: string | null; once: boolean | null };
-  metrics_keys: string[];
+  /** The metric names the contract declares, in contract order. Run reports of the workflow may carry only these (R10). */
+  declaredMetrics: string[];
   /** What an agent that runs the workflow can read of it (workflow_get): the owner reviews these before promotion. */
   agent_visible: string[];
   notes: string[];
@@ -204,8 +205,6 @@ function triggerText(t: PipelineContract["trigger"]): string {
 }
 const STEP_DATA_FIELDS = ["lead", "skills", "in", "out", "when", "on_fail"] as const;
 const TOP_DATA_FIELDS = ["status", "owner", "dictation_refs", "inputs", "outputs", "done_when", "approvals", "escalation", "taskboard"] as const;
-/** What routine_report `metrics` takes today (R8). */
-const REPORTABLE_METRICS = new Set(["ok", "minutes", "retries", "questions_to_martin", "lessons"]);
 
 export interface MapBase {
   /** asDraftOf: keep the owner's title and instruction of the workflow (the contract has neither). */
@@ -251,12 +250,10 @@ export function mapContract(c: PipelineContract, base: MapBase = {}): { snapshot
   const notes: string[] = ["The whole contract is stored as it came in. Export gives it back."];
   if (unmapped.length) notes.push(`${unmapped.length} tool(s) are not Teal Brick app operations. Evolution does not list or enforce them (C288 R5 and R6).`);
   if (allowed.length === 0) notes.push("No step names a Teal Brick operation. Add at least one allowed operation before you promote.");
-  const notReportable = c.metrics.filter((k) => !REPORTABLE_METRICS.has(k));
-  const reportable = c.metrics.filter((k) => REPORTABLE_METRICS.has(k));
   notes.push(
     c.metrics.length === 0
-      ? "The contract names no metrics."
-      : `Metrics arrive through routine_report metrics (R8), which takes ok, minutes, retries, questions_to_martin and lessons.${reportable.length ? ` Reportable now: ${reportable.join(", ")}.` : ""}${notReportable.length ? ` No field for them yet: ${notReportable.join(", ")}.` : ""}`,
+      ? "The contract declares no metrics. Run reports of this workflow may carry no named metric (routine_report refuses one: metric_not_declared)."
+      : `The contract declares ${c.metrics.length} metric(s). Run reports of this workflow carry them as routine_report metrics.metrics (name to number). Any other name is refused (metric_not_declared).`,
   );
   if (c.trigger.timezone || c.trigger.cron) notes.push("Evolution schedules run in UTC and have no time zone. Convert the cron time before you create the schedule.");
 
@@ -275,7 +272,7 @@ export function mapContract(c: PipelineContract, base: MapBase = {}): { snapshot
       unmapped: { tools: unmapped },
       kept_as_data: kept,
       schedule_hint: { cron: c.trigger.cron ?? null, timezone: c.trigger.cron ? (c.trigger.timezone ?? "Asia/Bangkok") : null, event: c.trigger.event ?? null, once: c.trigger.once ?? null },
-      metrics_keys: c.metrics,
+      declaredMetrics: c.metrics,
       agent_visible: ["title", "summary", "steps"],
       notes,
     },
@@ -312,7 +309,7 @@ export function checkDraftFits(s: Snapshot): void {
 
 /** The report must fit the output schema of pipeline_import (and draft_get, which carries it): checked BEFORE the draft is
  *  created, so a report the SDK would refuse never leaves a draft behind. 422 contract_too_large with the contract part. */
-const REPORT_PART: Record<string, string> = { mapped: "/steps", unmapped: "/steps", kept_as_data: "/steps", metrics_keys: "/metrics", notes: "/steps", schedule_hint: "/trigger", agent_visible: "" };
+const REPORT_PART: Record<string, string> = { mapped: "/steps", unmapped: "/steps", kept_as_data: "/steps", declaredMetrics: "/metrics", notes: "/steps", schedule_hint: "/trigger", agent_visible: "" };
 export function checkReportFits(report: ImportReport): void {
   const schema = (manifestOp("pipeline_import").output.properties as Obj).report as Schema;
   const v = validateAgainstSchema(schema, JSON.parse(JSON.stringify(report)) as Json);
@@ -352,6 +349,12 @@ function workflowsWithPipeline(db: Db, pipelineId: string): string[] {
     .prepare("SELECT DISTINCT workflow_id FROM workflow_version_pipelines WHERE pipeline_id = ? ORDER BY 1")
     .all(pipelineId)
     .map((r) => String(r.workflow_id));
+}
+/** The metric names the contract of a workflow VERSION declares, in contract order; null when that version was never imported
+ *  (then routine_report accepts any patterned name). An imported contract with an empty list declares none. */
+export function declaredMetrics(db: Db, workflowId: string, version: number): string[] | null {
+  const v = versionSource(db, workflowId, version);
+  return v ? [...v.source.metrics] : null;
 }
 /** The contract frozen with one version, or null when that version was never imported. */
 export function versionSource(db: Db, workflowId: string, version: number): { pipelineId: string; pipelineVersion: number; source: PipelineContract } | null {
@@ -533,7 +536,7 @@ export function exportContract(i: ExportInput): { contract: PipelineContract; om
       done_when: ["the run is reported completed (routine_report)"],
       approvals: {},
       escalation: [],
-      metrics: ["ok", "minutes", "retries", "questions_to_martin", "lessons"],
+      metrics: [],
     };
   }
   // Guard: what leaves is always a valid contract (a failure here is a bug, not a user error).

@@ -1,5 +1,5 @@
 {
-  "$comment": "copied from the Henry typed contracts (tealbrick.agents/pipeline-contract/0.1), coordination/leads/foxy/henry-contracts/schemas/pipeline-contract.schema.json, 2026-10-19; refresh when the contracts lead publishes a new version",
+  "$comment": "copied from the Henry typed contracts (tealbrick.agents/pipeline-contract/0.1), coordination/leads/foxy/henry-contracts/schemas/pipeline-contract.schema.json, refreshed 2026-10-20 for agent-stack 640a4aa (named per-pipeline metrics: metrics items are patterned names, unique, at most 20, and not a core RunReport field); refresh when the contracts lead publishes a new version",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "tealbrick.agents/pipeline-contract/0.1",
   "title": "Pipeline contract",
@@ -236,10 +236,25 @@
     },
     "metrics": {
       "type": "array",
+      "maxItems": 20,
+      "uniqueItems": true,
       "items": {
-        "type": "string"
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9_]{1,40}$",
+        "not": {
+          "enum": [
+            "pipeline",
+            "version",
+            "ok",
+            "minutes",
+            "retries",
+            "questions_to_martin",
+            "lessons",
+            "issue"
+          ]
+        }
       },
-      "description": "Reported per run (routine_report / issue comment); input for skill and pipeline evolution."
+      "description": "Names of the per-pipeline numbers the run reports in RunReport.metrics (core RunReport fields are not repeated here). Input for skill and pipeline evolution."
     },
     "taskboard": {
       "type": "object",

@@ -86,8 +86,16 @@ export const humanName = (name: string): string => name.replaceAll("_", " ");
 const num = (x: number): string => String(Math.round(x * 100) / 100);
 
 /** One line per named metric the runners reported for a version (the pipeline's own numbers). */
-export function namedLines(m: RunMetrics): string[] {
-  return m.namedMetrics.map((n) => `${humanName(n.name)}: ${plural(n.reports, "report", "reports")}, typical ${num(n.median)}, average ${num(n.mean)}, lowest ${num(n.min)}, highest ${num(n.max)}`);
+export function namedLines(m: RunMetrics, declared: readonly string[] | null = null): string[] {
+  const line = (n: RunMetrics["namedMetrics"][number]) => `${humanName(n.name)}: ${plural(n.reports, "report", "reports")}, typical ${num(n.median)}, average ${num(n.mean)}, lowest ${num(n.min)}, highest ${num(n.max)}`;
+  if (declared === null) return m.namedMetrics.map(line);
+  // the pipeline contract declares names (R10): in contract order, "not reported yet" for a name without data, then any other reported name
+  const by = new Map(m.namedMetrics.map((n) => [n.name, n]));
+  const lines = declared.map((name) => {
+    const n = by.get(name);
+    return n ? line(n) : `${humanName(name)}: not reported yet`;
+  });
+  return [...lines, ...m.namedMetrics.filter((n) => !declared.includes(n.name)).map(line)];
 }
 
 /** The named metrics of a version against its parent, by name; each name needs COMPARE_MIN_REPORTS reports in BOTH versions. */
@@ -277,9 +285,9 @@ function Timeline({ active, versions, onStored }: { active: Cycle; versions: Cyc
               {metricsText(v.runMetrics)}
               {compare ? ` · ${compare}` : ""}
             </p>
-            {namedLines(v.runMetrics).length ? (
+            {namedLines(v.runMetrics, v.declaredMetrics).length ? (
               <ul className="plain tb-hint" aria-label={`Named metrics of version ${v.version}`}>
-                {namedLines(v.runMetrics).map((l) => (
+                {namedLines(v.runMetrics, v.declaredMetrics).map((l) => (
                   <li key={l}>{l}</li>
                 ))}
               </ul>

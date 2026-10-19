@@ -64,7 +64,7 @@ test("the vendored schema is the Henry schema: provenance, id, and a pinned dige
   const { $comment, ...schema } = pipeline.PIPELINE_SCHEMA as unknown as Contract;
   assert.match($comment, /Henry typed contracts \(tealbrick\.agents\/pipeline-contract\/0\.1\)/);
   assert.equal(schema.$id, pipeline.PIPELINE_CONTRACT_ID);
-  assert.equal(createHash("sha256").update(canon(schema)).digest("hex"), "42e449a725d0e6f0f10d8a6de97e0030c292d933612689249d88b7b19b49b8d4", "the schema changed: refresh the copy on purpose, then this digest");
+  assert.equal(createHash("sha256").update(canon(schema)).digest("hex"), "5ec64eabc049f33ff01757d8be15e70b7021a537e3d42915c001918a7573b114", "the schema changed: refresh the copy on purpose, then this digest");
 });
 
 test("the 8 example pipelines are valid contracts (the control for the refusal tests)", () => {
@@ -94,7 +94,7 @@ test("all 8 example pipelines import, become a draft with the mapped text, and r
       "step id and instruction = id and do",
     );
     for (const s of d.steps) assert.ok(s.title.length >= 1 && s.title.length <= 100, `${f}: step title is a short label`);
-    assert.equal(imported.report.metrics_keys.join(), c.metrics.join());
+    assert.deepEqual(imported.report.declaredMetrics, c.metrics);
     assert.equal(imported.report.schedule_hint.cron, c.trigger.cron ?? null);
 
     // export: the stored contract comes back; Evolution owns `status` (a promoted, active version is `active`)
@@ -123,14 +123,15 @@ test("p1: Teal Brick tools become step ops and allowed operations; every other t
   assert.deepEqual(report.unmapped.tools, [{ step: "send", tool: "buzz reply (runtime)", reason: "not a Teal Brick app operation" }]);
   assert.deepEqual(report.agent_visible, ["title", "summary", "steps"], "what an agent that runs the workflow can read of it");
   assert.deepEqual(report.schedule_hint, { cron: "0 10 * * *", timezone: "Asia/Bangkok", event: null, once: null });
-  assert.deepEqual(report.metrics_keys, ["minutes", "candidates_seen", "shortlist_size", "martin_choice_rank"]);
+  assert.deepEqual(report.declaredMetrics, ["candidates_seen", "shortlist_size", "martin_choice_rank"]);
   const kept = Object.fromEntries(report.kept_as_data.map((k) => [k.field, k.steps ?? true]));
   for (const f of ["status", "owner", "dictation_refs", "inputs", "outputs", "done_when", "approvals", "escalation", "taskboard"]) assert.equal(kept[f], true, f);
   assert.deepEqual(kept["steps[].lead"], ["scan", "write", "check"]);
   assert.deepEqual(kept["steps[].skills"], ["gate"]);
   assert.deepEqual(kept["steps[].out"], ["scan", "gate", "write", "check"]);
   assert.equal(kept["steps[].on_fail"], undefined, "a field no step carries is not listed");
-  assert.ok(report.notes.some((n) => /No field for them yet: candidates_seen, shortlist_size, martin_choice_rank/.test(n)), "metrics R8 cannot take are named");
+  assert.ok(report.notes.some((n) => /declares 3 metric\(s\)\..*metrics\.metrics.*metric_not_declared/.test(n)), "the note says how declared names are reported");
+  assert.ok(!report.notes.some((n) => /No field for them/.test(n)), "no gap text: every declared name has a field");
   assert.ok(report.notes.some((n) => /UTC/.test(n)));
   // a pipeline with several Teal Brick tools and other MCP servers (p5 and p7 name mcp__transcribe__ tools)
   const p7 = (await call<K.PipelineImportOutput>(H, "pipeline_import", { contract: p(7) }, owner(db))).report;
@@ -348,6 +349,7 @@ test("export of a workflow that was never imported is a valid contract with the 
     assert.equal(c.version, 1, "no contract: the Evolution version number");
     assert.equal(c.status, "active");
     assert.equal(c.owner, "unassigned");
+    assert.deepEqual(c.metrics, [], "no contract: no declared metrics (the core RunReport names are not allowed in the list)");
     assert.match(c.id, /^[a-z][a-z0-9-]{2,40}$/);
     assert.equal(c.purpose, t.summary);
     assert.deepEqual(c.trigger, { event: "manual" }, "words in the trigger are not a schedule");
@@ -515,7 +517,7 @@ test("leak: nothing of the stored contract reaches an agent op (workflow_get, su
     done_when: [CANARY.done],
     approvals: { notes: CANARY.note },
     escalation: [{ to: "martin", when: CANARY.escalation, via: "buzz_martin" }],
-    metrics: ["minutes"],
+    metrics: ["candidates_seen"],
     taskboard: { issue_title: CANARY.issue },
   };
   const imp = await call<K.PipelineImportOutput>(H, "pipeline_import", { contract: c }, owner(db));
@@ -805,4 +807,195 @@ test("S3 export trigger: text that is not a cron the schedules would accept is n
   const none = await mk("");
   assert.deepEqual((none.contract as Contract).trigger, { event: "manual" });
   assert.doesNotMatch(none.notice, /not a five-field cron/, "an empty trigger needs no note");
+});
+
+// ── named per-pipeline metrics (agent-stack 640a4aa) ──
+
+type Probe = [keyword: string, schema: Record<string, unknown>, good: unknown, bad: unknown];
+const PROBES: Probe[] = [
+  ["type", { type: "string" }, "x", 1],
+  ["properties", { type: "object", properties: { a: { type: "number" } } }, { a: 1 }, { a: "x" }],
+  ["required", { type: "object", required: ["a"] }, { a: 1 }, {}],
+  ["additionalProperties", { type: "object", properties: { a: {} }, additionalProperties: false }, { a: 1 }, { b: 1 }],
+  ["items", { type: "array", items: { type: "string" } }, ["x"], [1]],
+  ["minItems", { type: "array", minItems: 1 }, [1], []],
+  ["maxItems", { type: "array", maxItems: 1 }, [1], [1, 2]],
+  ["uniqueItems", { type: "array", uniqueItems: true }, [1, 2], [1, 1]],
+  ["pattern", { type: "string", pattern: "^[a-z]+$" }, "abc", "AB"],
+  ["maxLength", { type: "string", maxLength: 2 }, "ab", "abc"],
+  ["minProperties", { type: "object", minProperties: 1 }, { a: 1 }, {}],
+  ["maxProperties", { type: "object", maxProperties: 1 }, { a: 1 }, { a: 1, b: 2 }],
+  ["propertyNames", { type: "object", propertyNames: { pattern: "^[a-z]+$" } }, { ab: 1 }, { AB: 1 }],
+  ["enum", { enum: ["a", "b"] }, "a", "c"],
+  ["not", { not: { enum: ["a"] } }, "b", "a"],
+  ["minimum", { type: "integer", minimum: 1 }, 1, 0],
+  ["const", { const: 1 }, 1, 2],
+];
+// keywords that only describe (never decide): the schema may use them freely
+const ANNOTATIONS = new Set(["$schema", "$id", "$comment", "title", "description", "default"]);
+
+function keywordsOf(node: unknown, out = new Set<string>()): Set<string> {
+  if (Array.isArray(node)) for (const x of node) keywordsOf(x, out);
+  else if (node && typeof node === "object")
+    for (const [k, v] of Object.entries(node as Record<string, unknown>)) {
+      out.add(k);
+      // the values of `properties` map NAMES to schemas: names are data, not keywords
+      if (k === "properties") for (const sub of Object.values(v as object)) keywordsOf(sub, out);
+      else if (k !== "enum" && k !== "const" && k !== "default") keywordsOf(v, out);
+    }
+  return out;
+}
+
+test("the SDK validator ENFORCES every keyword the vendored contract schema uses (not, enum, uniqueItems, propertyNames, ...): a probe per keyword fails loudly if one is ignored, and a new keyword in the schema fails until it has a probe", () => {
+  const probed = new Set(PROBES.map(([k]) => k));
+  for (const [keyword, schema, good, bad] of PROBES) {
+    assert.equal(validateAgainstSchema(schema as never, good as Json).ok, true, `${keyword}: good passes`);
+    assert.equal(validateAgainstSchema(schema as never, bad as Json).ok, false, `${keyword}: the SDK validator does NOT enforce it`);
+  }
+  const used = [...keywordsOf(pipeline.PIPELINE_SCHEMA)].filter((k) => !ANNOTATIONS.has(k));
+  const unprobed = used.filter((k) => !probed.has(k));
+  assert.deepEqual(unprobed, [], "the contract schema uses keywords without a probe: add one (and check the validator enforces it)");
+  for (const k of ["not", "enum", "uniqueItems", "propertyNames", "maxProperties"]) assert.ok(probed.has(k), `${k} is probed`);
+  assert.ok(used.includes("not") && used.includes("uniqueItems"), "the refreshed schema really uses not and uniqueItems");
+});
+
+test("the metrics list of a contract: a core RunReport name, a duplicate, a bad pattern and more than 20 are refused with the pointer; 20 patterned names pass", () => {
+  const db = migratedDb();
+  const base = p(1);
+  const run = (metrics: unknown) => refusal(() => pipeline.importPipeline(db, { contract: { ...base, metrics } }));
+  const cases: [string, unknown, string][] = [
+    ...["pipeline", "version", "ok", "minutes", "retries", "questions_to_martin", "lessons", "issue"].map((n): [string, unknown, string] => [`core name ${n}`, ["fine_one", n], "/metrics/1"]),
+    ["duplicate", ["a_b", "a_b"], "/metrics"],
+    ["upper case", ["Bad"], "/metrics/0"],
+    ["one character", ["a"], "/metrics/0"],
+    ["42 characters", [`a${"b".repeat(41)}`], "/metrics/0"],
+    ["hyphen", ["x-y"], "/metrics/0"],
+    ["21 names", Array.from({ length: 21 }, (_, i) => `m_${i}`), "/metrics"],
+  ];
+  for (const [why, metrics, pointer] of cases) {
+    const t = run(metrics);
+    assert.equal(t.httpStatus, 422, why);
+    assert.equal(pointerOf(t), pointer, `${why}: ${t.message}`);
+  }
+  const twenty = Array.from({ length: 20 }, (_, i) => `m_${i}`);
+  assert.deepEqual(pipeline.importPipeline(db, { contract: { ...base, metrics: twenty } }).report.declaredMetrics, twenty);
+  assert.deepEqual(pipeline.importPipeline(db, { contract: { ...base, metrics: [] } }).report.declaredMetrics, [], "an empty list is valid");
+  assert.deepEqual(pipeline.importPipeline(db, { contract: { ...base, metrics: [`a${"b".repeat(40)}`, "ab"] } }).report.declaredMetrics, [`a${"b".repeat(40)}`, "ab"], "2 and 41 characters pass");
+});
+
+test("the 8 refreshed pipelines declare their metrics in order; the import report says so and export gives the list back unchanged", async () => {
+  const want: Record<string, string[]> = {
+    "p1-daily-tidbit": ["candidates_seen", "shortlist_size", "martin_choice_rank"],
+    "p5-post-meetup": ["vod_delay_min", "transcribe_seconds", "signups", "prev_campaign_open_rate", "feedback_score"],
+    "p8-martin-week": ["stories_offered", "stories_used"],
+  };
+  for (const f of FIXTURES) {
+    const c = load(f);
+    const { out, imported } = await through(migratedDb(), c);
+    assert.deepEqual(imported.report.declaredMetrics, c.metrics, f);
+    assert.deepEqual((out.contract as Contract).metrics, c.metrics, f);
+    for (const n of c.metrics) assert.match(n, /^[a-z][a-z0-9_]{1,40}$/);
+    if (want[c.id]) assert.deepEqual(c.metrics, want[c.id], `${c.id}: the refreshed fixture`);
+  }
+});
+
+// routine_report against the declared names of the run's workflow VERSION
+async function runOf(db: Db, contract: Contract | null): Promise<{ wf: string; occ: string }> {
+  let wf: string;
+  if (contract) wf = (await through(db, contract)).wf;
+  else {
+    const d = store.createDraft(db, { suggestionId: null, templateId: null, snapshot: { title: "Hand made", summary: "", instruction: "Do it.", trigger: "", steps: [], allowed: READ } }, D0);
+    wf = store.promote(db, d.id, d.revision, D0).workflow.id;
+  }
+  const now = Date.now();
+  r.setAutomation(db, { workflowId: wf, agentId: BOUND.id, cron: "* * * * *" }, now - 120_000);
+  const ctx = ctxFor(db, BOUND, (async () => ({ status: "ok", output: { id: "iss_1" } })) as unknown as CallApp);
+  const occ = (await call<K.RoutinesDueOutput>(H, "routines_due", {}, ctx)).jobs[0]?.occurrence as string;
+  assert.equal((await call<K.RoutineClaimOutput>(H, "routine_claim", { occurrence: occ }, ctx)).claimed, true);
+  return { wf, occ };
+}
+const named = (db: Db) => db.prepare("SELECT name, value FROM run_metric_values ORDER BY name").all().map((x) => `${x.name}=${x.value}`);
+const report = (db: Db, occ: string, status: string, metrics?: unknown) => call<K.RoutineReportOutput>(H, "routine_report", { occurrence: occ, status, ...(metrics ? { metrics } : {}) }, ctxFor(db, BOUND));
+
+test("routine_report: declared names are stored; a name the contract of the run's version does not declare is refused 422 metric_not_declared with the pointer of the name; the retry without metrics ends the run", async () => {
+  const db = migratedDb();
+  const { occ } = await runOf(db, p(1)); // declares candidates_seen, shortlist_size, martin_choice_rank
+  const core = { ok: true, minutes: 3 };
+  for (const bad of [{ made_up: 1 }, { candidates_seen: 1, made_up: 2 }, { minutes_research: 5 }]) {
+    await assert.rejects(report(db, occ, "completed", { ...core, metrics: bad }), (e) => {
+      const tb = toTbError(e) as TbError;
+      assert.equal(tb.code, "metric_not_declared");
+      assert.equal(tb.httpStatus, 422);
+      assert.equal(pointerOf(tb), `/metrics/metrics/${Object.keys(bad).find((k) => !["candidates_seen"].includes(k))}`);
+      assert.doesNotMatch(JSON.stringify([tb.message, tb.details]), /shortlist_size|martin_choice_rank|candidates_seen/, "the answer does not list the declared names");
+      return true;
+    });
+  }
+  assert.equal(r.getRun(db, occ)?.status, "claimed", "a refused report changes nothing");
+  assert.deepEqual(named(db), []);
+  // core fields and declared names pass; the retry rule: the same report without metrics still ends the run
+  const ok = await report(db, occ, "completed", { ...core, retries: 1, metrics: { candidates_seen: 12, martin_choice_rank: 2 } });
+  assert.equal(ok.status, "completed");
+  assert.deepEqual(named(db), ["candidates_seen=12", "martin_choice_rank=2"]);
+  // a repeat with an undeclared name is still refused (like the other metrics errors) and stores nothing
+  await assert.rejects(report(db, occ, "completed", { ...core, metrics: { made_up: 1 } }), /not declared/);
+  assert.deepEqual(named(db), ["candidates_seen=12", "martin_choice_rank=2"]);
+});
+
+test("routine_report: the retry without metrics ends the run", async () => {
+  const db = migratedDb();
+  const { occ } = await runOf(db, p(1));
+  await assert.rejects(report(db, occ, "completed", { ok: true, minutes: 1, metrics: { nope_nope: 1 } }), /not declared/);
+  assert.equal((await report(db, occ, "completed")).status, "completed");
+  assert.deepEqual(named(db), []);
+});
+
+test("routine_report: a workflow version that was NOT imported accepts any patterned name", async () => {
+  const db = migratedDb();
+  const { occ } = await runOf(db, null);
+  await report(db, occ, "completed", { ok: true, minutes: 1, metrics: { anything_goes: 4, another_one: 5 } });
+  assert.deepEqual(named(db), ["another_one=5", "anything_goes=4"]);
+  assert.equal(pipeline.declaredMetrics(db, (r.getRun(db, occ) as r.Run).workflowId, 1), null);
+});
+
+test("routine_report: a version imported with an EMPTY metrics list declares none, so every named metric is refused (core fields still pass)", async () => {
+  const db = migratedDb();
+  const c = p(2);
+  c.metrics = [];
+  const { occ } = await runOf(db, c);
+  await assert.rejects(report(db, occ, "completed", { ok: true, minutes: 1, metrics: { candidates: 1 } }), (e) => (toTbError(e) as TbError).code === "metric_not_declared");
+  assert.equal(named(db).length, 0);
+  assert.equal((await report(db, occ, "completed", { ok: true, minutes: 1, retries: 0, questions_to_martin: 0, lessons: ["fine"], metrics: {} })).status, "completed", "an empty map names nothing");
+});
+
+test("routine_report: the declared list is the one of the run's own version, not the workflow's newest", async () => {
+  const db = migratedDb();
+  const c1 = p(2); // v1 declares candidates, promoted, rejected
+  const { wf, occ } = await runOf(db, c1);
+  // v2 is a new import of the same pipeline that declares other names
+  const c2 = { ...structuredClone(c1), version: 2, metrics: ["candidates", "extra_one"] };
+  const d2 = pipeline.importPipeline(db, { contract: c2, asDraftOf: wf }, D0 + 9).draft;
+  store.promote(db, d2.id, d2.revision, D0 + 10);
+  assert.deepEqual(pipeline.declaredMetrics(db, wf, 1), ["candidates", "promoted", "rejected"]);
+  assert.deepEqual(pipeline.declaredMetrics(db, wf, 2), ["candidates", "extra_one"]);
+  // the run was claimed under v1: v2's name is refused for it, v1's name is accepted
+  assert.equal((r.getRun(db, occ) as r.Run).workflowVersion, 1);
+  await assert.rejects(report(db, occ, "completed", { ok: true, minutes: 1, metrics: { extra_one: 1 } }), /not declared/);
+  await report(db, occ, "completed", { ok: true, minutes: 1, metrics: { promoted: 3 } });
+  assert.deepEqual(named(db), ["promoted=3"]);
+});
+
+test("the cycle ledger carries the declared names of each version in contract order (null when not imported); only person ops return them", async () => {
+  const db = migratedDb();
+  const { wf, occ } = await runOf(db, p(1));
+  await report(db, occ, "completed", { ok: true, minutes: 1, metrics: { shortlist_size: 4 } });
+  const one = await call<K.CycleGetOutput>(H, "cycle_get", { workflowId: wf, version: 1 }, owner(db));
+  assert.deepEqual(one.cycle.declaredMetrics, ["candidates_seen", "shortlist_size", "martin_choice_rank"]);
+  assert.deepEqual(one.cycle.runMetrics.namedMetrics.map((n) => n.name), ["shortlist_size"]);
+  const list = await call<K.CyclesListOutput>(H, "cycles_list", {}, owner(db));
+  assert.deepEqual(list.cycles[0]?.declaredMetrics, one.cycle.declaredMetrics);
+  const plain = migratedDb();
+  const h = await runOf(plain, null);
+  assert.equal((await call<K.CycleGetOutput>(H, "cycle_get", { workflowId: h.wf, version: 1 }, owner(plain))).cycle.declaredMetrics, null);
+  for (const o of manifest.operations.filter((x) => x.audience === "agent")) assert.doesNotMatch(JSON.stringify((o as { output?: unknown }).output), /declaredMetrics/, `${o.id} output`);
 });

@@ -203,6 +203,7 @@ test("the ledger reads migrated 0.2.13 rows: version-less missed rows go to the 
   seed0213(raw);
   raw.exec(readFileSync(join(migrationsDir, "0005_eval_runs.sql"), "utf8"));
   raw.exec(readFileSync(join(migrationsDir, "0006_run_metrics.sql"), "utf8"));
+  raw.exec(readFileSync(join(migrationsDir, "0007_pipeline_contract.sql"), "utf8")); // the code of today reads the R10 tables; the app always migrates all
   const db = dbAt(raw);
   const now = T("2026-10-12T08:00:30Z");
   const [v1, v2] = cycles.workflowCycles(db, store.listWorkflows(db)[0]?.id as string, now);
@@ -278,6 +279,7 @@ test("the code works on migrated 0.3.0 data: a late report of an old uncertain r
   const raw = new DatabaseSync(":memory:");
   seed030(raw);
   raw.exec(readFileSync(join(migrationsDir, "0006_run_metrics.sql"), "utf8"));
+  raw.exec(readFileSync(join(migrationsDir, "0007_pipeline_contract.sql"), "utf8")); // the code of today reads the R10 tables; the app always migrates all
   const db = dbAt(raw);
   const now = T("2026-10-12T08:00:30Z");
   const uncertain = (raw.prepare("SELECT occurrence FROM routine_runs WHERE status = 'uncertain'").all() as { occurrence: string }[]).map((x) => x.occurrence)[0] as string;

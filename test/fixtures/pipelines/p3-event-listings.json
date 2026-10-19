@@ -1,27 +1,109 @@
 {
   "$schema": "../schemas/pipeline-contract.schema.json",
-  "id": "p3-event-listings", "version": 1, "status": "draft", "owner": "henry",
+  "id": "p3-event-listings",
+  "version": 1,
+  "status": "draft",
+  "owner": "henry",
   "purpose": "The next Wednesday meetup is live as early as possible on Meetup.com (AI Society), Luma, pretix and the Facebook page, in the brand design; group posts in Chiang Mai Facebook groups.",
-  "dictation_refs": ["#part2 Job C", "#part4 asap"],
-  "trigger": { "cron": "0 9 * * 4", "timezone": "Asia/Bangkok", "event": "meetup.confirmed" },
+  "dictation_refs": [
+    "#part2 Job C",
+    "#part4 asap"
+  ],
+  "trigger": {
+    "cron": "0 9 * * 4",
+    "timezone": "Asia/Bangkok",
+    "event": "meetup.confirmed"
+  },
   "inputs": [
-    { "source": "knowledge", "what": "collection 'Meetups' (confirmed only)", "type": "MeetupRef" },
-    { "source": "browser:meetup.com,lu.ma", "what": "current listings (logged in, no API)" },
-    { "source": "connect:pretix", "what": "events" },
-    { "source": "local:nextcloud/brand", "what": "banners, design manual (from polygonface.com, Canva exports)" }
+    {
+      "source": "knowledge",
+      "what": "collection 'Meetups' (confirmed only)",
+      "type": "MeetupRef"
+    },
+    {
+      "source": "browser:meetup.com,lu.ma",
+      "what": "current listings (logged in, no API)"
+    },
+    {
+      "source": "connect:pretix",
+      "what": "events"
+    },
+    {
+      "source": "local:nextcloud/brand",
+      "what": "banners, design manual (from polygonface.com, Canva exports)"
+    }
   ],
   "steps": [
-    { "id": "check", "do": "Which listings exist for the next meetup", "lead": "browser-lead", "out": "ListingCheck[]" },
-    { "id": "text", "do": "Listing text + graphic brief", "lead": "editorial-lead", "skills": ["brand-visual", "listing-text"] },
-    { "id": "pretix", "do": "Create/update the pretix event", "tools": ["connect cb_pretix_events_create/update"] },
-    { "id": "portals", "do": "Create/update Meetup.com and Luma listings (recurring where possible)", "lead": "browser-lead", "on_fail": "ask_martin" },
-    { "id": "promote", "do": "Facebook page post (Postiz) + group posts (browser): announce phase", "skills": ["postiz-posting", "portal-facebook-groups"] },
-    { "id": "record", "do": "Write listing URLs into the meetup document", "tools": ["mcp__tealbrick__knowledge__document_update"] }
+    {
+      "id": "check",
+      "do": "Which listings exist for the next meetup",
+      "lead": "browser-lead",
+      "out": "ListingCheck[]"
+    },
+    {
+      "id": "text",
+      "do": "Listing text + graphic brief",
+      "lead": "editorial-lead",
+      "skills": [
+        "brand-visual",
+        "listing-text"
+      ]
+    },
+    {
+      "id": "pretix",
+      "do": "Create/update the pretix event",
+      "tools": [
+        "connect cb_pretix_events_create/update"
+      ]
+    },
+    {
+      "id": "portals",
+      "do": "Create/update Meetup.com and Luma listings (recurring where possible)",
+      "lead": "browser-lead",
+      "on_fail": "ask_martin"
+    },
+    {
+      "id": "promote",
+      "do": "Facebook page post (Postiz) + group posts (browser): announce phase",
+      "skills": [
+        "postiz-posting",
+        "portal-facebook-groups"
+      ]
+    },
+    {
+      "id": "record",
+      "do": "Write listing URLs into the meetup document",
+      "tools": [
+        "mcp__tealbrick__knowledge__document_update"
+      ]
+    }
   ],
-  "outputs": ["ListingCheck all 'live' or 'blocked_needs_martin' with exact instructions", "meetup document has all listing URLs"],
-  "done_when": ["meetup.com, luma, pretix live for the next Wednesday", "Facebook page announce post scheduled"],
-  "approvals": { "outward": "held_first_3_weeks", "delete": "held", "money": "held" },
-  "escalation": [{ "to": "martin", "when": "a portal step needs Martin (login, CAPTCHA, paid feature): exact steps", "via": "inbox_ask" }],
-  "metrics": ["listings_live", "blocked_steps", "minutes"],
-  "taskboard": { "project": "Henry", "issue_title": "P3 listings {meetup_date}" }
+  "outputs": [
+    "ListingCheck all 'live' or 'blocked_needs_martin' with exact instructions",
+    "meetup document has all listing URLs"
+  ],
+  "done_when": [
+    "meetup.com, luma, pretix live for the next Wednesday",
+    "Facebook page announce post scheduled"
+  ],
+  "approvals": {
+    "outward": "held_first_3_weeks",
+    "delete": "held",
+    "money": "held"
+  },
+  "escalation": [
+    {
+      "to": "martin",
+      "when": "a portal step needs Martin (login, CAPTCHA, paid feature): exact steps",
+      "via": "inbox_ask"
+    }
+  ],
+  "metrics": [
+    "listings_live",
+    "blocked_steps"
+  ],
+  "taskboard": {
+    "project": "Henry",
+    "issue_title": "P3 listings {meetup_date}"
+  }
 }

@@ -637,12 +637,21 @@ export function report(
   summary: string | null,
   now: number = Date.now(),
   metrics: MetricsInput | null = null,
+  declared?: (workflowId: string, version: number | null) => readonly string[] | null,
 ): { run: Run; changed: boolean } {
   return db.transaction(() => {
     sweep(db, now);
     const run = getRun(db, occurrence);
     if (!run || run.claimedBy !== callerId) throw new StoreError("not_found", "No run of yours with this occurrence.");
     const stored = metrics ? checkMetrics(metrics, status) : null;
+    // C288 R10: when the run's workflow VERSION was imported from a pipeline contract, a named metric must be one the contract
+    // declares (an empty list declares none). A version that was not imported accepts any patterned name. Checked on every
+    // call like the other metrics errors; the answer does not list the declared names (they are the owner's data).
+    const names = declared && stored?.named.length ? declared(run.workflowId, run.workflowVersion) : null;
+    if (names) {
+      const bad = stored?.named.find(([n]) => !names.includes(n));
+      if (bad) throw new StoreError("metric_not_declared", `The metric "${bad[0]}" is not declared by the pipeline contract of this workflow version. Send only declared names, or send the report again without metrics.`, { pointer: `/metrics/metrics/${bad[0]}` });
+    }
     if (run.status === status) return { run, changed: false };
     if (!NEXT_STATUS[run.status].includes(status)) throw new StoreError("conflict", `A ${run.status} run cannot become ${status}.`, { status: run.status });
     const sync = TERMINAL.has(status) && run.kanbanIssueId ? "pending" : run.kanbanSync;

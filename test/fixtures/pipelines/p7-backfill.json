@@ -108,8 +108,7 @@
     "streams",
     "transcribed",
     "skipped",
-    "remaining_count",
-    "minutes"
+    "remaining_count"
   ],
   "taskboard": {
     "project": "Henry",

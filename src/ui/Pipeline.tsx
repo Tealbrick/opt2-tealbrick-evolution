@@ -48,7 +48,7 @@ export function ImportReportView({ report }: { report: Report }) {
       <p className="tb-soft">
         Trigger: {when || "none"}. No schedule was created. {hint.cron ? "Create the schedule yourself on the Schedules page. Schedules run in UTC." : ""}
       </p>
-      <p className="tb-soft">Metrics named by the contract: {report.metrics_keys.length ? report.metrics_keys.join(", ") : "none"}.</p>
+      <p className="tb-soft">Metrics the contract declares: {report.declaredMetrics.length ? report.declaredMetrics.join(", ") : "none"}.</p>
       {report.notes.length ? (
         <ul className="plain">
           {report.notes.map((n) => (

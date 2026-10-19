@@ -1188,7 +1188,7 @@
     {
       "id": "routine_report",
       "title": "Report a run",
-      "description": "Report the state of a run you claimed: dispatched (the turn started), then completed, failed or uncertain, with a short summary. Repeating the same report changes nothing. With the report that ends the run (completed or failed) you may send metrics (the RunReport: ok, minutes, retries, questions_to_martin, lessons, and metrics: your own named numbers, at most 20, name to number). They are stored once with that report; the owner sees them per workflow version, no agent sees them. metrics.pipeline, metrics.version and metrics.issue are optional and ignored (the run itself says which workflow and version it belongs to). Metrics on any other status are refused (metrics_need_terminal_status); metrics on a repeated report are not stored. If a report with metrics is refused, send the same report again without metrics, so the run still ends.",
+      "description": "Report the state of a run you claimed: dispatched (the turn started), then completed, failed or uncertain, with a short summary. Repeating the same report changes nothing. With the report that ends the run (completed or failed) you may send metrics (the RunReport: ok, minutes, retries, questions_to_martin, lessons, and metrics: your own named numbers, name to number, at most 20). They are stored once with that report; the owner sees them per workflow version, no agent sees them. metrics.pipeline, metrics.version and metrics.issue are optional and ignored. Metrics on any other status are refused (metrics_need_terminal_status). If the workflow version was imported from a pipeline contract, a named metric must be declared there (metric_not_declared). If a report with metrics is refused, send it again without metrics, so the run still ends.",
       "input": {
         "type": "object",
         "additionalProperties": false,
@@ -3000,7 +3000,7 @@
                       "unmapped",
                       "kept_as_data",
                       "schedule_hint",
-                      "metrics_keys",
+                      "declaredMetrics",
                       "notes",
                       "agent_visible"
                     ],
@@ -3117,7 +3117,7 @@
                           }
                         }
                       },
-                      "metrics_keys": {
+                      "declaredMetrics": {
                         "type": "array",
                         "maxItems": 200,
                         "items": {
@@ -3968,7 +3968,7 @@
                           "unmapped",
                           "kept_as_data",
                           "schedule_hint",
-                          "metrics_keys",
+                          "declaredMetrics",
                           "notes",
                           "agent_visible"
                         ],
@@ -4085,7 +4085,7 @@
                               }
                             }
                           },
-                          "metrics_keys": {
+                          "declaredMetrics": {
                             "type": "array",
                             "maxItems": 200,
                             "items": {
@@ -4132,7 +4132,7 @@
               "unmapped",
               "kept_as_data",
               "schedule_hint",
-              "metrics_keys",
+              "declaredMetrics",
               "notes",
               "agent_visible"
             ],
@@ -4249,7 +4249,7 @@
                   }
                 }
               },
-              "metrics_keys": {
+              "declaredMetrics": {
                 "type": "array",
                 "maxItems": 200,
                 "items": {
@@ -5637,7 +5637,7 @@
     {
       "id": "cycles_list",
       "title": "Workflow cycles",
-      "description": "The cycle ledger: one cycle per workflow version, from its promotion until the next version is promoted. Run counts, ratios and the live eval (gates: no duplicate claim, uncertain at most 5%, completed at least 80%, no drop over 10 points from the previous version). Newest promotion first, at most 500. Each cycle carries runMetrics: what the runners reported with routine_report metrics (runs with metrics, ok ratio, median and mean minutes, total retries, total questions to the owner, lesson count, and namedMetrics: each named per-pipeline number with its report count, median, mean, min and max), to compare versions.",
+      "description": "The cycle ledger: one cycle per workflow version, from its promotion until the next version is promoted. Run counts, ratios and the live eval (gates: no duplicate claim, uncertain at most 5%, completed at least 80%, no drop over 10 points from the previous version). Newest promotion first, at most 500. Each cycle carries runMetrics: what the runners reported with routine_report metrics (runs with metrics, ok ratio, median and mean minutes, total retries, total questions to the owner, lesson count, and namedMetrics: each named per-pipeline number with its report count, median, mean, min and max), to compare versions. declaredMetrics lists the metric names that the pipeline contract of the version declares, in contract order (null when the version was not imported).",
       "input": {
         "type": "object",
         "additionalProperties": false,
@@ -5688,7 +5688,8 @@
                 "last10",
                 "runMetrics",
                 "evalLive",
-                "evalStored"
+                "evalStored",
+                "declaredMetrics"
               ],
               "properties": {
                 "workflowId": {
@@ -6048,6 +6049,20 @@
                       "type": "null"
                     }
                   ]
+                },
+                "declaredMetrics": {
+                  "anyOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "type": "array",
+                      "maxItems": 20,
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -6124,7 +6139,8 @@
               "last10",
               "runMetrics",
               "evalLive",
-              "evalStored"
+              "evalStored",
+              "declaredMetrics"
             ],
             "properties": {
               "workflowId": {
@@ -6482,6 +6498,20 @@
                   },
                   {
                     "type": "null"
+                  }
+                ]
+              },
+              "declaredMetrics": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "array",
+                    "maxItems": 20,
+                    "items": {
+                      "type": "string"
+                    }
                   }
                 ]
               }

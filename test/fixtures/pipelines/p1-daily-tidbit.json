@@ -84,7 +84,6 @@
     }
   ],
   "metrics": [
-    "minutes",
     "candidates_seen",
     "shortlist_size",
     "martin_choice_rank"

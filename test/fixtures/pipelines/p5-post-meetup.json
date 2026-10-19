@@ -127,7 +127,7 @@
     "vod_delay_min",
     "transcribe_seconds",
     "signups",
-    "campaign_open_rate (next run)",
+    "prev_campaign_open_rate",
     "feedback_score"
   ],
   "taskboard": {

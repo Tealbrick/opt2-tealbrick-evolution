@@ -39,7 +39,7 @@ function op<I, O>(spec: HandlerSpec<I, O>): HandlerSpec {
   } as unknown as HandlerSpec;
 }
 
-const STATUS: Record<store.StoreError["code"], number> = { not_found: 404, conflict: 409, revision_conflict: 409, validation_failed: 422, kanban_project_required: 422, metrics_need_terminal_status: 422, pipeline_id_mismatch: 409, confirm_replace_required: 409, contract_too_large: 422 };
+const STATUS: Record<store.StoreError["code"], number> = { not_found: 404, conflict: 409, revision_conflict: 409, validation_failed: 422, kanban_project_required: 422, metrics_need_terminal_status: 422, pipeline_id_mismatch: 409, confirm_replace_required: 409, contract_too_large: 422, metric_not_declared: 422 };
 export function toTbError(e: unknown): unknown {
   if (e instanceof store.StoreError) return new TbError(e.code, e.message, STATUS[e.code], e.details);
   if (e instanceof ModelError) return new TbError("validation_failed", e.message, 422, { pointer: e.pointer });
@@ -212,7 +212,7 @@ export const handlers = {
     redact: (input) => `Run ${input.occurrence.slice(0, 12)}: ${input.status}${input.metrics ? " (with metrics)" : ""}`,
     async run(input, ctx) {
       const callApp = ctx.callApp.bind(ctx);
-      const { run, changed } = routines.report(ctx.db, ctx.caller.id, input.occurrence, input.status, input.summary?.trim() || null, Date.now(), input.metrics ?? null);
+      const { run, changed } = routines.report(ctx.db, ctx.caller.id, input.occurrence, input.status, input.summary?.trim() || null, Date.now(), input.metrics ?? null, (workflowId, version) => (version === null ? null : pipeline.declaredMetrics(ctx.db, workflowId, version)));
       if (changed) await closeRunIssue(ctx.db, callApp, run);
       await flushKanban(ctx.db, callApp);
       return routines.getRun(ctx.db, input.occurrence) ?? run;
@@ -330,7 +330,7 @@ export const handlers = {
         notice: [
           imported
             ? "Rebuilt from the contract you imported and the version you edited. Status is set by Evolution (active, or retired for an older version). Fields Evolution does not enforce come back as they were imported."
-            : "This workflow was not imported from a contract, so the required fields that Evolution has no data for are filled with defaults: owner unassigned, the Task Board run issue as input and output, a default done check, and the standard run metrics.",
+            : "This workflow was not imported from a contract, so the required fields that Evolution has no data for are filled with defaults: owner unassigned, the Task Board run issue as input and output, a default done check, and no declared metrics.",
           ...notes,
         ].join(" "),
       };

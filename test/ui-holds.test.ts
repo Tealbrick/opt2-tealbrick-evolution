@@ -42,7 +42,7 @@ const PIPE_REPORT = {
   unmapped: { tools: [{ step: "send", tool: "buzz reply (runtime)", reason: "not a Teal Brick app operation" }] },
   kept_as_data: [{ field: "owner" }, { field: "done_when" }, { field: "steps[].lead", steps: ["scan", "write"] }],
   schedule_hint: { cron: "0 10 * * *", timezone: "Asia/Bangkok", event: null, once: null },
-  metrics_keys: ["minutes", "candidates_seen"],
+  declaredMetrics: ["candidates_seen", "shortlist_size"],
   agent_visible: ["title", "summary", "steps"],
   notes: ["The whole contract is stored as it came in. Export gives it back."],
 };
@@ -411,6 +411,7 @@ describe("Cycles page (C250 Release B)", () => {
   const WF = "wfl_01HZX3K8Q2V4N6P8R0S2T4V6W8";
   const WF2 = "wfl_01HZX3K8Q2V4N6P8R0S2T4V6W9";
   const cycle = (workflowId: string, title: string, version: number, extra: Record<string, unknown> = {}) => ({
+    declaredMetrics: null as string[] | null,
     workflowId,
     workflowTitle: title,
     version,
@@ -561,8 +562,38 @@ describe("Cycles page (C250 Release B)", () => {
     assert.match(v1?.textContent ?? "", /candidates seen: 5 reports, typical 12/);
     assert.doesNotMatch(v1?.querySelector('[aria-label^="Named metrics compared"]')?.textContent ?? "", /./, "version 1 has no parent to compare with");
     assert.deepEqual(cyc.namedCompare(cycleOf(9), null), []);
+    // R10: a version whose contract declares names lists them in contract order, "not reported yet" for a name without data
+    const lines = cyc.namedLines((list[0] as unknown as { runMetrics: never }).runMetrics, ["shortlist_size", "never_reported", "candidates_seen"]);
+    assert.deepEqual(
+      lines.map((l) => l.split(":")[0]),
+      ["shortlist size", "never reported", "candidates seen", "new this week"],
+      "declared order first, then any other reported name",
+    );
+    assert.equal(lines[1], "never reported: not reported yet");
+    assert.deepEqual(cyc.namedLines(cycleOf(0).runMetrics, ["a_b"]), ["a b: not reported yet"]);
+    assert.deepEqual(cyc.namedLines(cycleOf(0).runMetrics, []), [], "a contract that declares none shows nothing");
+    assert.deepEqual(cyc.namedLines(cycleOf(0).runMetrics, null), []);
     assert.equal(cyc.humanName("questions_to_martin"), "questions to martin");
     assert.deepEqual(alerts(m.host), []);
+    await m.unmount();
+  });
+
+  it("R10: a version whose pipeline contract declares metrics lists them in contract order on the page, with not reported yet for a name that has no data", async () => {
+    reset([]);
+    const list = LIST();
+    (list[0] as { declaredMetrics: string[] }).declaredMetrics = ["shortlist_size", "never_reported", "candidates_seen"];
+    (list[0] as { runMetrics: { namedMetrics: unknown[] } }).runMetrics.namedMetrics = [
+      { name: "candidates_seen", reports: 8, median: 15, mean: 15.5, min: 14, max: 19 },
+      { name: "shortlist_size", reports: 8, median: 4, mean: 4.5, min: 3, max: 8 },
+    ];
+    stub.cycles = list;
+    const m = await mount(h(cyc.Cycles, {}));
+    await click(button(m.host, "Show versions"));
+    const [v2, v1] = [...m.host.querySelectorAll(".timeline > li")];
+    const items = [...(v2?.querySelectorAll('[aria-label="Named metrics of version 2"] li') ?? [])].map((x) => x.textContent ?? "");
+    assert.deepEqual(items.map((t) => t.split(":")[0]), ["shortlist size", "never reported", "candidates seen"]);
+    assert.equal(items[1], "never reported: not reported yet");
+    assert.equal(v1?.querySelector('[aria-label="Named metrics of version 1"]'), null, "a version without declared names and without reports shows no list");
     await m.unmount();
   });
 
@@ -670,7 +701,7 @@ describe("Pipeline contract import and export (C288 R10)", () => {
     assert.match(text, /Step send: buzz reply \(runtime\)/);
     assert.match(text, /Kept as data, not enforced: owner; done_when; steps\[\]\.lead \(steps scan, write\)/);
     assert.match(text, /cron 0 10 \* \* \* \(Asia\/Bangkok\)\. No schedule was created/);
-    assert.match(text, /Metrics named by the contract: minutes, candidates_seen/);
+    assert.match(text, /Metrics the contract declares: candidates_seen, shortlist_size/);
     assert.match(text, /Mapped to this draft \(2\)/);
     await m.unmount();
   });
