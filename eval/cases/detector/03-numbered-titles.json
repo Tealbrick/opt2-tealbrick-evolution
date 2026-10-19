@@ -1,0 +1,46 @@
+{
+  "name": "numbered titles",
+  "note": "Weekly report 41/42/43: numbers normalise to #.",
+  "minRepeats": 3,
+  "covered": [],
+  "output": {
+    "issues": [
+      {
+        "id": "iss_01J00000000000000000000008",
+        "title": "Weekly report 41",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000A",
+          "name": "Agent A"
+        },
+        "updatedAt": "2026-09-09T10:00:00Z"
+      },
+      {
+        "id": "iss_01J00000000000000000000009",
+        "title": "Weekly report 42",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000A",
+          "name": "Agent A"
+        },
+        "updatedAt": "2026-09-10T10:00:00Z"
+      },
+      {
+        "id": "iss_01J00000000000000000000010",
+        "title": "Weekly report 43",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000A",
+          "name": "Agent A"
+        },
+        "updatedAt": "2026-09-11T10:00:00Z"
+      }
+    ]
+  },
+  "expected": [
+    "agt_01J0000000000000000000000A|title:weekly report #"
+  ]
+}

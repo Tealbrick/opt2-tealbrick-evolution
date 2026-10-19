@@ -1,0 +1,31 @@
+{
+  "now": "2026-10-20T00:00:00.000Z",
+  "name": "duplicates on two schedules are separate",
+  "note": "Same due time on two schedules is two runs, not a duplicate.",
+  "parent": null,
+  "runs": [
+    {
+      "status": "completed",
+      "count": 5
+    },
+    {
+      "status": "completed",
+      "dueAt": "2026-10-10T08:00:00.000Z",
+      "automationId": "aut_01J0000000000000000000000B"
+    },
+    {
+      "status": "completed",
+      "dueAt": "2026-10-10T08:00:00.000Z",
+      "automationId": "aut_01J0000000000000000000000C"
+    }
+  ],
+  "expected": {
+    "verdict": "pass",
+    "metrics": {
+      "duplicate_claims": {
+        "value": 0,
+        "pass": true
+      }
+    }
+  }
+}

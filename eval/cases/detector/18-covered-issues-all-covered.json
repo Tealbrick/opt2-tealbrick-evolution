@@ -1,0 +1,47 @@
+{
+  "name": "covered issues: all covered",
+  "minRepeats": 3,
+  "covered": [
+    "iss_01J00000000000000000000067",
+    "iss_01J00000000000000000000068",
+    "iss_01J00000000000000000000069"
+  ],
+  "output": {
+    "issues": [
+      {
+        "id": "iss_01J00000000000000000000067",
+        "title": "Archive old tickets",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000A",
+          "name": "Agent A"
+        },
+        "updatedAt": "2026-09-12T10:00:00Z"
+      },
+      {
+        "id": "iss_01J00000000000000000000068",
+        "title": "Archive old tickets",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000A",
+          "name": "Agent A"
+        },
+        "updatedAt": "2026-09-13T10:00:00Z"
+      },
+      {
+        "id": "iss_01J00000000000000000000069",
+        "title": "Archive old tickets",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000A",
+          "name": "Agent A"
+        },
+        "updatedAt": "2026-09-14T10:00:00Z"
+      }
+    ]
+  },
+  "expected": []
+}

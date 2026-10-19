@@ -1,0 +1,42 @@
+{
+  "name": "missing status counts as done (the query asks for done)",
+  "minRepeats": 3,
+  "covered": [],
+  "output": {
+    "issues": [
+      {
+        "id": "iss_01J00000000000000000000088",
+        "title": "Clean the shared drive",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000B",
+          "name": "Agent B"
+        },
+        "updatedAt": "2026-09-05T10:00:00Z"
+      },
+      {
+        "id": "iss_01J00000000000000000000089",
+        "title": "Clean the shared drive",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000B",
+          "name": "Agent B"
+        },
+        "updatedAt": "2026-09-06T10:00:00Z"
+      },
+      {
+        "id": "iss_01J00000000000000000000090",
+        "title": "Clean the shared drive",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000B",
+          "name": "Agent B"
+        },
+        "updatedAt": "2026-09-07T10:00:00Z"
+      }
+    ]
+  },
+  "expected": [
+    "agt_01J0000000000000000000000B|title:clean the shared drive"
+  ]
+}

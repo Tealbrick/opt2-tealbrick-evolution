@@ -1,0 +1,39 @@
+{
+  "name": "assignee with type instead of kind",
+  "minRepeats": 3,
+  "covered": [],
+  "output": {
+    "issues": [
+      {
+        "id": "iss_01J00000000000000000000103",
+        "title": "Update the price list",
+        "status": "done",
+        "assignee": {
+          "type": "agent",
+          "id": "agt_01J0000000000000000000000B"
+        }
+      },
+      {
+        "id": "iss_01J00000000000000000000104",
+        "title": "Update the price list",
+        "status": "done",
+        "assignee": {
+          "type": "agent",
+          "id": "agt_01J0000000000000000000000B"
+        }
+      },
+      {
+        "id": "iss_01J00000000000000000000105",
+        "title": "Update the price list",
+        "status": "done",
+        "assignee": {
+          "type": "agent",
+          "id": "agt_01J0000000000000000000000B"
+        }
+      }
+    ]
+  },
+  "expected": [
+    "agt_01J0000000000000000000000B|title:update the price list"
+  ]
+}

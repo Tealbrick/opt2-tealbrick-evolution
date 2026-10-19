@@ -1,0 +1,43 @@
+{
+  "name": "the same issue listed twice counts once",
+  "minRepeats": 3,
+  "covered": [],
+  "output": {
+    "issues": [
+      {
+        "id": "iss_01J00000000000000000000123",
+        "title": "Publish the newsletter",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000B",
+          "name": "Agent B"
+        },
+        "updatedAt": "2026-09-12T10:00:00Z"
+      },
+      {
+        "id": "iss_01J00000000000000000000123",
+        "title": "Publish the newsletter",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000B",
+          "name": "Agent B"
+        },
+        "updatedAt": "2026-09-12T10:00:00Z"
+      },
+      {
+        "id": "iss_01J00000000000000000000123",
+        "title": "Publish the newsletter",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000B",
+          "name": "Agent B"
+        },
+        "updatedAt": "2026-09-12T10:00:00Z"
+      }
+    ]
+  },
+  "expected": []
+}

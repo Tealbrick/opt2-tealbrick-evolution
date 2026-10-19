@@ -1,0 +1,43 @@
+{
+  "name": "different titles are not grouped",
+  "minRepeats": 3,
+  "covered": [],
+  "output": {
+    "issues": [
+      {
+        "id": "iss_01J00000000000000000000131",
+        "title": "Plan the offsite",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000A",
+          "name": "Agent A"
+        },
+        "updatedAt": "2026-09-20T10:00:00Z"
+      },
+      {
+        "id": "iss_01J00000000000000000000132",
+        "title": "Hire a designer",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000A",
+          "name": "Agent A"
+        },
+        "updatedAt": "2026-09-21T10:00:00Z"
+      },
+      {
+        "id": "iss_01J00000000000000000000133",
+        "title": "Fix the printer",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000A",
+          "name": "Agent A"
+        },
+        "updatedAt": "2026-09-22T10:00:00Z"
+      }
+    ]
+  },
+  "expected": []
+}

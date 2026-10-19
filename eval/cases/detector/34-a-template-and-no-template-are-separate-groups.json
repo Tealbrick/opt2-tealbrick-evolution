@@ -1,0 +1,56 @@
+{
+  "name": "a template and no template are separate groups",
+  "minRepeats": 3,
+  "covered": [],
+  "output": {
+    "issues": [
+      {
+        "id": "iss_01J00000000000000000000127",
+        "title": "Restart the build agent",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000A",
+          "name": "Agent A"
+        },
+        "updatedAt": "2026-09-16T10:00:00Z",
+        "template": "tpl-restart"
+      },
+      {
+        "id": "iss_01J00000000000000000000128",
+        "title": "Restart the build agent",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000A",
+          "name": "Agent A"
+        },
+        "updatedAt": "2026-09-17T10:00:00Z",
+        "template": "tpl-restart"
+      },
+      {
+        "id": "iss_01J00000000000000000000129",
+        "title": "Restart the build agent",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000A",
+          "name": "Agent A"
+        },
+        "updatedAt": "2026-09-18T10:00:00Z"
+      },
+      {
+        "id": "iss_01J00000000000000000000130",
+        "title": "Restart the build agent",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000A",
+          "name": "Agent A"
+        },
+        "updatedAt": "2026-09-19T10:00:00Z"
+      }
+    ]
+  },
+  "expected": []
+}

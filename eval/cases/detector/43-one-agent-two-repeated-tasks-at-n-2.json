@@ -1,0 +1,68 @@
+{
+  "name": "one agent, two repeated tasks at N 2",
+  "minRepeats": 2,
+  "covered": [],
+  "output": {
+    "issues": [
+      {
+        "id": "iss_01J00000000000000000000175",
+        "title": "Pay the rent",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000A",
+          "name": "Agent A"
+        },
+        "updatedAt": "2026-09-08T10:00:00Z"
+      },
+      {
+        "id": "iss_01J00000000000000000000176",
+        "title": "Pay the rent",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000A",
+          "name": "Agent A"
+        },
+        "updatedAt": "2026-09-09T10:00:00Z"
+      },
+      {
+        "id": "iss_01J00000000000000000000177",
+        "title": "Check the post box",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000A",
+          "name": "Agent A"
+        },
+        "updatedAt": "2026-09-10T10:00:00Z"
+      },
+      {
+        "id": "iss_01J00000000000000000000178",
+        "title": "Check the post box",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000A",
+          "name": "Agent A"
+        },
+        "updatedAt": "2026-09-11T10:00:00Z"
+      },
+      {
+        "id": "iss_01J00000000000000000000179",
+        "title": "Fix the door",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000A",
+          "name": "Agent A"
+        },
+        "updatedAt": "2026-09-12T10:00:00Z"
+      }
+    ]
+  },
+  "expected": [
+    "agt_01J0000000000000000000000A|title:check the post box",
+    "agt_01J0000000000000000000000A|title:pay the rent"
+  ]
+}

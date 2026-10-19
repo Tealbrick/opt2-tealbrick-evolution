@@ -7,7 +7,7 @@ import { errorText, type Out, person, utcDue, utcStamp } from "./ops.ts";
 
 type Automation = Out<"automations_list">["automations"][number];
 type Run = Out<"runs_list">["runs"][number];
-const STATUS: Record<Run["status"], Status> = { completed: "live", claimed: "busy", dispatched: "busy", failed: "needs-you", missed: "needs-you", uncertain: "needs-you", policy_stale: "needs-you" };
+export const STATUS: Record<Run["status"], Status> = { completed: "live", claimed: "busy", dispatched: "busy", failed: "needs-you", missed: "needs-you", uncertain: "needs-you", policy_stale: "needs-you" };
 const SERVE_CONFIG = {
   format: "tealbrick.agent-serve/1",
   harness: { kind: "claude", modelKeyEnv: "ANTHROPIC_API_KEY" },

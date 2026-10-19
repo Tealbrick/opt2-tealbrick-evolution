@@ -4,5 +4,6 @@
   "paths": ["."],
   "images": [
     { "name": "opt2-tealbrick-evolution", "product": "evolution", "kind": "app", "manifest": "tealbrick.manifest.json" }
-  ]
+  ],
+  "preReleaseChecks": ["eval/run.ts"]
 }

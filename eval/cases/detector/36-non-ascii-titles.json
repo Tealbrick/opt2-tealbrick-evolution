@@ -1,0 +1,45 @@
+{
+  "name": "non-ASCII titles",
+  "minRepeats": 3,
+  "covered": [],
+  "output": {
+    "issues": [
+      {
+        "id": "iss_01J00000000000000000000134",
+        "title": "Résumé hebdo 1",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000C",
+          "name": "Agent C"
+        },
+        "updatedAt": "2026-09-23T10:00:00Z"
+      },
+      {
+        "id": "iss_01J00000000000000000000135",
+        "title": "Résumé hebdo 2",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000C",
+          "name": "Agent C"
+        },
+        "updatedAt": "2026-09-24T10:00:00Z"
+      },
+      {
+        "id": "iss_01J00000000000000000000136",
+        "title": "Résumé hebdo 3",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000C",
+          "name": "Agent C"
+        },
+        "updatedAt": "2026-09-25T10:00:00Z"
+      }
+    ]
+  },
+  "expected": [
+    "agt_01J0000000000000000000000C|title:résumé hebdo #"
+  ]
+}

@@ -1,0 +1,28 @@
+{
+  "now": "2026-10-20T00:00:00.000Z",
+  "name": "missed runs are information only",
+  "parent": null,
+  "runs": [
+    {
+      "status": "completed",
+      "count": 10
+    },
+    {
+      "status": "missed",
+      "count": 5
+    }
+  ],
+  "expected": {
+    "verdict": "pass",
+    "metrics": {
+      "missed_ratio": {
+        "value": 0.333333,
+        "pass": false
+      },
+      "completed_ratio": {
+        "value": 1,
+        "pass": true
+      }
+    }
+  }
+}

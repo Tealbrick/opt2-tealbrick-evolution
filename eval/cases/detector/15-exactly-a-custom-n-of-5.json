@@ -1,0 +1,67 @@
+{
+  "name": "exactly a custom N of 5",
+  "minRepeats": 5,
+  "covered": [],
+  "output": {
+    "issues": [
+      {
+        "id": "iss_01J00000000000000000000056",
+        "title": "Check the uptime page",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000C",
+          "name": "Agent C"
+        },
+        "updatedAt": "2026-09-01T10:00:00Z"
+      },
+      {
+        "id": "iss_01J00000000000000000000057",
+        "title": "Check the uptime page",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000C",
+          "name": "Agent C"
+        },
+        "updatedAt": "2026-09-02T10:00:00Z"
+      },
+      {
+        "id": "iss_01J00000000000000000000058",
+        "title": "Check the uptime page",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000C",
+          "name": "Agent C"
+        },
+        "updatedAt": "2026-09-03T10:00:00Z"
+      },
+      {
+        "id": "iss_01J00000000000000000000059",
+        "title": "Check the uptime page",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000C",
+          "name": "Agent C"
+        },
+        "updatedAt": "2026-09-04T10:00:00Z"
+      },
+      {
+        "id": "iss_01J00000000000000000000060",
+        "title": "Check the uptime page",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000C",
+          "name": "Agent C"
+        },
+        "updatedAt": "2026-09-05T10:00:00Z"
+      }
+    ]
+  },
+  "expected": [
+    "agt_01J0000000000000000000000C|title:check the uptime page"
+  ]
+}

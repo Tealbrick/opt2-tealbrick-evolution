@@ -1,0 +1,33 @@
+{
+  "name": "flat assigneeId and templateId fields",
+  "minRepeats": 3,
+  "covered": [],
+  "output": {
+    "issues": [
+      {
+        "id": "iss_01J00000000000000000000100",
+        "title": "Renew certificates",
+        "status": "done",
+        "assigneeId": "agt_01J0000000000000000000000C",
+        "templateId": "tpl-certs"
+      },
+      {
+        "id": "iss_01J00000000000000000000101",
+        "title": "Renew certificates",
+        "status": "done",
+        "assigneeId": "agt_01J0000000000000000000000C",
+        "templateId": "tpl-certs"
+      },
+      {
+        "id": "iss_01J00000000000000000000102",
+        "title": "Renew certificates",
+        "status": "done",
+        "assigneeId": "agt_01J0000000000000000000000C",
+        "templateId": "tpl-certs"
+      }
+    ]
+  },
+  "expected": [
+    "agt_01J0000000000000000000000C|template:tpl-certs"
+  ]
+}

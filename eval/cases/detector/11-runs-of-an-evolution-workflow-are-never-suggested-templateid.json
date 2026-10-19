@@ -1,0 +1,38 @@
+{
+  "name": "runs of an Evolution workflow are never suggested (templateId field)",
+  "minRepeats": 3,
+  "covered": [],
+  "output": {
+    "issues": [
+      {
+        "id": "iss_01J00000000000000000000043",
+        "title": "Run: Morning rollup",
+        "status": "done",
+        "assigneeId": "agt_01J0000000000000000000000A",
+        "templateId": "evolution:wfl-01j0000000000000000000000w"
+      },
+      {
+        "id": "iss_01J00000000000000000000044",
+        "title": "Run: Morning rollup",
+        "status": "done",
+        "assigneeId": "agt_01J0000000000000000000000A",
+        "templateId": "evolution:wfl-01j0000000000000000000000w"
+      },
+      {
+        "id": "iss_01J00000000000000000000045",
+        "title": "Run: Morning rollup",
+        "status": "done",
+        "assigneeId": "agt_01J0000000000000000000000A",
+        "templateId": "evolution:wfl-01j0000000000000000000000w"
+      },
+      {
+        "id": "iss_01J00000000000000000000046",
+        "title": "Run: Morning rollup",
+        "status": "done",
+        "assigneeId": "agt_01J0000000000000000000000A",
+        "templateId": "evolution:wfl-01j0000000000000000000000w"
+      }
+    ]
+  },
+  "expected": []
+}

@@ -1,0 +1,85 @@
+{
+  "name": "two agents doing the same work are separate groups",
+  "minRepeats": 3,
+  "covered": [],
+  "output": {
+    "issues": [
+      {
+        "id": "iss_01J00000000000000000000014",
+        "title": "Tidy the inbox",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000A",
+          "name": "Agent A"
+        },
+        "updatedAt": "2026-09-15T10:00:00Z",
+        "template": "tpl-inbox"
+      },
+      {
+        "id": "iss_01J00000000000000000000015",
+        "title": "Tidy the inbox",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000A",
+          "name": "Agent A"
+        },
+        "updatedAt": "2026-09-16T10:00:00Z",
+        "template": "tpl-inbox"
+      },
+      {
+        "id": "iss_01J00000000000000000000016",
+        "title": "Tidy the inbox",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000A",
+          "name": "Agent A"
+        },
+        "updatedAt": "2026-09-17T10:00:00Z",
+        "template": "tpl-inbox"
+      },
+      {
+        "id": "iss_01J00000000000000000000017",
+        "title": "Tidy the inbox",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000B",
+          "name": "Agent B"
+        },
+        "updatedAt": "2026-09-18T10:00:00Z",
+        "template": "tpl-inbox"
+      },
+      {
+        "id": "iss_01J00000000000000000000018",
+        "title": "Tidy the inbox",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000B",
+          "name": "Agent B"
+        },
+        "updatedAt": "2026-09-19T10:00:00Z",
+        "template": "tpl-inbox"
+      },
+      {
+        "id": "iss_01J00000000000000000000019",
+        "title": "Tidy the inbox",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000B",
+          "name": "Agent B"
+        },
+        "updatedAt": "2026-09-20T10:00:00Z",
+        "template": "tpl-inbox"
+      }
+    ]
+  },
+  "expected": [
+    "agt_01J0000000000000000000000A|template:tpl-inbox",
+    "agt_01J0000000000000000000000B|template:tpl-inbox"
+  ]
+}

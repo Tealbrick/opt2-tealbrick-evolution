@@ -1,0 +1,32 @@
+{
+  "now": "2026-10-20T00:00:00.000Z",
+  "name": "a missed row and a claim of the same due time are not a duplicate",
+  "parent": null,
+  "runs": [
+    {
+      "status": "completed",
+      "count": 5
+    },
+    {
+      "status": "missed",
+      "dueAt": "2026-10-10T08:00:00.000Z"
+    },
+    {
+      "status": "completed",
+      "dueAt": "2026-10-10T08:00:00.000Z"
+    }
+  ],
+  "expected": {
+    "verdict": "pass",
+    "metrics": {
+      "duplicate_claims": {
+        "value": 0,
+        "pass": true
+      },
+      "completed_ratio": {
+        "value": 1,
+        "pass": true
+      }
+    }
+  }
+}

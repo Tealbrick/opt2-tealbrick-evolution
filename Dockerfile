@@ -22,6 +22,8 @@ COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY package.json tealbrick.manifest.json ./
 COPY migrations ./migrations
+# The cycle eval thresholds (src/evals.ts reads ../eval/thresholds.json, the one source; C250 Release B).
+COPY eval/thresholds.json ./eval/thresholds.json
 # Standard manifest location in every opt2 image (tb-exec default --manifest path).
 COPY tealbrick.manifest.json /opt/tb/tealbrick.manifest.json
 RUN mkdir -p /data/backup && chown -R node:node /data

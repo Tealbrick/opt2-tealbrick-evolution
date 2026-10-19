@@ -1,0 +1,33 @@
+{
+  "now": "2026-10-20T00:00:00.000Z",
+  "name": "regression over 10 points",
+  "parent": [
+    {
+      "status": "completed",
+      "count": 10
+    }
+  ],
+  "runs": [
+    {
+      "status": "completed",
+      "count": 17
+    },
+    {
+      "status": "failed",
+      "count": 3
+    }
+  ],
+  "expected": {
+    "verdict": "fail",
+    "metrics": {
+      "completed_ratio": {
+        "value": 0.85,
+        "pass": true
+      },
+      "completed_ratio_drop": {
+        "value": 0.15,
+        "pass": false
+      }
+    }
+  }
+}

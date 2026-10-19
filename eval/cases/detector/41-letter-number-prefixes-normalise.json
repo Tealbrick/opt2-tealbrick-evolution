@@ -1,0 +1,45 @@
+{
+  "name": "letter-number prefixes normalise",
+  "minRepeats": 3,
+  "covered": [],
+  "output": {
+    "issues": [
+      {
+        "id": "iss_01J00000000000000000000163",
+        "title": "Q1 review",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000B",
+          "name": "Agent B"
+        },
+        "updatedAt": "2026-09-24T10:00:00Z"
+      },
+      {
+        "id": "iss_01J00000000000000000000164",
+        "title": "Q2 review",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000B",
+          "name": "Agent B"
+        },
+        "updatedAt": "2026-09-25T10:00:00Z"
+      },
+      {
+        "id": "iss_01J00000000000000000000165",
+        "title": "Q3 review",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000B",
+          "name": "Agent B"
+        },
+        "updatedAt": "2026-09-26T10:00:00Z"
+      }
+    ]
+  },
+  "expected": [
+    "agt_01J0000000000000000000000B|title:q# review"
+  ]
+}

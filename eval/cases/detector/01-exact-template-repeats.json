@@ -1,0 +1,48 @@
+{
+  "name": "exact template repeats",
+  "minRepeats": 3,
+  "covered": [],
+  "output": {
+    "issues": [
+      {
+        "id": "iss_01J00000000000000000000001",
+        "title": "Weekly report",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000A",
+          "name": "Agent A"
+        },
+        "updatedAt": "2026-09-02T10:00:00Z",
+        "template": "tpl-weekly-report"
+      },
+      {
+        "id": "iss_01J00000000000000000000002",
+        "title": "Weekly report",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000A",
+          "name": "Agent A"
+        },
+        "updatedAt": "2026-09-03T10:00:00Z",
+        "template": "tpl-weekly-report"
+      },
+      {
+        "id": "iss_01J00000000000000000000003",
+        "title": "Weekly report",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000A",
+          "name": "Agent A"
+        },
+        "updatedAt": "2026-09-04T10:00:00Z",
+        "template": "tpl-weekly-report"
+      }
+    ]
+  },
+  "expected": [
+    "agt_01J0000000000000000000000A|template:tpl-weekly-report"
+  ]
+}

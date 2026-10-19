@@ -1,0 +1,82 @@
+{
+  "name": "a template group and a title group of one agent",
+  "minRepeats": 3,
+  "covered": [],
+  "output": {
+    "issues": [
+      {
+        "id": "iss_01J00000000000000000000183",
+        "title": "Board pack",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000A",
+          "name": "Agent A"
+        },
+        "updatedAt": "2026-09-16T10:00:00Z",
+        "template": "tpl-board-pack"
+      },
+      {
+        "id": "iss_01J00000000000000000000184",
+        "title": "Board pack",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000A",
+          "name": "Agent A"
+        },
+        "updatedAt": "2026-09-17T10:00:00Z",
+        "template": "tpl-board-pack"
+      },
+      {
+        "id": "iss_01J00000000000000000000185",
+        "title": "Board pack",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000A",
+          "name": "Agent A"
+        },
+        "updatedAt": "2026-09-18T10:00:00Z",
+        "template": "tpl-board-pack"
+      },
+      {
+        "id": "iss_01J00000000000000000000186",
+        "title": "Write the minutes",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000A",
+          "name": "Agent A"
+        },
+        "updatedAt": "2026-09-19T10:00:00Z"
+      },
+      {
+        "id": "iss_01J00000000000000000000187",
+        "title": "Write the minutes",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000A",
+          "name": "Agent A"
+        },
+        "updatedAt": "2026-09-20T10:00:00Z"
+      },
+      {
+        "id": "iss_01J00000000000000000000188",
+        "title": "Write the minutes",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000A",
+          "name": "Agent A"
+        },
+        "updatedAt": "2026-09-21T10:00:00Z"
+      }
+    ]
+  },
+  "expected": [
+    "agt_01J0000000000000000000000A|template:tpl-board-pack",
+    "agt_01J0000000000000000000000A|title:write the minutes"
+  ]
+}

@@ -1,0 +1,29 @@
+{
+  "now": "2026-10-20T00:00:00.000Z",
+  "name": "below the sample",
+  "note": "4 terminal runs: ratios are reported, pass is null.",
+  "parent": null,
+  "runs": [
+    {
+      "status": "completed",
+      "count": 4
+    }
+  ],
+  "expected": {
+    "verdict": "insufficient",
+    "metrics": {
+      "completed_ratio": {
+        "value": 1,
+        "pass": null
+      },
+      "uncertain_ratio": {
+        "value": 0,
+        "pass": null
+      },
+      "duplicate_claims": {
+        "value": 0,
+        "pass": true
+      }
+    }
+  }
+}

@@ -1,0 +1,48 @@
+{
+  "name": "one template groups different titles",
+  "minRepeats": 3,
+  "covered": [],
+  "output": {
+    "issues": [
+      {
+        "id": "iss_01J00000000000000000000124",
+        "title": "Customer call notes: Acme",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000A",
+          "name": "Agent A"
+        },
+        "updatedAt": "2026-09-13T10:00:00Z",
+        "template": "tpl-call-notes"
+      },
+      {
+        "id": "iss_01J00000000000000000000125",
+        "title": "Customer call notes: Globex",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000A",
+          "name": "Agent A"
+        },
+        "updatedAt": "2026-09-14T10:00:00Z",
+        "template": "tpl-call-notes"
+      },
+      {
+        "id": "iss_01J00000000000000000000126",
+        "title": "Notes from the Initech call",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000A",
+          "name": "Agent A"
+        },
+        "updatedAt": "2026-09-15T10:00:00Z",
+        "template": "tpl-call-notes"
+      }
+    ]
+  },
+  "expected": [
+    "agt_01J0000000000000000000000A|template:tpl-call-notes"
+  ]
+}

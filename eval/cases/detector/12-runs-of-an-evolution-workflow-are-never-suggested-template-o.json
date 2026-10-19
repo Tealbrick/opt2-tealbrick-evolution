@@ -1,0 +1,70 @@
+{
+  "name": "runs of an Evolution workflow are never suggested (template object)",
+  "minRepeats": 3,
+  "covered": [],
+  "output": {
+    "issues": [
+      {
+        "id": "iss_01J00000000000000000000047",
+        "title": "Run: Morning rollup",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000B",
+          "name": "Agent B"
+        },
+        "updatedAt": "2026-09-20T10:00:00Z",
+        "template": {
+          "id": "evolution:wfl-01j0000000000000000000000w",
+          "name": "Evolution run"
+        }
+      },
+      {
+        "id": "iss_01J00000000000000000000048",
+        "title": "Run: Morning rollup",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000B",
+          "name": "Agent B"
+        },
+        "updatedAt": "2026-09-21T10:00:00Z",
+        "template": {
+          "id": "evolution:wfl-01j0000000000000000000000w",
+          "name": "Evolution run"
+        }
+      },
+      {
+        "id": "iss_01J00000000000000000000049",
+        "title": "Run: Morning rollup",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000B",
+          "name": "Agent B"
+        },
+        "updatedAt": "2026-09-22T10:00:00Z",
+        "template": {
+          "id": "evolution:wfl-01j0000000000000000000000w",
+          "name": "Evolution run"
+        }
+      },
+      {
+        "id": "iss_01J00000000000000000000050",
+        "title": "Run: Morning rollup",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000B",
+          "name": "Agent B"
+        },
+        "updatedAt": "2026-09-23T10:00:00Z",
+        "template": {
+          "id": "evolution:wfl-01j0000000000000000000000w",
+          "name": "Evolution run"
+        }
+      }
+    ]
+  },
+  "expected": []
+}

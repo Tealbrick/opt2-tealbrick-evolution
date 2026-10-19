@@ -1,0 +1,27 @@
+{
+  "now": "2026-10-20T00:00:00.000Z",
+  "name": "no runs yet",
+  "parent": null,
+  "runs": [],
+  "expected": {
+    "verdict": "insufficient",
+    "metrics": {
+      "completed_ratio": {
+        "value": null,
+        "pass": null
+      },
+      "uncertain_ratio": {
+        "value": null,
+        "pass": null
+      },
+      "missed_ratio": {
+        "value": null,
+        "pass": null
+      },
+      "duplicate_claims": {
+        "value": 0,
+        "pass": true
+      }
+    }
+  }
+}

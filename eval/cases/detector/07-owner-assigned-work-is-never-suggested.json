@@ -1,0 +1,60 @@
+{
+  "name": "owner-assigned work is never suggested",
+  "minRepeats": 3,
+  "covered": [],
+  "output": {
+    "issues": [
+      {
+        "id": "iss_01J00000000000000000000024",
+        "title": "Approve expenses",
+        "status": "done",
+        "assignee": {
+          "kind": "owner",
+          "id": "per_01J0000000000000000000000P",
+          "name": "Owner"
+        }
+      },
+      {
+        "id": "iss_01J00000000000000000000025",
+        "title": "Approve expenses",
+        "status": "done",
+        "assignee": {
+          "kind": "owner",
+          "id": "per_01J0000000000000000000000P",
+          "name": "Owner"
+        }
+      },
+      {
+        "id": "iss_01J00000000000000000000026",
+        "title": "Approve expenses",
+        "status": "done",
+        "assignee": {
+          "kind": "owner",
+          "id": "per_01J0000000000000000000000P",
+          "name": "Owner"
+        }
+      },
+      {
+        "id": "iss_01J00000000000000000000027",
+        "title": "Approve expenses",
+        "status": "done",
+        "assignee": {
+          "kind": "owner",
+          "id": "per_01J0000000000000000000000P",
+          "name": "Owner"
+        }
+      },
+      {
+        "id": "iss_01J00000000000000000000028",
+        "title": "Approve expenses",
+        "status": "done",
+        "assignee": {
+          "kind": "owner",
+          "id": "per_01J0000000000000000000000P",
+          "name": "Owner"
+        }
+      }
+    ]
+  },
+  "expected": []
+}

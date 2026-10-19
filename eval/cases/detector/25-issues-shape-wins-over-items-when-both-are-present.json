@@ -1,0 +1,80 @@
+{
+  "name": "issues shape wins over items when both are present",
+  "minRepeats": 3,
+  "covered": [],
+  "output": {
+    "issues": [
+      {
+        "id": "iss_01J00000000000000000000094",
+        "title": "Order office supplies",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000A",
+          "name": "Agent A"
+        },
+        "updatedAt": "2026-09-11T10:00:00Z"
+      },
+      {
+        "id": "iss_01J00000000000000000000095",
+        "title": "Order office supplies",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000A",
+          "name": "Agent A"
+        },
+        "updatedAt": "2026-09-12T10:00:00Z"
+      },
+      {
+        "id": "iss_01J00000000000000000000096",
+        "title": "Order office supplies",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000A",
+          "name": "Agent A"
+        },
+        "updatedAt": "2026-09-13T10:00:00Z"
+      }
+    ],
+    "items": [
+      {
+        "id": "iss_01J00000000000000000000097",
+        "title": "Order office supplies",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000B",
+          "name": "Agent B"
+        },
+        "updatedAt": "2026-09-14T10:00:00Z"
+      },
+      {
+        "id": "iss_01J00000000000000000000098",
+        "title": "Order office supplies",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000B",
+          "name": "Agent B"
+        },
+        "updatedAt": "2026-09-15T10:00:00Z"
+      },
+      {
+        "id": "iss_01J00000000000000000000099",
+        "title": "Order office supplies",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000B",
+          "name": "Agent B"
+        },
+        "updatedAt": "2026-09-16T10:00:00Z"
+      }
+    ]
+  },
+  "expected": [
+    "agt_01J0000000000000000000000A|title:order office supplies"
+  ]
+}

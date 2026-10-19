@@ -1,0 +1,45 @@
+{
+  "name": "dates in titles normalise",
+  "minRepeats": 3,
+  "covered": [],
+  "output": {
+    "issues": [
+      {
+        "id": "iss_01J00000000000000000000180",
+        "title": "Daily standup 2026-10-01",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000C",
+          "name": "Agent C"
+        },
+        "updatedAt": "2026-09-13T10:00:00Z"
+      },
+      {
+        "id": "iss_01J00000000000000000000181",
+        "title": "Daily standup 2026-10-02",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000C",
+          "name": "Agent C"
+        },
+        "updatedAt": "2026-09-14T10:00:00Z"
+      },
+      {
+        "id": "iss_01J00000000000000000000182",
+        "title": "Daily standup 2026-10-05",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000C",
+          "name": "Agent C"
+        },
+        "updatedAt": "2026-09-15T10:00:00Z"
+      }
+    ]
+  },
+  "expected": [
+    "agt_01J0000000000000000000000C|title:daily standup # # #"
+  ]
+}

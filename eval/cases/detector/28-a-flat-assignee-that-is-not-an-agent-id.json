@@ -1,0 +1,34 @@
+{
+  "name": "a flat assignee that is not an agent id",
+  "minRepeats": 3,
+  "covered": [],
+  "output": {
+    "issues": [
+      {
+        "id": "iss_01J00000000000000000000106",
+        "title": "Sign contracts",
+        "status": "done",
+        "assignee": "per_01J0000000000000000000000P"
+      },
+      {
+        "id": "iss_01J00000000000000000000107",
+        "title": "Sign contracts",
+        "status": "done",
+        "assignee": "per_01J0000000000000000000000P"
+      },
+      {
+        "id": "iss_01J00000000000000000000108",
+        "title": "Sign contracts",
+        "status": "done",
+        "assignee": "per_01J0000000000000000000000P"
+      },
+      {
+        "id": "iss_01J00000000000000000000109",
+        "title": "Sign contracts",
+        "status": "done",
+        "assignee": "per_01J0000000000000000000000P"
+      }
+    ]
+  },
+  "expected": []
+}

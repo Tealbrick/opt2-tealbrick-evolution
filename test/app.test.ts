@@ -38,8 +38,12 @@ test("agents suggest, read, and claim/report their runs; deciding, editing, prom
   const agentOps = manifest.operations.filter((o) => o.audience === "agent").map((o) => o.id);
   assert.deepEqual(agentOps.sort(), ["routine_claim", "routine_report", "routines_due", "suggestion_create", "suggestion_get", "suggestions_list", "workflow_get"]);
   assert.equal(manifest.operations.find((o) => o.id === "routines_due")?.effect, "read", "the poll target changes nothing");
-  for (const id of ["suggestion_decide", "draft_create", "draft_update", "workflow_promote", "recipe_export", "workflow_diff", "detector_scan", "automation_set", "automation_pause", "automation_delete"])
+  for (const id of ["suggestion_decide", "draft_create", "draft_update", "workflow_promote", "recipe_export", "workflow_diff", "detector_scan", "automation_set", "automation_pause", "automation_delete", "cycles_list", "cycle_get", "cycle_eval_run"])
     assert.ok((PERSON_OPS as readonly string[]).includes(id), `${id} is a person op`);
+  // the cycle ledger (C250 Release B): reads are read/["read"]; storing an eval is a create with a required key
+  for (const id of ["cycles_list", "cycle_get"]) assert.deepEqual([manifest.operations.find((o) => o.id === id)?.effect, manifest.operations.find((o) => o.id === id)?.crud], ["read", ["read"]], id);
+  const evalRun = manifest.operations.find((o) => o.id === "cycle_eval_run");
+  assert.deepEqual([evalRun?.effect, evalRun?.crud, evalRun?.idempotency], ["write", ["create"], "required"]);
   const create = manifest.operations.find((o) => o.id === "suggestion_create");
   assert.equal(create?.idempotency, "required");
   assert.deepEqual(manifest.companions, [

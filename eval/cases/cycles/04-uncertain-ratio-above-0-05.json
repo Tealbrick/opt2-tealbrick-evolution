@@ -1,0 +1,27 @@
+{
+  "now": "2026-10-20T00:00:00.000Z",
+  "name": "uncertain ratio above 0.05",
+  "parent": null,
+  "runs": [
+    {
+      "status": "completed",
+      "count": 9
+    },
+    {
+      "status": "uncertain"
+    }
+  ],
+  "expected": {
+    "verdict": "fail",
+    "metrics": {
+      "uncertain_ratio": {
+        "value": 0.1,
+        "pass": false
+      },
+      "completed_ratio": {
+        "value": 0.9,
+        "pass": true
+      }
+    }
+  }
+}

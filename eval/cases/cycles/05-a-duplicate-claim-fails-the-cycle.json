@@ -1,0 +1,30 @@
+{
+  "now": "2026-10-20T00:00:00.000Z",
+  "name": "a duplicate claim fails the cycle",
+  "note": "Two claimed runs of one schedule for one due time (two revisions).",
+  "parent": null,
+  "runs": [
+    {
+      "status": "completed",
+      "count": 4
+    },
+    {
+      "status": "completed",
+      "count": 2,
+      "dueAt": "2026-10-10T08:00:00.000Z"
+    }
+  ],
+  "expected": {
+    "verdict": "fail",
+    "metrics": {
+      "duplicate_claims": {
+        "value": 1,
+        "pass": false
+      },
+      "completed_ratio": {
+        "value": 1,
+        "pass": true
+      }
+    }
+  }
+}

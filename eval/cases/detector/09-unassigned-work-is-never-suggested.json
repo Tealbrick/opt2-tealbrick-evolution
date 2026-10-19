@@ -1,0 +1,34 @@
+{
+  "name": "unassigned work is never suggested",
+  "minRepeats": 3,
+  "covered": [],
+  "output": {
+    "issues": [
+      {
+        "id": "iss_01J00000000000000000000033",
+        "title": "Water the plants",
+        "status": "done",
+        "assignee": null
+      },
+      {
+        "id": "iss_01J00000000000000000000034",
+        "title": "Water the plants",
+        "status": "done",
+        "assignee": null
+      },
+      {
+        "id": "iss_01J00000000000000000000035",
+        "title": "Water the plants",
+        "status": "done",
+        "assignee": null
+      },
+      {
+        "id": "iss_01J00000000000000000000036",
+        "title": "Water the plants",
+        "status": "done",
+        "assignee": null
+      }
+    ]
+  },
+  "expected": []
+}

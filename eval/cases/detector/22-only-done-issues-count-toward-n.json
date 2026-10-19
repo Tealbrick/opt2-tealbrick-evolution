@@ -1,0 +1,67 @@
+{
+  "name": "only done issues count toward N",
+  "minRepeats": 3,
+  "covered": [],
+  "output": {
+    "issues": [
+      {
+        "id": "iss_01J00000000000000000000083",
+        "title": "Prepare the board meeting",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000A",
+          "name": "Agent A"
+        },
+        "updatedAt": "2026-09-28T10:00:00Z"
+      },
+      {
+        "id": "iss_01J00000000000000000000084",
+        "title": "Prepare the board meeting",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000A",
+          "name": "Agent A"
+        },
+        "updatedAt": "2026-09-01T10:00:00Z"
+      },
+      {
+        "id": "iss_01J00000000000000000000085",
+        "title": "Prepare the board meeting",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000A",
+          "name": "Agent A"
+        },
+        "updatedAt": "2026-09-02T10:00:00Z"
+      },
+      {
+        "id": "iss_01J00000000000000000000086",
+        "title": "Prepare the board meeting",
+        "status": "blocked",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000A",
+          "name": "Agent A"
+        },
+        "updatedAt": "2026-09-03T10:00:00Z"
+      },
+      {
+        "id": "iss_01J00000000000000000000087",
+        "title": "Prepare the board meeting",
+        "status": "blocked",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000A",
+          "name": "Agent A"
+        },
+        "updatedAt": "2026-09-04T10:00:00Z"
+      }
+    ]
+  },
+  "expected": [
+    "agt_01J0000000000000000000000A|title:prepare the board meeting"
+  ]
+}

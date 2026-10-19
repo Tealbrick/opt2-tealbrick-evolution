@@ -1,0 +1,45 @@
+{
+  "name": "punctuation and case variants are one group",
+  "minRepeats": 3,
+  "covered": [],
+  "output": {
+    "issues": [
+      {
+        "id": "iss_01J00000000000000000000120",
+        "title": "Weekly Report – Team A",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000A",
+          "name": "Agent A"
+        },
+        "updatedAt": "2026-09-09T10:00:00Z"
+      },
+      {
+        "id": "iss_01J00000000000000000000121",
+        "title": "weekly report: team a",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000A",
+          "name": "Agent A"
+        },
+        "updatedAt": "2026-09-10T10:00:00Z"
+      },
+      {
+        "id": "iss_01J00000000000000000000122",
+        "title": "WEEKLY REPORT (Team A)",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000A",
+          "name": "Agent A"
+        },
+        "updatedAt": "2026-09-11T10:00:00Z"
+      }
+    ]
+  },
+  "expected": [
+    "agt_01J0000000000000000000000A|title:weekly report team a"
+  ]
+}

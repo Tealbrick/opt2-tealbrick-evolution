@@ -2,9 +2,11 @@
 // against a migrated database. State machine (harvest of the v1 runtime store):
 //   suggestion  open → approved | rejected | archived   (approved/rejected → archived; rejected → approved on review)
 //   draft       open ⇄ promoted                          (any edit returns it to open; promotion snapshots it)
-//   workflow    versions 1..n, immutable; active = latest promoted
+//   workflow    versions 1..n, immutable; active = latest promoted; promoting n+1 closes the cycle of n and stores its
+//               eval in the same transaction (src/cycles.ts, eval_runs trigger 'promotion')
 import { ulid } from "@opt2-tealbrick/manifest";
 import type { Db } from "@opt2-tealbrick/miniapp-sdk";
+import { storeEval } from "./cycles.ts";
 import { type Allowed, checkPromotable, normalizeAllowed, normalizeSteps, type Snapshot, type Step, type StepInput, sameSnapshot } from "./model.ts";
 
 export type SuggestionStatus = "open" | "approved" | "rejected" | "archived";
@@ -386,8 +388,14 @@ export function listVersions(db: Db, workflowId: string): Version[] {
   return db.prepare("SELECT * FROM workflow_versions WHERE workflow_id = ? ORDER BY version").all(workflowId).map(toVersion);
 }
 
-/** Draft → permanent workflow: version 1 on first promotion, then the next version of the same workflow. */
-export function promote(db: Db, draftId: string, revision: number, now: number = Date.now()): { workflow: Workflow; version: Version } {
+/** Where promote reports a closing eval it could not store (the handler passes ctx.log). */
+export interface PromoteOptions {
+  log?: { warn(msg: string, f?: Record<string, unknown>): void };
+}
+
+/** Draft → permanent workflow: version 1 on first promotion, then the next version of the same workflow, which closes
+ *  the previous version's cycle: its closing eval is stored in the same transaction, best effort (see below). */
+export function promote(db: Db, draftId: string, revision: number, now: number = Date.now(), opts: PromoteOptions = {}): { workflow: Workflow; version: Version } {
   return db.transaction(() => {
     const d = getDraft(db, draftId);
     if (d.revision !== revision) throw new StoreError("revision_conflict", "The draft changed since you reviewed it. Review it again before you promote.", { currentRevision: d.revision });
@@ -423,6 +431,24 @@ export function promote(db: Db, draftId: string, revision: number, now: number =
       now,
     );
     db.prepare("UPDATE drafts SET workflow_id = ?, state = 'promoted', promoted_version = ?, updated_at = ? WHERE id = ?").run(workflowId, version, now, draftId);
+    // The closing eval is best effort: a nested transaction (an SDK savepoint) so a failure rolls back the eval only,
+    // never the promotion. Without a logger (store-level callers, tests) the failure is dropped: the live eval of the
+    // retired cycle stays computed on read, and the owner can store one with cycle_eval_run.
+    if (version > 1) {
+      const closed = workflowId;
+      try {
+        db.transaction(() => storeEval(db, closed, version - 1, "promotion", now));
+      } catch (e) {
+        // ids, the error's own message and a store code only: no Task Board data reaches the log
+        opts.log?.warn("closing eval not stored", {
+          workflowId: closed,
+          version: version - 1,
+          error: e instanceof Error ? e.name : "unknown",
+          message: e instanceof Error ? e.message : String(e),
+          ...(e instanceof StoreError ? { code: e.code } : {}),
+        });
+      }
+    }
     return { workflow: getWorkflow(db, workflowId), version: getVersion(db, workflowId, version) };
   });
 }

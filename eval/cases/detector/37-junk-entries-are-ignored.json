@@ -1,0 +1,49 @@
+{
+  "name": "junk entries are ignored",
+  "minRepeats": 3,
+  "covered": [],
+  "output": {
+    "issues": [
+      null,
+      42,
+      "junk",
+      [],
+      {
+        "id": "iss_01J00000000000000000000137",
+        "title": "Review pull requests",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000B",
+          "name": "Agent B"
+        },
+        "updatedAt": "2026-09-26T10:00:00Z"
+      },
+      {
+        "id": "iss_01J00000000000000000000138",
+        "title": "Review pull requests",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000B",
+          "name": "Agent B"
+        },
+        "updatedAt": "2026-09-27T10:00:00Z"
+      },
+      {
+        "id": "iss_01J00000000000000000000139",
+        "title": "Review pull requests",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000B",
+          "name": "Agent B"
+        },
+        "updatedAt": "2026-09-28T10:00:00Z"
+      }
+    ]
+  },
+  "expected": [
+    "agt_01J0000000000000000000000B|title:review pull requests"
+  ]
+}

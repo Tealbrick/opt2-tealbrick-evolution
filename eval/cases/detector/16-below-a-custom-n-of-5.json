@@ -1,0 +1,54 @@
+{
+  "name": "below a custom N of 5",
+  "minRepeats": 5,
+  "covered": [],
+  "output": {
+    "issues": [
+      {
+        "id": "iss_01J00000000000000000000061",
+        "title": "Check the uptime page",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000C",
+          "name": "Agent C"
+        },
+        "updatedAt": "2026-09-06T10:00:00Z"
+      },
+      {
+        "id": "iss_01J00000000000000000000062",
+        "title": "Check the uptime page",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000C",
+          "name": "Agent C"
+        },
+        "updatedAt": "2026-09-07T10:00:00Z"
+      },
+      {
+        "id": "iss_01J00000000000000000000063",
+        "title": "Check the uptime page",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000C",
+          "name": "Agent C"
+        },
+        "updatedAt": "2026-09-08T10:00:00Z"
+      },
+      {
+        "id": "iss_01J00000000000000000000064",
+        "title": "Check the uptime page",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000C",
+          "name": "Agent C"
+        },
+        "updatedAt": "2026-09-09T10:00:00Z"
+      }
+    ]
+  },
+  "expected": []
+}

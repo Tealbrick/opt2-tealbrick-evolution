@@ -1,0 +1,28 @@
+{
+  "now": "2026-10-20T00:00:00.000Z",
+  "name": "a duplicate claim fails even below the sample",
+  "parent": null,
+  "runs": [
+    {
+      "status": "completed",
+      "dueAt": "2026-10-10T08:00:00.000Z"
+    },
+    {
+      "status": "failed",
+      "dueAt": "2026-10-10T08:00:00.000Z"
+    }
+  ],
+  "expected": {
+    "verdict": "fail",
+    "metrics": {
+      "duplicate_claims": {
+        "value": 1,
+        "pass": false
+      },
+      "completed_ratio": {
+        "value": 0.5,
+        "pass": null
+      }
+    }
+  }
+}

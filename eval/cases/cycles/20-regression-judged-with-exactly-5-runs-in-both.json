@@ -1,0 +1,19 @@
+{
+  "now": "2026-10-20T00:00:00.000Z",
+  "name": "regression judged with exactly 5 runs in both cycles",
+  "note": "Parent 5 of 5 completed, this cycle 4 of 5: a drop of 20 points fails; with a > sample rule it would read insufficient.",
+  "parent": [
+    { "status": "completed", "count": 5 }
+  ],
+  "runs": [
+    { "status": "completed", "count": 4 },
+    { "status": "failed" }
+  ],
+  "expected": {
+    "verdict": "fail",
+    "metrics": {
+      "completed_ratio": { "value": 0.8, "pass": true },
+      "completed_ratio_drop": { "value": 0.2, "pass": false }
+    }
+  }
+}

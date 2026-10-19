@@ -1,6 +1,6 @@
 // The standard Holds page (src/ui/standard.tsx) against the real SDK client and a stub server:
 // RUL-01 (a failed decision shows a message), RUL-14 (a failed load is an error, not an empty list), C8 (one call at a
-// time per hold). The page is compiled with the build tsconfig into dist/ui-test (JSX needs a compile) and rendered in
+// time per hold). Also the Schedules Edit dialog and the Cycles page (0.3.0, C250 Release B). The page is compiled with the build tsconfig into dist/ui-test (JSX needs a compile) and rendered in
 // happy-dom.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -13,6 +13,7 @@ import type { ReactElement } from "react";
 
 type Standard = typeof import("../src/ui/standard.tsx");
 type SchedulesUi = typeof import("../src/ui/Schedules.tsx");
+type CyclesUi = typeof import("../src/ui/Cycles.tsx");
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const outDir = join(root, "dist", "ui-test");
@@ -54,8 +55,9 @@ interface Stub {
   fail: Record<string, { status: number; code: string } | undefined>;
   gate: Record<string, Promise<void> | undefined>;
   networkDown: boolean;
+  cycles: Record<string, unknown>[];
 }
-const stub: Stub = { holds: [], calls: [], fail: {}, gate: {}, networkDown: false };
+const stub: Stub = { holds: [], calls: [], fail: {}, gate: {}, networkDown: false, cycles: [] };
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
 globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
@@ -71,6 +73,13 @@ globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) =>
   const failure = stub.fail[op];
   if (failure) return json(failure.status, { error: { code: failure.code, message: `raw upstream text for ${failure.code}`, requestId: "req_1" } });
   if (op === "automation_set") return json(200, { status: "ok", output: {} });
+  if (op === "cycles_list") return json(200, { status: "ok", output: { cycles: stub.cycles } });
+  if (op === "cycle_eval_run") {
+    const { workflowId, version } = body.input as { workflowId: string; version: number };
+    const stored = { id: "evr_01HZX3K8Q2V4N6P8R0S2T4V6W8", verdict: "pass", trigger: "owner", createdAt: "2026-10-18T09:00:00.000Z" };
+    stub.cycles = stub.cycles.map((c) => (c.workflowId === workflowId && c.version === version ? { ...c, evalStored: stored } : c));
+    return json(200, { status: "ok", output: { ...stored, workflowId, version, results: [], appVersion: "0.2.13" } });
+  }
   if (op === "tb.holds_list") return json(200, { status: "ok", output: { items: stub.holds, nextCursor: null } });
   if (op === "tb.holds_decide") {
     const id = (body.input as { holdId: string }).holdId;
@@ -113,6 +122,7 @@ const alerts = (host: Element) => [...host.querySelectorAll('[role="alert"]')].m
 
 let std: Standard;
 let sched: SchedulesUi;
+let cyc: CyclesUi;
 before(() => {
   const tsc = spawnSync(join(root, "node_modules", ".bin", "tsc"), ["-p", "tsconfig.build.json", "--outDir", outDir], { cwd: root, encoding: "utf8" });
   assert.equal(tsc.status, 0, `${tsc.stdout}${tsc.stderr}`);
@@ -120,6 +130,7 @@ before(() => {
 before(async () => {
   std = (await import(pathToFileURL(join(outDir, "ui", "standard.js")).href)) as Standard;
   sched = (await import(pathToFileURL(join(outDir, "ui", "Schedules.js")).href)) as SchedulesUi;
+  cyc = (await import(pathToFileURL(join(outDir, "ui", "Cycles.js")).href)) as CyclesUi;
 });
 after(() => rmSync(outDir, { recursive: true, force: true }));
 
@@ -129,6 +140,7 @@ const reset = (holds: StubHold[]) => {
   stub.fail = {};
   stub.gate = {};
   stub.networkDown = false;
+  stub.cycles = [];
 };
 
 describe("Holds page", () => {
@@ -329,5 +341,146 @@ describe("Schedules: Edit (C250 review S2: the warnings ask for Edit)", () => {
     });
     assert.equal(saved, 1);
     await m.unmount();
+  });
+});
+
+describe("Cycles page (C250 Release B)", () => {
+  const WF = "wfl_01HZX3K8Q2V4N6P8R0S2T4V6W8";
+  const WF2 = "wfl_01HZX3K8Q2V4N6P8R0S2T4V6W9";
+  const cycle = (workflowId: string, title: string, version: number, extra: Record<string, unknown> = {}) => ({
+    workflowId,
+    workflowTitle: title,
+    version,
+    parentVersion: version > 1 ? version - 1 : null,
+    promotedAt: `2026-10-0${version}T08:00:00.000Z`,
+    retiredAt: null,
+    active: true,
+    suggestionId: null,
+    evidenceCount: 0,
+    approvalDelayMs: null,
+    draftRevisions: version,
+    widensAccess: false,
+    counts: { total: 10, completed: 10, failed: 0, uncertain: 0, missed: 0, policyStale: 0, open: 0 },
+    completedRatio: 1,
+    uncertainRatio: 0,
+    failedRatio: 0,
+    missedRatio: 0,
+    claimLatencyP50Ms: 30000,
+    durationP50Ms: 60000,
+    kanbanClosedRatio: 1,
+    duplicateClaims: 0,
+    last10: ["completed", "failed", "missed"],
+    evalLive: { verdict: "pass", results: [] },
+    evalStored: null,
+    ...extra,
+  });
+  const LIST = () => [
+    cycle(WF, "Morning rollup", 2, { widensAccess: true, completedRatio: 1 }),
+    cycle(WF, "Morning rollup", 1, { active: false, retiredAt: "2026-10-02T08:00:00.000Z", completedRatio: 0.8, approvalDelayMs: 7_200_000, evalStored: { id: "evr_1", verdict: "fail", trigger: "promotion", createdAt: "2026-10-02T08:00:00.000Z" }, evalLive: { verdict: "fail", results: [] } }),
+    cycle(WF2, "Invoice run", 1, { completedRatio: null, last10: [], evalLive: { verdict: "insufficient", results: [] }, counts: { total: 0, completed: 0, failed: 0, uncertain: 0, missed: 0, policyStale: 0, open: 0 } }),
+  ];
+  const tableRows = (host: Element) => [...host.querySelectorAll("tbody > tr:not(.cycle-detail)")];
+
+  it("quiet: one row per workflow (its active cycle) with ticks, completed ratio, trend and the live verdict", async () => {
+    reset([]);
+    stub.cycles = LIST();
+    const m = await mount(h(cyc.Cycles, {}));
+    assert.equal(m.host.querySelector("h1")?.textContent, "Cycles");
+    const rws = tableRows(m.host);
+    assert.equal(rws.length, 2, "retired cycles are not rows");
+    const [first, second] = rws as [Element, Element];
+    assert.match(first.textContent ?? "", /Morning rollup/);
+    assert.match(first.textContent ?? "", /v2/);
+    assert.equal(first.querySelectorAll(".ticks .tb-tag").length, 3);
+    assert.match(first.querySelector(".ticks")?.getAttribute("aria-label") ?? "", /completed, failed, missed/);
+    assert.match(first.textContent ?? "", /100%/);
+    assert.equal(first.querySelector(".trend")?.getAttribute("aria-label"), "up from the previous version");
+    assert.equal(first.querySelector("td:nth-child(5) .tb-tag.live")?.textContent, "pass");
+    assert.match(second.textContent ?? "", /No runs yet/);
+    assert.equal(second.querySelector(".trend")?.getAttribute("aria-label"), "no previous version to compare");
+    assert.match(second.textContent ?? "", /not enough runs/);
+    assert.deepEqual(alerts(m.host), []);
+    assert.equal(m.host.querySelector(".tb-empty"), null);
+    await m.unmount();
+  });
+
+  it("a row opens the version timeline; Store eval now stores the active cycle's eval once and reloads", async () => {
+    reset([]);
+    stub.cycles = LIST();
+    let release = () => {};
+    stub.gate.cycle_eval_run = new Promise<void>((r) => {
+      release = r;
+    });
+    const m = await mount(h(cyc.Cycles, {}));
+    await click(button(m.host, "Show versions"));
+    const items = [...m.host.querySelectorAll(".timeline > li")];
+    assert.deepEqual(items.map((li) => li.querySelector("strong")?.textContent), ["Version 2", "Version 1"], "newest first");
+    assert.match(items[0]?.textContent ?? "", /wider access/);
+    assert.doesNotMatch(items[1]?.textContent ?? "", /wider access/);
+    assert.match(items[1]?.textContent ?? "", /at close: fail/);
+    assert.match(items[1]?.textContent ?? "", /approved 2 h after the suggestion/);
+    assert.match(items[0]?.textContent ?? "", /10 runs: 10 completed/);
+    const store = button(m.host, "Store eval now");
+    await act(async () => {
+      store.click(); // C8: a second click before React re-renders sends nothing
+      store.click();
+    });
+    assert.ok(store.disabled);
+    release();
+    await flush();
+    assert.deepEqual(stub.calls.filter((c) => c.op === "cycle_eval_run").map((c) => c.input), [{ workflowId: WF, version: 2 }]);
+    assert.equal(stub.calls.filter((c) => c.op === "cycles_list").length, 2, "reloaded after storing");
+    assert.match(m.host.querySelector(".timeline > li")?.textContent ?? "", /stored: pass/);
+    assert.deepEqual(alerts(m.host), []);
+    await click(button(m.host, "Hide versions"));
+    assert.equal(m.host.querySelector(".timeline"), null);
+    await m.unmount();
+  });
+
+  it("fires: a failed Store eval now shows a plain message and keeps the button usable", async () => {
+    reset([]);
+    stub.cycles = LIST();
+    stub.fail.cycle_eval_run = { status: 404, code: "not_found" };
+    const m = await mount(h(cyc.Cycles, {}));
+    await click(button(m.host, "Show versions"));
+    await click(button(m.host, "Store eval now"));
+    await flush();
+    assert.match(alerts(m.host)[0] ?? "", /The eval could not be stored/);
+    assert.ok(!button(m.host, "Store eval now").disabled);
+    await m.unmount();
+  });
+
+  it("RUL-14: a failed load is an error with Try again, not the empty state; Try again loads", async () => {
+    reset([]);
+    stub.cycles = LIST();
+    stub.fail.cycles_list = { status: 500, code: "internal_error" };
+    const m = await mount(h(cyc.Cycles, {}));
+    assert.match(alerts(m.host)[0] ?? "", /Cycles could not be loaded/);
+    assert.equal(m.host.querySelector(".tb-empty"), null, "no false empty state");
+    stub.fail.cycles_list = undefined;
+    await click(button(m.host, "Try again"));
+    await flush();
+    assert.deepEqual(alerts(m.host), []);
+    assert.equal(tableRows(m.host).length, 2);
+    await m.unmount();
+  });
+
+  it("empty: no promoted workflow says so", async () => {
+    reset([]);
+    const m = await mount(h(cyc.Cycles, {}));
+    assert.equal(m.host.querySelector(".tb-empty h3")?.textContent, "No promoted workflows yet.");
+    assert.deepEqual(alerts(m.host), []);
+    await m.unmount();
+  });
+
+  it("trend, percent and duration helpers", () => {
+    assert.equal(cyc.trendOf({ completedRatio: 0.9 }, { completedRatio: 0.8 }), "up");
+    assert.equal(cyc.trendOf({ completedRatio: 0.7 }, { completedRatio: 0.8 }), "down");
+    assert.equal(cyc.trendOf({ completedRatio: 0.8 }, { completedRatio: 0.8 }), "same");
+    assert.equal(cyc.trendOf({ completedRatio: 0.8 }, null), "none");
+    assert.equal(cyc.trendOf({ completedRatio: null }, { completedRatio: 0.8 }), "none");
+    assert.equal(cyc.pct(0.666667), "67%");
+    assert.equal(cyc.pct(null), "–");
+    assert.deepEqual([cyc.duration(45 * 60_000), cyc.duration(5 * 3_600_000), cyc.duration(3 * 86_400_000)], ["45 min", "5 h", "3 days"]);
   });
 });

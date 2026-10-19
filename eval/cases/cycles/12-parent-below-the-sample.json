@@ -1,0 +1,30 @@
+{
+  "now": "2026-10-20T00:00:00.000Z",
+  "name": "parent below the sample",
+  "note": "The regression check needs 5 terminal runs in both cycles.",
+  "parent": [
+    {
+      "status": "completed",
+      "count": 3
+    }
+  ],
+  "runs": [
+    {
+      "status": "completed",
+      "count": 10
+    }
+  ],
+  "expected": {
+    "verdict": "insufficient",
+    "metrics": {
+      "completed_ratio": {
+        "value": 1,
+        "pass": true
+      },
+      "completed_ratio_drop": {
+        "value": 0,
+        "pass": null
+      }
+    }
+  }
+}

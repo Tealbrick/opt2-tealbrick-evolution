@@ -1,0 +1,64 @@
+{
+  "name": "missing or blank titles are skipped",
+  "minRepeats": 3,
+  "covered": [],
+  "output": {
+    "issues": [
+      {
+        "id": "iss_01J00000000000000000000115",
+        "title": "Book travel",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000A",
+          "name": "Agent A"
+        },
+        "updatedAt": "2026-09-04T10:00:00Z"
+      },
+      {
+        "id": "iss_01J00000000000000000000116",
+        "title": "Book travel",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000A",
+          "name": "Agent A"
+        },
+        "updatedAt": "2026-09-05T10:00:00Z"
+      },
+      {
+        "id": "iss_01J00000000000000000000117",
+        "title": "",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000A",
+          "name": "Agent A"
+        },
+        "updatedAt": "2026-09-06T10:00:00Z"
+      },
+      {
+        "id": "iss_01J00000000000000000000118",
+        "title": "   ",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000A",
+          "name": "Agent A"
+        },
+        "updatedAt": "2026-09-07T10:00:00Z"
+      },
+      {
+        "id": "iss_01J00000000000000000000119",
+        "status": "done",
+        "assignee": {
+          "kind": "agent",
+          "id": "agt_01J0000000000000000000000A",
+          "name": "Agent A"
+        },
+        "updatedAt": "2026-09-08T10:00:00Z"
+      }
+    ]
+  },
+  "expected": []
+}
