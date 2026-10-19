@@ -78,7 +78,7 @@ test("quiet: metrics on the completing report are stored once and roll up in the
   const [row] = metricsRows(db);
   assert.deepEqual({ ...row }, { occurrence: occ, ok: 1, minutes: 12.5, retries: 2, questions_to_martin: 1, lessons: JSON.stringify(["Check the calendar first", "Ask once"]), created_at: row?.created_at });
   const c = cycles.getCycle(db, wf, 1, NOW);
-  assert.deepEqual(c.runMetrics, { runs: 1, okRuns: 1, okRatio: 1, minutesMedian: 12.5, minutesMean: 12.5, retriesTotal: 2, questionsToMartinTotal: 1, lessonCount: 2 });
+  assert.deepEqual(c.runMetrics, { runs: 1, okRuns: 1, okRatio: 1, minutesMedian: 12.5, minutesMean: 12.5, retriesTotal: 2, questionsToMartinTotal: 1, lessonCount: 2, namedMetrics: [] });
   assert.equal(c.counts.completed, 1, "the run counts as before");
 });
 
@@ -86,7 +86,7 @@ test("a failed run can carry ok: false; fields that are left out stay null and c
   const { db, wf, occ } = setup();
   r.report(db, BOUND.id, occ, "failed", "x", NOW, { ok: false, minutes: 0 });
   assert.deepEqual({ ...metricsRows(db)[0] }, { occurrence: occ, ok: 0, minutes: 0, retries: null, questions_to_martin: null, lessons: "[]", created_at: metricsRows(db)[0]?.created_at });
-  assert.deepEqual(cycles.getCycle(db, wf, 1, NOW).runMetrics, { runs: 1, okRuns: 0, okRatio: 0, minutesMedian: 0, minutesMean: 0, retriesTotal: 0, questionsToMartinTotal: 0, lessonCount: 0 });
+  assert.deepEqual(cycles.getCycle(db, wf, 1, NOW).runMetrics, { runs: 1, okRuns: 0, okRatio: 0, minutesMedian: 0, minutesMean: 0, retriesTotal: 0, questionsToMartinTotal: 0, lessonCount: 0, namedMetrics: [] });
 });
 
 test("rollup per version: ok ratio, median (lower middle), mean, totals; runs without metrics and other versions are not counted; two versions compare", () => {
@@ -109,10 +109,10 @@ test("rollup per version: ok ratio, median (lower middle), mean, totals; runs wi
 
   const [v1, v2] = cycles.workflowCycles(db, wf, NOW);
   // v1: minutes 10, 40, 20 → median (lower middle of 10, 20, 40) 20, mean 23.333333
-  assert.deepEqual(v1?.runMetrics, { runs: 3, okRuns: 2, okRatio: 0.666667, minutesMedian: 20, minutesMean: 23.333333, retriesTotal: 4, questionsToMartinTotal: 2, lessonCount: 3 });
+  assert.deepEqual(v1?.runMetrics, { runs: 3, okRuns: 2, okRatio: 0.666667, minutesMedian: 20, minutesMean: 23.333333, retriesTotal: 4, questionsToMartinTotal: 2, lessonCount: 3, namedMetrics: [] });
   assert.equal(v1?.counts.completed, 3, "all completed runs, with or without metrics");
   // v2: minutes 6, 8 → median 6 (lower middle), mean 7
-  assert.deepEqual(v2?.runMetrics, { runs: 2, okRuns: 2, okRatio: 1, minutesMedian: 6, minutesMean: 7, retriesTotal: 0, questionsToMartinTotal: 0, lessonCount: 1 });
+  assert.deepEqual(v2?.runMetrics, { runs: 2, okRuns: 2, okRatio: 1, minutesMedian: 6, minutesMean: 7, retriesTotal: 0, questionsToMartinTotal: 0, lessonCount: 1, namedMetrics: [] });
   // the same two cycles through the owner ops: comparable side by side, parentVersion links them
   assert.equal(v2?.parentVersion, 1);
 });
@@ -284,7 +284,7 @@ test("quiet: a report without metrics works as before and stores nothing; the ro
   const out = await call<K.RoutineReportOutput>(H, "routine_report", { occurrence: occ, status: "completed", summary: "Rollup written." }, ctxFor(db, BOUND));
   assert.equal(out.status, "completed");
   assert.deepEqual(metricsRows(db), []);
-  assert.deepEqual(cycles.getCycle(db, wf, 1, NOW).runMetrics, { runs: 0, okRuns: 0, okRatio: null, minutesMedian: null, minutesMean: null, retriesTotal: 0, questionsToMartinTotal: 0, lessonCount: 0 });
+  assert.deepEqual(cycles.getCycle(db, wf, 1, NOW).runMetrics, { runs: 0, okRuns: 0, okRatio: null, minutesMedian: null, minutesMean: null, retriesTotal: 0, questionsToMartinTotal: 0, lessonCount: 0, namedMetrics: [] });
   assert.deepEqual(schemaErrors(undefined), [], "the schema does not require metrics");
 });
 
@@ -322,7 +322,7 @@ test("a refused report rolls back as a whole: no status change, no Kanban sync m
 test("no agent-audience op can return lessons or metrics: manifest outputs carry none, and answers to every agent hold none (canary)", async () => {
   const { db, wf, automationId, occ } = setup();
   // metrics with a canary lesson, from the claiming agent; a second run of another agent's schedule would be a leak target too
-  r.report(db, BOUND.id, occ, "completed", "done", NOW, { ok: true, minutes: 31.25, retries: 7, questions_to_martin: 5, lessons: [CANARY] });
+  r.report(db, BOUND.id, occ, "completed", "done", NOW, { ok: true, minutes: 31.25, retries: 7, questions_to_martin: 5, lessons: [CANARY], metrics: { canary_metric_zz: 987654.5 } });
   const o2 = claimedRun(db, wf, automationId, 13, 1);
   r.report(db, BOUND.id, o2, "completed", null, NOW, { ok: true, minutes: 12.125, lessons: [`${CANARY}-2`] });
 
@@ -352,10 +352,11 @@ test("no agent-audience op can return lessons or metrics: manifest outputs carry
   await assert.rejects(call(H, "routine_report", { occurrence: occ, status: "completed" }, ctxFor(db, { ...AGENT_B, mode: "bound" })), /No run of yours/);
   assert.ok(wfBody.id);
   const text = JSON.stringify(seen);
-  for (const needle of [CANARY, "31.25", "12.125", "lessons", "runMetrics", "questions_to_martin", "minutesMedian"]) assert.ok(!text.includes(needle), `no agent answer contains ${needle}`);
+  for (const needle of [CANARY, "31.25", "12.125", "lessons", "runMetrics", "questions_to_martin", "minutesMedian", "canary_metric_zz", "987654.5", "namedMetrics"]) assert.ok(!text.includes(needle), `no agent answer contains ${needle}`);
   // and the owner does see it (the test would pass trivially if nothing were stored)
   const owner = await call<K.CycleGetOutput>(H, "cycle_get", { workflowId: wf, version: 1 }, ctxFor(db, OWNER));
   assert.deepEqual(owner.lessons.map((l) => l.text).sort(), [CANARY, `${CANARY}-2`]);
+  assert.deepEqual(owner.cycle.runMetrics.namedMetrics, [{ name: "canary_metric_zz", reports: 1, median: 987654.5, mean: 987654.5, min: 987654.5, max: 987654.5 }]);
 });
 
 test("the receipt text of routine_report never carries the metrics", () => {
@@ -363,4 +364,142 @@ test("the receipt text of routine_report never carries the metrics", () => {
   const text = spec.redact({ occurrence: "a".repeat(64), status: "completed", metrics: { ok: true, minutes: 1, lessons: [CANARY] } });
   assert.equal(text, "Run aaaaaaaaaaaa: completed (with metrics)");
   assert.equal(spec.redact({ occurrence: "a".repeat(64), status: "completed" }), "Run aaaaaaaaaaaa: completed");
+});
+
+// ── named per-pipeline metrics (RunReport.metrics, agent-stack 640a4aa) ──
+
+const namedRows = (db: Db): Record<string, unknown>[] => db.prepare("SELECT * FROM run_metric_values ORDER BY occurrence, name").all();
+
+test("quiet: the named map is stored per run in the same transaction and rolled up BY NAME per version (reports, median nearest-rank, mean, min, max); names sort; runs that left a name out are not counted for it", () => {
+  const { db, wf, draftId, automationId, occ } = setup();
+  r.report(db, BOUND.id, occ, "completed", null, NOW, { ok: true, minutes: 5, metrics: { candidates_seen: 12, shortlist_size: 4 } });
+  const o2 = claimedRun(db, wf, automationId, 13, 1);
+  r.report(db, BOUND.id, o2, "completed", null, NOW, { ok: true, minutes: 5, metrics: { candidates_seen: 20.5 } });
+  const o3 = claimedRun(db, wf, automationId, 14, 1);
+  r.report(db, BOUND.id, o3, "failed", null, NOW, { ok: false, minutes: 5, metrics: { candidates_seen: 3, shortlist_size: 0 } });
+  const o4 = claimedRun(db, wf, automationId, 15, 1);
+  r.report(db, BOUND.id, o4, "completed", null, NOW, { ok: true, minutes: 5 }); // metrics without the map
+  const o5 = claimedRun(db, wf, automationId, 16, 1);
+  r.report(db, BOUND.id, o5, "completed", null, NOW, { ok: true, minutes: 5, metrics: {} }); // an empty map stores no value
+  assert.deepEqual(namedRows(db).map((x) => `${x.name}=${x.value}`).sort(), ["candidates_seen=12", "candidates_seen=20.5", "candidates_seen=3", "shortlist_size=0", "shortlist_size=4"]);
+  assert.equal(namedRows(db).filter((x) => x.occurrence === o4 || x.occurrence === o5).length, 0);
+  const d = store.getDraft(db, draftId);
+  const u = store.updateDraft(db, d.id, d.revision, { instruction: "v2" }, T("2026-10-17T00:00:00Z"));
+  store.promote(db, d.id, u.revision, T("2026-10-17T00:00:00Z"));
+  const o6 = claimedRun(db, wf, automationId, 18, 2);
+  r.report(db, BOUND.id, o6, "completed", null, NOW, { ok: true, minutes: 5, metrics: { candidates_seen: 99 } });
+  const [v1, v2] = cycles.workflowCycles(db, wf, NOW);
+  // candidates_seen over 12, 20.5, 3: sorted 3, 12, 20.5 → median 12 (middle), mean 11.833333, min 3, max 20.5
+  assert.deepEqual(v1?.runMetrics.namedMetrics, [
+    { name: "candidates_seen", reports: 3, median: 12, mean: 11.833333, min: 3, max: 20.5 },
+    { name: "shortlist_size", reports: 2, median: 0, mean: 2, min: 0, max: 4 },
+  ]);
+  assert.deepEqual(v2?.runMetrics.namedMetrics, [{ name: "candidates_seen", reports: 1, median: 99, mean: 99, min: 99, max: 99 }], "another version has its own numbers");
+  assert.equal(v1?.runMetrics.runs, 5, "the core rollup still counts every report with metrics");
+});
+
+test("the owner ops carry the rollup by name; the manifest output schema accepts it", async () => {
+  const { db, wf, automationId, occ } = setup();
+  r.report(db, BOUND.id, occ, "completed", null, NOW, { ok: true, minutes: 5, metrics: { candidates_seen: 12 } });
+  const list = await call<K.CyclesListOutput>(H, "cycles_list", {}, ctxFor(db, OWNER));
+  assert.equal(list.cycles[0]?.runMetrics.namedMetrics[0]?.name, "candidates_seen");
+  const one = await call<K.CycleGetOutput>(H, "cycle_get", { workflowId: wf, version: 1 }, ctxFor(db, OWNER));
+  assert.equal(one.cycle.runMetrics.namedMetrics[0]?.median, 12);
+  void automationId;
+});
+
+test("fires (schema layer): a bad name, a value that is not a number, more than 20 names and a bad issue are refused; 20 names and the name limits pass", () => {
+  const base = { ok: true, minutes: 1 };
+  const twenty = Object.fromEntries(Array.from({ length: 20 }, (_, i) => [`m_${i}`, i]));
+  assert.deepEqual(schemaErrors({ ...base, metrics: twenty, issue: "iss_1" }), []);
+  assert.deepEqual(schemaErrors({ ...base, metrics: { ab: 1, [`a${"b".repeat(40)}`]: -0.5, a1_: 1e300 } }), [], "2 and 41 characters, negative and large numbers pass");
+  const cases: [string, unknown][] = [
+    ["upper case", { Bad: 1 }],
+    ["one character", { a: 1 }],
+    ["42 characters", { [`a${"b".repeat(41)}`]: 1 }],
+    ["starts with a digit", { "1x": 1 }],
+    ["hyphen", { "x-y": 1 }],
+    ["space", { "x y": 1 }],
+    ["string value", { candidates_seen: "12" }],
+    ["null value", { candidates_seen: null }],
+    ["boolean value", { candidates_seen: true }],
+    ["object value", { candidates_seen: { v: 1 } }],
+    ["21 names", { ...twenty, m_20: 1 }],
+    ["map is an array", [1, 2]],
+  ];
+  for (const [why, map] of cases) {
+    const v = validateInput(reportOp, { occurrence: "a".repeat(64), status: "completed", metrics: { ...base, metrics: map } } as never);
+    assert.equal(v.ok, false, why);
+  }
+  for (const issue of ["", "x".repeat(65), 7]) assert.equal(validateInput(reportOp, { occurrence: "a".repeat(64), status: "completed", metrics: { ...base, issue } } as never).ok, false, `issue ${JSON.stringify(issue)}`);
+});
+
+test("fires (handler layer): a direct call refuses NaN, Infinity, a bad name and more than 20 names with the pointer of the name; nothing is stored", () => {
+  const { db, occ } = setup();
+  const bad: [Record<string, unknown> | unknown, string][] = [
+    [{ candidates_seen: Number.NaN }, "/metrics/metrics/candidates_seen"],
+    [{ candidates_seen: Number.POSITIVE_INFINITY }, "/metrics/metrics/candidates_seen"],
+    [{ candidates_seen: Number.NEGATIVE_INFINITY }, "/metrics/metrics/candidates_seen"],
+    [{ candidates_seen: "12" }, "/metrics/metrics/candidates_seen"],
+    [{ Bad: 1 }, "/metrics/metrics/Bad"],
+    [{ "x-y": 1 }, "/metrics/metrics/x-y"],
+    [{ a: 1 }, "/metrics/metrics/a"],
+    [Object.fromEntries(Array.from({ length: 21 }, (_, i) => [`m_${i}`, 1])), "/metrics/metrics"],
+    [[1], "/metrics/metrics"],
+    [null, "/metrics/metrics"],
+  ];
+  for (const [map, pointer] of bad) {
+    const t = refusal(() => r.report(db, BOUND.id, occ, "completed", null, NOW, { ok: true, minutes: 1, metrics: map as Record<string, number> }));
+    assert.ok(t, JSON.stringify(map)?.slice(0, 50));
+    assert.deepEqual([t?.code, t?.httpStatus, (t?.details as { pointer?: string } | undefined)?.pointer], ["validation_failed", 422, pointer]);
+  }
+  assert.equal(r.getRun(db, occ)?.status, "claimed");
+  assert.deepEqual(metricsRows(db), []);
+  assert.deepEqual(namedRows(db), []);
+  // control: the same call with good numbers goes through
+  r.report(db, BOUND.id, occ, "completed", null, NOW, { ok: true, minutes: 1, metrics: { candidates_seen: 0 } });
+  assert.deepEqual(namedRows(db).map((x) => [x.name, x.value]), [["candidates_seen", 0]]);
+});
+
+test("`issue` is accepted and ignored: the run keeps its own Task Board issue id and no row holds the sent one", () => {
+  const { db, occ } = setup();
+  db.prepare("UPDATE routine_runs SET kanban_issue_id = 'iss_truth' WHERE occurrence = ?").run(occ);
+  r.report(db, BOUND.id, occ, "completed", null, NOW, { ok: true, minutes: 1, issue: "iss_other", pipeline: "p1", version: 3 });
+  assert.equal(r.getRun(db, occ)?.kanbanIssueId, "iss_truth");
+  assert.ok(!JSON.stringify([metricsRows(db), namedRows(db), db.prepare("SELECT * FROM routine_runs").all()]).includes("iss_other"));
+});
+
+test("terminal only, repeats store nothing, and a refused report rolls the named values back with the run", () => {
+  const { db, occ } = setup();
+  const t = refusal(() => r.report(db, BOUND.id, occ, "dispatched", null, NOW, { ok: true, minutes: 1, metrics: { candidates_seen: 1 } }));
+  assert.equal(t?.code, "metrics_need_terminal_status");
+  assert.deepEqual(namedRows(db), []);
+  r.report(db, BOUND.id, occ, "completed", null, NOW, { ok: true, minutes: 1, metrics: { candidates_seen: 1 } });
+  assert.equal(r.report(db, BOUND.id, occ, "completed", null, NOW + 1000, { ok: true, minutes: 2, metrics: { candidates_seen: 2, other_one: 5 } }).changed, false);
+  assert.deepEqual(namedRows(db).map((x) => [x.name, x.value]), [["candidates_seen", 1]], "the first terminal report decides");
+  assert.equal(refusal(() => r.report(db, BOUND.id, occ, "completed", null, NOW + 2000, { ok: true, minutes: 1, metrics: { Bad: 1 } }))?.code, "validation_failed", "a bad map is refused even on a repeat");
+});
+
+test("a report without the map is exactly as before: nothing in run_metric_values, namedMetrics empty", () => {
+  const { db, wf, occ } = setup();
+  r.report(db, BOUND.id, occ, "completed", null, NOW, { ok: true, minutes: 3 });
+  assert.equal(metricsRows(db).length, 1);
+  assert.deepEqual(namedRows(db), []);
+  assert.deepEqual(cycles.getCycle(db, wf, 1, NOW).runMetrics.namedMetrics, []);
+});
+
+test("the table itself refuses what the handler would: a 21st name, an infinite value, a bad name, a name for no metrics row", () => {
+  const { db, occ } = setup();
+  r.report(db, BOUND.id, occ, "completed", null, NOW, { ok: true, minutes: 1 });
+  const ins = db.prepare("INSERT INTO run_metric_values (occurrence, name, value) VALUES (?, ?, ?)");
+  assert.throws(() => ins.run(occ, "Bad", 1), /CHECK/);
+  assert.throws(() => ins.run(occ, "a", 1), /CHECK/);
+  assert.throws(() => ins.run(occ, "x-y", 1), /CHECK/);
+  assert.throws(() => ins.run(occ, "ok_name", Number.POSITIVE_INFINITY), /CHECK/);
+  assert.throws(() => ins.run(occ, "ok_name", Number.NaN), /NOT NULL|CHECK/);
+  assert.throws(() => ins.run(occ, "ok_name", "abc"), /CHECK/, "text is not a number");
+  assert.throws(() => ins.run("a".repeat(64), "ok_name", 1), /FOREIGN KEY/);
+  for (let i = 0; i < 20; i++) ins.run(occ, `m_${i}`, i);
+  assert.throws(() => ins.run(occ, "m_20", 1), /at most 20/);
+  assert.throws(() => ins.run(occ, "m_0", 1), /UNIQUE|PRIMARY|at most 20/);
 });

@@ -30,7 +30,7 @@ Known edge cases of the ledger (accepted for 0.3.0):
 - `workflowTitle` may come from a Kanban-derived suggestion title (C88): owner-only, like `workflows_list`. The ledger has no Kanban evidence titles.
 - The closing eval at promotion is best effort (savepoint): if it fails, the promotion stands and the cycle has no stored closing eval.
 
-Run metrics (C288 R8): `routine_report` may carry the `RunReport` metrics with the terminal report; they are stored with it in `run_metrics` and rolled up per cycle (`runMetrics` in `src/cycles.ts`). The lessons are free text from agents (C88 / L12): only `cycle_get` (person op) returns them.
+Run metrics (C288 R8): `routine_report` may carry the `RunReport` metrics with the terminal report; they are stored with it in `run_metrics` (the named per-pipeline numbers in `run_metric_values`) and rolled up per cycle (also by name) (`runMetrics` in `src/cycles.ts`). The lessons are free text from agents (C88 / L12): only `cycle_get` (person op) returns them.
 
 Run semantics: the primary key of `routine_runs` is the occurrence (sha256 of automation id, revision and due time), so claims are at most once. A misfire grace of 120 s collapses missed periods into one `missed` row (no catch-up burst). `claimed` over 10 minutes or `dispatched` over 30 minutes without a report becomes `uncertain` and is never re-offered. Nothing starts runs on a timer. The runner is external: `tealbrick agent serve` in routines mode.
 

@@ -377,19 +377,19 @@ describe("Cycles page (C250 Release B)", () => {
     kanbanClosedRatio: 1,
     duplicateClaims: 0,
     last10: ["completed", "failed", "missed"],
-    runMetrics: { runs: 0, okRuns: 0, okRatio: null, minutesMedian: null, minutesMean: null, retriesTotal: 0, questionsToMartinTotal: 0, lessonCount: 0 },
+    runMetrics: { runs: 0, okRuns: 0, okRatio: null, minutesMedian: null, minutesMean: null, retriesTotal: 0, questionsToMartinTotal: 0, lessonCount: 0, namedMetrics: [] },
     evalLive: { verdict: "pass", results: [] },
     evalStored: null,
     ...extra,
   });
   const LIST = () => [
-    cycle(WF, "Morning rollup", 2, { widensAccess: true, completedRatio: 1, runMetrics: { runs: 8, okRuns: 6, okRatio: 0.75, minutesMedian: 12, minutesMean: 14.5, retriesTotal: 3, questionsToMartinTotal: 1, lessonCount: 2 } }),
-    cycle(WF, "Morning rollup", 1, { active: false, runMetrics: { runs: 5, okRuns: 3, okRatio: 0.6, minutesMedian: 20, minutesMean: 22, retriesTotal: 0, questionsToMartinTotal: 0, lessonCount: 0 }, retiredAt: "2026-10-02T08:00:00.000Z", completedRatio: 0.8, approvalDelayMs: 7_200_000, evalStored: { id: "evr_1", verdict: "fail", trigger: "promotion", createdAt: "2026-10-02T08:00:00.000Z" }, evalLive: { verdict: "fail", results: [] } }),
+    cycle(WF, "Morning rollup", 2, { widensAccess: true, completedRatio: 1, runMetrics: { runs: 8, okRuns: 6, okRatio: 0.75, minutesMedian: 12, minutesMean: 14.5, retriesTotal: 3, questionsToMartinTotal: 1, lessonCount: 2, namedMetrics: [] } }),
+    cycle(WF, "Morning rollup", 1, { active: false, runMetrics: { runs: 5, okRuns: 3, okRatio: 0.6, minutesMedian: 20, minutesMean: 22, retriesTotal: 0, questionsToMartinTotal: 0, lessonCount: 0, namedMetrics: [] }, retiredAt: "2026-10-02T08:00:00.000Z", completedRatio: 0.8, approvalDelayMs: 7_200_000, evalStored: { id: "evr_1", verdict: "fail", trigger: "promotion", createdAt: "2026-10-02T08:00:00.000Z" }, evalLive: { verdict: "fail", results: [] } }),
     cycle(WF2, "Invoice run", 1, { completedRatio: null, last10: [], evalLive: { verdict: "insufficient", results: [] }, counts: { total: 0, completed: 0, failed: 0, uncertain: 0, missed: 0, policyStale: 0, open: 0 } }),
   ];
   const cycleOf = (runs: number) => ({
     version: 1,
-    runMetrics: { runs, okRuns: runs, okRatio: runs ? 1 : null, minutesMedian: runs ? 5 : null, minutesMean: runs ? 5 : null, retriesTotal: 0, questionsToMartinTotal: 0, lessonCount: 0 },
+    runMetrics: { runs, okRuns: runs, okRatio: runs ? 1 : null, minutesMedian: runs ? 5 : null, minutesMean: runs ? 5 : null, retriesTotal: 0, questionsToMartinTotal: 0, lessonCount: 0, namedMetrics: [] },
   });
   const tableRows = (host: Element) => [...host.querySelectorAll("tbody > tr:not(.cycle-detail)")];
 
@@ -482,6 +482,30 @@ describe("Cycles page (C250 Release B)", () => {
     assert.equal(cyc.compareText(cycleOf(9), null), null, "version 1 has no parent");
     assert.equal(cyc.metricsText(cycleOf(0).runMetrics), "No run reports with metrics yet.");
     assert.equal(cyc.minutesText(150), "2.5 h");
+    assert.deepEqual(alerts(m.host), []);
+    await m.unmount();
+  });
+
+  it("named metrics: each version lists them by name (underscores read as spaces) and compares typical values by name once both versions have 5 reports of that name", async () => {
+    reset([]);
+    const named = (name: string, reports: number, median: number) => ({ name, reports, median, mean: median + 0.5, min: median - 1, max: median + 4 });
+    const list = LIST();
+    (list[0] as { runMetrics: { namedMetrics: unknown[] } }).runMetrics.namedMetrics = [named("candidates_seen", 8, 15), named("shortlist_size", 8, 4), named("new_this_week", 2, 1)];
+    (list[1] as { runMetrics: { namedMetrics: unknown[] } }).runMetrics.namedMetrics = [named("candidates_seen", 5, 12), named("shortlist_size", 3, 3)];
+    stub.cycles = list;
+    const m = await mount(h(cyc.Cycles, {}));
+    await click(button(m.host, "Show versions"));
+    const [v2, v1] = [...m.host.querySelectorAll(".timeline > li")];
+    const text2 = v2?.textContent ?? "";
+    assert.match(text2, /candidates seen: 8 reports, typical 15, average 15\.5, lowest 14, highest 19/);
+    assert.match(text2, /candidates seen: typical 12 → 15/);
+    assert.match(text2, /shortlist size: too few reports to compare yet \(needs 5 per version\)/);
+    assert.match(text2, /new this week: too few reports to compare yet/, "a name only the new version has");
+    assert.doesNotMatch(text2, /candidates_seen/, "never the raw name");
+    assert.match(v1?.textContent ?? "", /candidates seen: 5 reports, typical 12/);
+    assert.doesNotMatch(v1?.querySelector('[aria-label^="Named metrics compared"]')?.textContent ?? "", /./, "version 1 has no parent to compare with");
+    assert.deepEqual(cyc.namedCompare(cycleOf(9), null), []);
+    assert.equal(cyc.humanName("questions_to_martin"), "questions to martin");
     assert.deepEqual(alerts(m.host), []);
     await m.unmount();
   });
