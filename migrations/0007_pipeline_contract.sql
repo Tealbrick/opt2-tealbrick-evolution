@@ -15,7 +15,9 @@ CREATE TABLE pipeline_sources (
   pipeline_version INTEGER NOT NULL CHECK (typeof(pipeline_version) = 'integer' AND pipeline_version >= 1),
   source TEXT NOT NULL CHECK (json_valid(source) AND json_type(source) = 'object'),
   report TEXT NOT NULL CHECK (json_valid(report) AND json_type(report) = 'object'),
-  imported_at INTEGER NOT NULL
+  imported_at INTEGER NOT NULL,
+  -- asDraftOf: the version of the workflow that was active at import (the owner is warned when another is active at promotion)
+  base_version INTEGER CHECK (base_version IS NULL OR (typeof(base_version) = 'integer' AND base_version >= 1))
 );
 CREATE INDEX pipeline_sources_by_pipeline ON pipeline_sources (pipeline_id);
 

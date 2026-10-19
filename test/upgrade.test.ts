@@ -330,7 +330,7 @@ test("the code works on migrated 0.3.0 + R8 data: import as a new draft of the o
   assert.equal(pipeline.versionSource(db, wf.id, 1), null);
   assert.deepEqual(pipeline.pipelineIdsOfWorkflow(db, wf.id), []);
   const contract = JSON.parse(readFileSync(new URL("./fixtures/pipelines/p2-source-vetting.json", import.meta.url), "utf8")) as Record<string, unknown>;
-  const imp = pipeline.importPipeline(db, { contract, asDraftOf: wf.id }, D0);
+  const imp = pipeline.importPipeline(db, { contract, asDraftOf: wf.id, confirmReplace: true }, D0);
   // the seeded 0.2.12 workflow has the kanban.issues_list allow-list; the import adds the contract's own operations
   assert.equal(imp.draft.workflowId, wf.id);
   const v = store.promote(db, imp.draft.id, imp.draft.revision, D0 + 1000).version;

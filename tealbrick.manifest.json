@@ -2962,7 +2962,8 @@
                   "id",
                   "version",
                   "importedAt",
-                  "report"
+                  "report",
+                  "baseVersion"
                 ],
                 "properties": {
                   "id": {
@@ -2983,7 +2984,8 @@
                       "kept_as_data",
                       "schedule_hint",
                       "metrics_keys",
-                      "notes"
+                      "notes",
+                      "agent_visible"
                     ],
                     "properties": {
                       "mapped": {
@@ -3021,13 +3023,17 @@
                               "additionalProperties": false,
                               "required": [
                                 "step",
-                                "tool"
+                                "tool",
+                                "reason"
                               ],
                               "properties": {
                                 "step": {
                                   "type": "string"
                                 },
                                 "tool": {
+                                  "type": "string"
+                                },
+                                "reason": {
                                   "type": "string"
                                 }
                               }
@@ -3107,8 +3113,25 @@
                         "items": {
                           "type": "string"
                         }
+                      },
+                      "agent_visible": {
+                        "type": "array",
+                        "maxItems": 10,
+                        "items": {
+                          "type": "string"
+                        }
                       }
                     }
+                  },
+                  "baseVersion": {
+                    "anyOf": [
+                      {
+                        "type": "null"
+                      },
+                      {
+                        "type": "integer"
+                      }
+                    ]
                   }
                 }
               }
@@ -3684,7 +3707,7 @@
     {
       "id": "pipeline_import",
       "title": "Import a pipeline contract",
-      "description": "Import a typed pipeline contract (tealbrick.agents/pipeline-contract/0.1) as a new workflow draft. Teal Brick tools of the steps become the step operations and the allowed operations; every other tool is listed as not mapped; the rest of the contract is kept as data and is not enforced. No schedule is created: the report gives the trigger as a hint. With asDraftOf the draft is a new draft of that workflow.",
+      "description": "Import a typed pipeline contract (tealbrick.agents/pipeline-contract/0.1) as a new workflow draft. Teal Brick tools of the steps become the step operations and the allowed operations; every other tool is listed as not mapped; the rest of the contract is kept as data and is not enforced. No schedule is created: the report gives the trigger as a hint. With asDraftOf the draft is a new draft of that workflow. Agents that run the workflow read its title, summary and step text; everything else of the contract stays with the owner.",
       "input": {
         "type": "object",
         "additionalProperties": false,
@@ -3702,6 +3725,10 @@
             "maxLength": 64,
             "pattern": "^[a-z]{3}_[0-9A-Za-z]{1,60}$",
             "description": "A workflow that was imported from the same pipeline id (or never imported): the draft becomes its next version when promoted."
+          },
+          "confirmReplace": {
+            "type": "boolean",
+            "description": "Needed with asDraftOf when the workflow was never imported from a contract: the draft replaces its steps and allowed operations."
           }
         }
       },
@@ -3903,7 +3930,8 @@
                       "id",
                       "version",
                       "importedAt",
-                      "report"
+                      "report",
+                      "baseVersion"
                     ],
                     "properties": {
                       "id": {
@@ -3924,7 +3952,8 @@
                           "kept_as_data",
                           "schedule_hint",
                           "metrics_keys",
-                          "notes"
+                          "notes",
+                          "agent_visible"
                         ],
                         "properties": {
                           "mapped": {
@@ -3962,13 +3991,17 @@
                                   "additionalProperties": false,
                                   "required": [
                                     "step",
-                                    "tool"
+                                    "tool",
+                                    "reason"
                                   ],
                                   "properties": {
                                     "step": {
                                       "type": "string"
                                     },
                                     "tool": {
+                                      "type": "string"
+                                    },
+                                    "reason": {
                                       "type": "string"
                                     }
                                   }
@@ -4048,8 +4081,25 @@
                             "items": {
                               "type": "string"
                             }
+                          },
+                          "agent_visible": {
+                            "type": "array",
+                            "maxItems": 10,
+                            "items": {
+                              "type": "string"
+                            }
                           }
                         }
+                      },
+                      "baseVersion": {
+                        "anyOf": [
+                          {
+                            "type": "null"
+                          },
+                          {
+                            "type": "integer"
+                          }
+                        ]
                       }
                     }
                   }
@@ -4066,7 +4116,8 @@
               "kept_as_data",
               "schedule_hint",
               "metrics_keys",
-              "notes"
+              "notes",
+              "agent_visible"
             ],
             "properties": {
               "mapped": {
@@ -4104,13 +4155,17 @@
                       "additionalProperties": false,
                       "required": [
                         "step",
-                        "tool"
+                        "tool",
+                        "reason"
                       ],
                       "properties": {
                         "step": {
                           "type": "string"
                         },
                         "tool": {
+                          "type": "string"
+                        },
+                        "reason": {
                           "type": "string"
                         }
                       }
@@ -4187,6 +4242,13 @@
               "notes": {
                 "type": "array",
                 "maxItems": 50,
+                "items": {
+                  "type": "string"
+                }
+              },
+              "agent_visible": {
+                "type": "array",
+                "maxItems": 10,
                 "items": {
                   "type": "string"
                 }

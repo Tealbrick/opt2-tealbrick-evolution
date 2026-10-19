@@ -2,6 +2,7 @@
 import { Button, Chip, ChipGroup, EmptyState, Field, Ink, Notice, Select, Tag, Textarea, TextInput } from "@opt2-tealbrick/ui";
 import { useCallback, useEffect, useState } from "react";
 import type * as K from "#kit";
+import { DraftBase } from "./DraftBase.tsx";
 import { ALLOWLIST_TEXT, errorText, type Out, person } from "./ops.ts";
 import { ImportReportView, importedFrom } from "./Pipeline.tsx";
 
@@ -34,6 +35,8 @@ export function Drafts({ openId, onPromoted }: { openId: string | null; onPromot
   const [workflows, setWorkflows] = useState<Out<"workflows_list">["workflows"]>([]);
   const [importError, setImportError] = useState<string | null>(null);
   const [importing, setImporting] = useState(false);
+  /** the app asked the owner to confirm that the draft replaces a hand-made workflow (409 confirm_replace_required) */
+  const [needConfirm, setNeedConfirm] = useState<string | null>(null);
   const load = useCallback(async () => {
     try {
       setRows((await person("drafts_list", {})).drafts);
@@ -71,7 +74,7 @@ export function Drafts({ openId, onPromoted }: { openId: string | null; onPromot
       .then((r) => setWorkflows(r.workflows))
       .catch(() => setWorkflows([])); // only the optional "new version of" choice is lost
   };
-  const doImport = async () => {
+  const doImport = async (confirmReplace = false) => {
     if (importing) return;
     let contract: unknown;
     try {
@@ -86,15 +89,19 @@ export function Drafts({ openId, onPromoted }: { openId: string | null; onPromot
     }
     setImporting(true);
     try {
-      const r = await person("pipeline_import", { contract, ...(importFor ? { asDraftOf: importFor } : {}) } as K.PipelineImportInput);
+      const r = await person("pipeline_import", { contract, ...(importFor ? { asDraftOf: importFor } : {}), ...(confirmReplace ? { confirmReplace: true } : {}) } as K.PipelineImportInput);
       await load();
       setSelected(r.draft.id);
       setImportText("");
       setImportFor("");
       setImportOpen(false);
       setImportError(null);
+      setNeedConfirm(null);
     } catch (e) {
-      setImportError(errorText(e));
+      if ((e as { code?: unknown } | null)?.code === "confirm_replace_required") {
+        setNeedConfirm(errorText(e));
+        setImportError(null);
+      } else setImportError(errorText(e));
     } finally {
       setImporting(false);
     }
@@ -125,11 +132,34 @@ export function Drafts({ openId, onPromoted }: { openId: string | null; onPromot
             listed in the report and are not enforced.
           </p>
           <Field label="Contract JSON">
-            <Textarea rows={8} value={importText} onChange={(e) => setImportText(e.target.value)} spellCheck={false} />
+            <Textarea
+              rows={8}
+              value={importText}
+              onChange={(e) => {
+                setImportText(e.target.value);
+                setNeedConfirm(null);
+              }}
+              spellCheck={false}
+            />
           </Field>
           <Field label="Add to" hint="Choose a workflow to make the draft its next version. It must come from the same pipeline id.">
-            <Select value={importFor} onValueChange={setImportFor} options={[{ value: "", label: "A new workflow" }, ...workflows.map((w) => ({ value: w.id, label: `New version of: ${w.title}` }))]} />
+            <Select
+              value={importFor}
+              onValueChange={(v) => {
+                setImportFor(v);
+                setNeedConfirm(null);
+              }} options={[{ value: "", label: "A new workflow" }, ...workflows.map((w) => ({ value: w.id, label: `New version of: ${w.title}` }))]} />
           </Field>
+          {needConfirm ? (
+            <Notice tone="needs-you" role="alert">
+              {needConfirm}
+              <div className="tb-ctas">
+                <Button onClick={() => void doImport(true)} disabled={importing}>
+                  Replace and import
+                </Button>
+              </div>
+            </Notice>
+          ) : null}
           {importError ? (
             <Notice tone="needs-you" role="alert">
               {importError}
@@ -251,9 +281,13 @@ function Editor({ id, onSaved, onPromoted }: { id: string; onSaved: () => Promis
       {d.pipeline ? (
         <div className="tb-stack">
           <Notice role="status">{importedFrom(d.pipeline.id, d.pipeline.version)}.</Notice>
+          <p className="tb-soft">
+            Agents that run this workflow can read the title, summary and step text. Kept-as-data fields (sources, dictation references, escalation, approvals) stay with you.
+          </p>
           <ImportReportView report={d.pipeline.report} />
         </div>
       ) : null}
+      <DraftBase workflowId={d.workflowId} allowed={form.allowed} baseVersion={d.pipeline?.baseVersion ?? null} />
       <Field label="Title">
         <TextInput value={form.title} onChange={(e) => set({ title: e.target.value })} maxLength={200} />
       </Field>

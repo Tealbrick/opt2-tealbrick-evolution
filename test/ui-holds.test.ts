@@ -39,10 +39,11 @@ const PIPE_REPORT = {
     { from: "id", to: "pipeline key (stored with the draft)" },
     { from: "steps[send].tools: mcp__tealbrick__knowledge__remember", to: "step operation and allowed operation knowledge.remember" },
   ],
-  unmapped: { tools: [{ step: "send", tool: "buzz reply (runtime)" }] },
+  unmapped: { tools: [{ step: "send", tool: "buzz reply (runtime)", reason: "not a Teal Brick app operation" }] },
   kept_as_data: [{ field: "owner" }, { field: "done_when" }, { field: "steps[].lead", steps: ["scan", "write"] }],
   schedule_hint: { cron: "0 10 * * *", timezone: "Asia/Bangkok", event: null, once: null },
   metrics_keys: ["minutes", "candidates_seen"],
+  agent_visible: ["title", "summary", "steps"],
   notes: ["The whole contract is stored as it came in. Export gives it back."],
 };
 const PIPE_DRAFT = {
@@ -127,7 +128,7 @@ globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) =>
   if (op === "drafts_list") return json(200, { status: "ok", output: { drafts: stub.drafts.map((d) => ({ id: d.id, title: d.title, state: d.state, revision: d.revision, workflowId: d.workflowId, suggestionId: null, updatedAt: d.updatedAt })) } });
   if (op === "draft_get") return json(200, { status: "ok", output: stub.drafts.find((d) => d.id === (body.input as { id: string }).id) });
   if (op === "pipeline_import") {
-    const draft = { ...PIPE_DRAFT, pipeline: { id: "p1-daily-tidbit", version: 1, importedAt: "2026-10-19T08:00:00.000Z", report: PIPE_REPORT } };
+    const draft = { ...PIPE_DRAFT, pipeline: { id: "p1-daily-tidbit", version: 1, importedAt: "2026-10-19T08:00:00.000Z", baseVersion: null, report: PIPE_REPORT } };
     stub.drafts = [draft];
     return json(200, { status: "ok", output: { draft, report: PIPE_REPORT } });
   }
@@ -640,6 +641,7 @@ describe("Pipeline contract import and export (C288 R10)", () => {
     assert.equal(m.host.querySelector('[aria-label="Import a pipeline contract"]'), null, "the box closes");
     const text = m.host.textContent ?? "";
     assert.match(text, /Imported from pipeline contract p1-daily-tidbit v1/);
+    assert.match(text, /Agents that run this workflow can read the title, summary and step text\. Kept-as-data fields \(sources, dictation references, escalation, approvals\) stay with you\./);
     assert.match(text, /Not mapped: 1 tool is not a Teal Brick operation/);
     assert.match(text, /Step send: buzz reply \(runtime\)/);
     assert.match(text, /Kept as data, not enforced: owner; done_when; steps\[\]\.lead \(steps scan, write\)/);
@@ -735,6 +737,79 @@ describe("Pipeline contract import and export (C288 R10)", () => {
     await flush();
     assert.equal(alerts(m.host).length, 1, "a message, not a silent failure");
     assert.equal(downloads, 0, "nothing was downloaded");
+    await m.unmount();
+  });
+
+  it("S2: an import the app wants confirmed (a workflow never imported) shows the app's message and a Replace and import button; only that button sends confirmReplace", async () => {
+    reset([]);
+    stub.fail.pipeline_import = { status: 409, code: "confirm_replace_required" };
+    const m = await mount(h(drafts.Drafts, { openId: null, onPromoted: () => {} }));
+    const box = await openBox(m.host);
+    await setText(box, JSON.stringify({ id: "p1-daily-tidbit", version: 1 }));
+    await click(button(m.host, "Import"));
+    await flush();
+    assert.deepEqual(stub.calls.filter((c) => c.op === "pipeline_import").map((c) => c.input), [{ contract: { id: "p1-daily-tidbit", version: 1 } }], "the first call has no confirmReplace");
+    assert.equal(alerts(m.host).length, 1, "the message is shown once, with the button");
+    stub.fail.pipeline_import = undefined;
+    await click(button(m.host, "Replace and import"));
+    await flush();
+    assert.deepEqual(stub.calls.filter((c) => c.op === "pipeline_import").at(-1)?.input, { contract: { id: "p1-daily-tidbit", version: 1 }, confirmReplace: true });
+    assert.match(m.host.textContent ?? "", /Imported from pipeline contract p1-daily-tidbit v1/);
+    assert.equal(
+      [...m.host.querySelectorAll("button")].some((b) => b.textContent?.trim() === "Replace and import"),
+      false,
+      "the button is gone after the import",
+    );
+    await m.unmount();
+  });
+
+  const wide = [{ product: "knowledge", operations: ["remember"], crud: ["create", "read"] }];
+  const narrow = [{ product: "knowledge", operations: ["remember"], crud: ["read"] }];
+  const draftOf = (allowed: unknown, baseVersion: number | null) => ({
+    ...PIPE_DRAFT,
+    workflowId: WF,
+    allowed,
+    pipeline: baseVersion === null ? null : { id: "p1-daily-tidbit", version: 1, importedAt: "2026-10-19T08:00:00.000Z", baseVersion, report: PIPE_REPORT },
+  });
+  const active = (n: number, allowed: unknown) => ({
+    workflow: { id: WF, title: "P1", summary: "s", activeVersion: n, draftId: "wfd_x", createdAt: "x", updatedAt: "x" },
+    versions: Array.from({ length: n }, (_, i) => ({ ...PIPE_DRAFT, workflowId: WF, version: i + 1, allowed, draftId: "wfd_x", draftRevision: 1, promotedAt: "2026-10-01T08:00:00.000Z" })),
+    pipelines: [],
+  });
+
+  it("S2: ANY draft of an existing workflow that allows more than its active version says so (the Workflows page rule); one that does not widen says nothing", async () => {
+    reset([]);
+    stub.versions = active(1, narrow);
+    stub.drafts = [draftOf(wide, null)]; // not imported at all: an ordinary draft of a workflow
+    let m = await mount(h(drafts.Drafts, { openId: PIPE_DRAFT.id, onPromoted: () => {} }));
+    assert.match(m.host.textContent ?? "", /This draft allows more than v1, the active version\./);
+    assert.match(m.host.textContent ?? "", /keeps its old operation list until you change its policy in Portal/);
+    await m.unmount();
+    stub.drafts = [draftOf(narrow, null)];
+    m = await mount(h(drafts.Drafts, { openId: PIPE_DRAFT.id, onPromoted: () => {} }));
+    assert.doesNotMatch(m.host.textContent ?? "", /allows more than/);
+    await m.unmount();
+    stub.drafts = [{ ...PIPE_DRAFT, pipeline: null }]; // a draft of a new workflow: no comparison at all
+    stub.calls = [];
+    m = await mount(h(drafts.Drafts, { openId: PIPE_DRAFT.id, onPromoted: () => {} }));
+    assert.equal(stub.calls.filter((c) => c.op === "workflow_versions").length, 0);
+    await m.unmount();
+  });
+
+  it("S3: a draft based on v1 while v2 is active warns; based on the active version it does not; a failed comparison says so", async () => {
+    reset([]);
+    stub.versions = active(2, narrow);
+    stub.drafts = [draftOf(narrow, 1)];
+    let m = await mount(h(drafts.Drafts, { openId: PIPE_DRAFT.id, onPromoted: () => {} }));
+    assert.match(m.host.textContent ?? "", /This draft is based on v1; v2 is now active\. Check what changed before you promote\./);
+    await m.unmount();
+    stub.drafts = [draftOf(narrow, 2)];
+    m = await mount(h(drafts.Drafts, { openId: PIPE_DRAFT.id, onPromoted: () => {} }));
+    assert.doesNotMatch(m.host.textContent ?? "", /is based on/);
+    await m.unmount();
+    stub.fail.workflow_versions = { status: 500, code: "internal_error" };
+    m = await mount(h(drafts.Drafts, { openId: PIPE_DRAFT.id, onPromoted: () => {} }));
+    assert.match(m.host.textContent ?? "", /could not be loaded, so this draft was not compared/);
     await m.unmount();
   });
 });

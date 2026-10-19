@@ -120,7 +120,8 @@ test("p1: Teal Brick tools become step ops and allowed operations; every other t
   assert.deepEqual(draft.steps.find((s) => s.id === "send")?.ops, [{ product: "knowledge", operation: "remember" }]);
   assert.deepEqual(draft.steps.find((s) => s.id === "scan")?.ops, []);
   assert.deepEqual(draft.allowed, [{ product: "knowledge", operations: ["remember"], crud: ["create", "read"] }]);
-  assert.deepEqual(report.unmapped.tools, [{ step: "send", tool: "buzz reply (runtime)" }]);
+  assert.deepEqual(report.unmapped.tools, [{ step: "send", tool: "buzz reply (runtime)", reason: "not a Teal Brick app operation" }]);
+  assert.deepEqual(report.agent_visible, ["title", "summary", "steps"], "what an agent that runs the workflow can read of it");
   assert.deepEqual(report.schedule_hint, { cron: "0 10 * * *", timezone: "Asia/Bangkok", event: null, once: null });
   assert.deepEqual(report.metrics_keys, ["minutes", "candidates_seen", "shortlist_size", "martin_choice_rank"]);
   const kept = Object.fromEntries(report.kept_as_data.map((k) => [k.field, k.steps ?? true]));
@@ -322,7 +323,7 @@ test("asDraftOf a workflow that was never imported is accepted (it takes the key
   const db = migratedDb();
   const d = store.createDraft(db, { suggestionId: null, templateId: null, snapshot: { title: "Hand made", summary: "", instruction: "Do it.", trigger: "", steps: [], allowed: READ } }, D0);
   const wf = store.promote(db, d.id, d.revision, D0).workflow.id;
-  const r1 = pipeline.importPipeline(db, { contract: p(2), asDraftOf: wf });
+  const r1 = pipeline.importPipeline(db, { contract: p(2), asDraftOf: wf, confirmReplace: true });
   assert.ok(r1.report.notes.some((n) => /never imported/.test(n)));
   store.promote(db, r1.draft.id, r1.draft.revision, D0 + 1);
   assert.deepEqual(pipeline.pipelineIdsOfWorkflow(db, wf), ["p2-source-vetting"]);
@@ -497,7 +498,7 @@ const CANARY = {
   purpose: "CANARY-purpose-1c7e",
 };
 
-test("leak: nothing of the stored contract reaches an agent op (workflow_get, suggestions, due, claim, report); the purpose reaches it only as the workflow summary the owner promoted", async () => {
+test("leak: nothing of the stored contract reaches an agent op (workflow_get, suggestions, due, claim, report); the purpose reaches it only as the workflow summary, which is INTENDED: the owner reviews and can edit the summary before promotion (R10 review S1)", async () => {
   const db = migratedDb();
   const c: Contract = {
     id: "canary-pipeline",
@@ -546,6 +547,7 @@ test("leak: nothing of the stored contract reaches an agent op (workflow_get, su
   assert.doesNotMatch(text, /pipeline_id|pipelineId|pipelineSource|pipeline_source|dictation_refs|done_when/);
   const get = seen[0] as { summary: string };
   assert.equal(get.summary, CANARY.purpose, "the purpose is the workflow summary: agent-visible by the owner's own promotion, as for any workflow");
+  assert.deepEqual(imp.report.agent_visible, ["title", "summary", "steps"], "the report tells the owner what agents can read");
   // control: the owner sees the stored contract (the canaries are really stored)
   const stored = JSON.stringify((await call<K.PipelineExportOutput>(H, "pipeline_export", { workflowId: wf }, owner(db))).contract);
   for (const canary of Object.values(CANARY)) assert.ok(stored.includes(canary), `the owner's export has ${canary}`);
@@ -595,4 +597,212 @@ test("the stored contract is the contract as imported (not the mapped text) and 
   assert.throws(() => ins.run(other.id, "p1-x", 1, "[]", "{}"), /CHECK/, "source is an object");
   assert.throws(() => ins.run(other.id, "p1-x", 1, "{}", "not json"), /CHECK/);
   ins.run(other.id, "p1-x", 1, "{}", "{}");
+});
+
+// ── R10 review round ──
+
+const counts = (db: Db) => ({
+  drafts: store.listDrafts(db).length,
+  sources: (db.prepare("SELECT count(*) AS n FROM pipeline_sources").get() as { n: number }).n,
+});
+const pointerOf = (t: TbError) => (t.details as { pointer: string }).pointer;
+
+test("S2 tool names: the draft editor's op-name rule, plus tb, evolution (only the Bound-agent ops) and `__` in an operation are refused, each with a reason", () => {
+  const maps: [string, string][] = [
+    ["mcp__tealbrick__kanban__issue_delete", "kanban.issue_delete"],
+    ["mcp__tealbrick__kanban__issue_get_", "kanban.issue_get_"],
+    ["mcp__tealbrick__evolution__workflow_get", "evolution.workflow_get"],
+    ["mcp__tealbrick__evolution__routine_claim", "evolution.routine_claim"],
+    ["mcp__tealbrick__nope__zap", "nope.zap"],
+    ["mcp__tealbrick__a-b__purge", "a-b.purge"],
+  ];
+  for (const [tool, key] of maps) {
+    const c = pipeline.classifyTool(tool);
+    assert.ok("op" in c, `${tool} maps`);
+    assert.equal(`${c.op.product}.${c.op.operation}`, key);
+  }
+  const refused: [string, RegExp][] = [
+    ["mcp__tealbrick____x", /not of the form/],
+    ["mcp__tealbrick__kanban____x", /operation name is not valid/],
+    ["mcp__tealbrick__kanban__x__y", /double underscore/],
+    ["mcp__tealbrick__KANBAN__x", /product name is not valid/],
+    ["mcp__tealbrick__kanban__ｉssue", /operation name is not valid/],
+    ["mcp__tealbrick__kanban__issue-delete", /operation name is not valid/],
+    ["mcp__tealbrick__kanban__", /operation name is not valid/],
+    ["mcp__tealbrick__kanban__x\n", /operation name is not valid/],
+    ["mcp__tealbrick__kanban__x ", /operation name is not valid/],
+    ["mcp__tealbrick__tb__standard", /standard \(tb\)/],
+    ["mcp__tealbrick__tb__holds_decide", /standard \(tb\)/],
+    ["mcp__tealbrick__evolution__pipeline_import", /for the owner/],
+    ["mcp__tealbrick__evolution__draft_update", /for the owner/],
+    ["mcp__other__kanban__issue_get", /not a Teal Brick app operation/],
+  ];
+  for (const [tool, why] of refused) {
+    const c = pipeline.classifyTool(tool);
+    assert.ok("reason" in c, `${JSON.stringify(tool)} is not mapped`);
+    assert.match(c.reason, why, tool);
+    assert.equal(pipeline.tealbrickOp(tool), null);
+  }
+  // end to end: the not-mapped ones are in the report with their reason and never in the allow-list
+  const c = p(2);
+  c.steps = [{ id: "s1", do: "x", tools: ["mcp__tealbrick__kanban__issue_delete", "mcp__tealbrick__evolution__pipeline_import", "mcp__tealbrick__tb__standard", "mcp__tealbrick__kanban__x__y"] }];
+  const r1 = pipeline.importPipeline(migratedDb(), { contract: c });
+  assert.deepEqual(r1.draft.allowed, [{ product: "kanban", operations: ["issue_delete"], crud: ["read", "delete"] }]);
+  assert.deepEqual(r1.report.unmapped.tools.map((t) => t.tool), ["mcp__tealbrick__evolution__pipeline_import", "mcp__tealbrick__tb__standard", "mcp__tealbrick__kanban__x__y"]);
+  assert.ok(r1.report.unmapped.tools.every((t) => t.reason.length > 0));
+});
+
+test("S2/S3 a tool named twice in a step is one line of the report (no duplicate keys in the page); the export still gives both back", async () => {
+  const c = p(2);
+  c.steps = [{ id: "s1", do: "x", tools: ["mcp__tealbrick__kanban__issues_list", "mcp__tealbrick__kanban__issues_list", "buzz reply", "buzz reply"] }];
+  const db = migratedDb();
+  const { report } = pipeline.importPipeline(db, { contract: c });
+  assert.equal(report.mapped.filter((m) => /issues_list/.test(m.from)).length, 1);
+  assert.deepEqual(report.unmapped.tools, [{ step: "s1", tool: "buzz reply", reason: "not a Teal Brick app operation" }]);
+  const keys = report.mapped.map((m) => `${m.from}>${m.to}`);
+  assert.equal(new Set(keys).size, keys.length, "every line is unique");
+  const { out } = await through(db, c);
+  const { status: _s, ...got } = out.contract as Contract;
+  const { status: _t, ...want } = c;
+  assert.deepEqual(got, want);
+});
+
+test("S2 orphan drafts: a contract whose report would not fit the output schema is refused BEFORE a draft is created (422 contract_too_large with a pointer); a retry creates nothing", async () => {
+  const db = migratedDb();
+  const base = p(2);
+  const before = counts(db);
+  // 40 steps x 20 distinct Teal Brick tools = 800 `mapped` lines (cap 600)
+  const tools = Array.from({ length: 20 }, (_, i) => `mcp__tealbrick__kanban__op_${String.fromCharCode(97 + i)}`);
+  const many = { ...base, steps: Array.from({ length: 40 }, (_, i) => ({ id: `st${i}`, do: "do it", tools })) };
+  // 4 steps x 200 other tools = 800 `unmapped` lines (cap 600)
+  const unm = { ...base, steps: Array.from({ length: 4 }, (_, i) => ({ id: `st${i}`, do: "x", tools: ["mcp__tealbrick__kanban__issues_list", ...Array.from({ length: 199 }, (_, j) => `local tool ${i}-${j}`)] })) };
+  for (const [why, c] of [["mapped", many], ["unmapped", unm]] as const) {
+    for (let retry = 0; retry < 2; retry++) {
+      const t = await assert.rejects(call(H, "pipeline_import", { contract: c }, owner(db)), (e) => {
+        const tb = toTbError(e) as TbError;
+        assert.equal(tb.code, "contract_too_large", why);
+        assert.equal(tb.httpStatus, 422);
+        assert.equal(pointerOf(tb), "/steps");
+        assert.match(tb.message, /too large/);
+        return true;
+      });
+      void t;
+      assert.deepEqual(counts(db), before, `${why}: no draft, no stored contract (try ${retry + 1})`);
+    }
+  }
+  // the largest report that fits (50 steps, 550 distinct tools) goes through the manifest output check and is readable
+  const fits = { ...base, steps: Array.from({ length: 50 }, (_, i) => ({ id: `st${i}`, do: "do it", tools: tools.slice(0, 11) })) };
+  const ok = await call<K.PipelineImportOutput>(H, "pipeline_import", { contract: fits }, owner(db));
+  assert.equal(ok.report.mapped.length, 6 + 550);
+  assert.equal((await call<K.DraftGetOutput>(H, "draft_get", { id: ok.draft.id }, owner(db))).pipeline?.report.mapped.length, 556);
+  assert.equal(counts(db).drafts, before.drafts + 1);
+});
+
+test("S2 bounds up front: more than 200 items in any array, or more than 256 KiB, is 422 contract_too_large with the pointer; steps over 50 stay a validation error", () => {
+  const db = migratedDb();
+  const before = counts(db);
+  const base = p(2);
+  const cases: [string, Contract, string][] = [
+    ["done_when 201", { ...base, done_when: Array.from({ length: 201 }, (_, i) => `c${i}`) }, "/done_when"],
+    ["200k done_when (the size limit comes first)", { ...base, done_when: Array.from({ length: 200000 }, (_, i) => `condition number ${i}`) }, ""],
+    ["metrics 250", { ...base, metrics: Array.from({ length: 250 }, (_, i) => `m${i}`) }, "/metrics"],
+    ["tools 201", { ...base, steps: [{ id: "one", do: "x", tools: Array.from({ length: 201 }, (_, i) => `t${i}`) }] }, "/steps/0/tools"],
+    ["nested array", { ...base, approvals: { notes: "x", more: Array.from({ length: 201 }, () => 1) } }, "/approvals/more"],
+    ["256 KiB", { ...base, owner: "x".repeat(256 * 1024 + 1) }, ""],
+  ];
+  for (const [why, c, pointer] of cases) {
+    const t = refusal(() => pipeline.importPipeline(db, { contract: c }));
+    assert.equal(t.code, "contract_too_large", why);
+    assert.equal(t.httpStatus, 422);
+    assert.equal(pointerOf(t), pointer, why);
+  }
+  const edge = { ...base, done_when: Array.from({ length: 200 }, (_, i) => `c${i}`) };
+  assert.ok(pipeline.importPipeline(db, { contract: edge }).draft.id, "200 items is the limit and fits");
+  const sixty = { ...base, steps: Array.from({ length: 60 }, (_, i) => ({ id: `s${i}`, do: "x" })) };
+  const t = refusal(() => pipeline.importPipeline(db, { contract: sixty }));
+  assert.equal(t.code, "validation_failed");
+  assert.equal(pointerOf(t), "/steps");
+  assert.deepEqual(counts(db), { drafts: before.drafts + 1, sources: before.sources + 1 }, "only the good one was created");
+});
+
+test("S2 asDraftOf a workflow that was NEVER imported needs confirmReplace: 409 confirm_replace_required says the draft replaces steps and allowed operations; an imported one does not need it", async () => {
+  const db = migratedDb();
+  const d = store.createDraft(db, { suggestionId: null, templateId: null, snapshot: { title: "Unrelated", summary: "s", instruction: "i", trigger: "", steps: [], allowed: READ } }, D0);
+  const wf = store.promote(db, d.id, d.revision, D0).workflow.id;
+  const before = counts(db);
+  const c = p(2);
+  for (const bad of [{}, { confirmReplace: false }]) {
+    await assert.rejects(call(H, "pipeline_import", { contract: c, asDraftOf: wf, ...bad }, owner(db)), (e) => {
+      const tb = toTbError(e) as TbError;
+      assert.equal(tb.code, "confirm_replace_required");
+      assert.equal(tb.httpStatus, 409);
+      assert.match(tb.message, /replaces its steps and allowed operations/);
+      assert.deepEqual(tb.details, { workflowId: wf, contractId: c.id });
+      return true;
+    });
+  }
+  assert.deepEqual(counts(db), before, "nothing created");
+  const ok = await call<K.PipelineImportOutput>(H, "pipeline_import", { contract: c, asDraftOf: wf, confirmReplace: true }, owner(db));
+  assert.equal(ok.draft.workflowId, wf);
+  store.promote(db, ok.draft.id, ok.draft.revision, D0 + 1).version;
+  // now the workflow is imported: another version of the same pipeline needs no confirmation
+  const again = await call<K.PipelineImportOutput>(H, "pipeline_import", { contract: c, asDraftOf: wf }, owner(db));
+  assert.equal(again.draft.workflowId, wf);
+  const op = manifest.operations.find((o) => o.id === "pipeline_import") as Parameters<typeof validateInput>[0];
+  assert.equal(validateInput(op, { contract: c, confirmReplace: true } as Json).ok, true);
+  assert.equal(validateInput(op, { contract: c, confirmReplace: "yes" } as Json).ok, false);
+});
+
+test("S3 the draft records the version it was based on (asDraftOf); a draft of a new workflow has none", async () => {
+  const db = migratedDb();
+  const c = p(1);
+  const first = await through(db, c);
+  assert.equal(first.imported.draft.pipeline?.baseVersion, null);
+  const d2 = await call<K.PipelineImportOutput>(H, "pipeline_import", { contract: c, asDraftOf: first.wf }, owner(db));
+  assert.equal(d2.draft.pipeline?.baseVersion, 1);
+  const got = await call<K.DraftGetOutput>(H, "draft_get", { id: d2.draft.id }, owner(db));
+  assert.equal(got.pipeline?.baseVersion, 1);
+  // v2 is promoted from the home draft meanwhile: the stored base stays 1, so the page can say "based on v1; v2 is now active"
+  const home = store.getDraft(db, first.draftId);
+  const u = store.updateDraft(db, home.id, home.revision, { instruction: "Changed." }, D0 + 5);
+  store.promote(db, home.id, u.revision, D0 + 6);
+  assert.equal((await call<K.DraftGetOutput>(H, "draft_get", { id: d2.draft.id }, owner(db))).pipeline?.baseVersion, 1);
+  assert.equal(store.getWorkflow(db, first.wf).activeVersion, 2);
+});
+
+test("S3 export step ids: a new step whose cleaned id equals an id of the imported contract gets another one; the file re-imports", async () => {
+  const db = migratedDb();
+  const c = p(2);
+  c.steps = [{ id: "a-b", do: "old", tools: ["mcp__tealbrick__kanban__issues_list"] }];
+  const { draftId } = await through(db, c);
+  let d = store.getDraft(db, draftId);
+  d = store.updateDraft(db, d.id, d.revision, { steps: [{ id: "a_b", title: "new first", instruction: "n", ops: [] }, ...d.steps.map((x) => ({ id: x.id, title: x.title, instruction: x.instruction, ops: x.ops }))] }, D0 + 3);
+  const wf = store.promote(db, d.id, d.revision, D0 + 4).workflow.id;
+  const out = (await call<K.PipelineExportOutput>(H, "pipeline_export", { workflowId: wf }, owner(db))).contract as Contract;
+  const ids = out.steps.map((x: Contract) => x.id);
+  assert.equal(new Set(ids).size, ids.length, `unique: ${ids}`);
+  assert.deepEqual(ids, ["a-b-2", "a-b"], "the imported id keeps its place; the new step takes the next free one");
+  assert.equal(valid(out).ok, true);
+  const again = await call<K.PipelineImportOutput>(H, "pipeline_import", { contract: out, asDraftOf: wf }, owner(db));
+  assert.deepEqual(again.draft.steps.map((x) => x.id), ids);
+});
+
+test("S3 export trigger: text that is not a cron the schedules would accept is not written as one (it said 'Every weekday morning around 8am' = five words); a real cron is", async () => {
+  const mk = async (trigger: string) => {
+    const db = migratedDb();
+    const d = store.createDraft(db, { suggestionId: null, templateId: null, snapshot: { title: "Morning", summary: "s", instruction: "i", trigger, steps: [], allowed: READ } }, D0);
+    const wf = store.promote(db, d.id, d.revision, D0).workflow.id;
+    return call<K.PipelineExportOutput>(H, "pipeline_export", { workflowId: wf }, owner(db));
+  };
+  const words = await mk("Every weekday morning around 8am");
+  assert.deepEqual((words.contract as Contract).trigger, { event: "manual" });
+  assert.equal(valid(words.contract).ok, true);
+  assert.match(words.notice, /"Every weekday morning around 8am" is not a five-field cron, so it is not in the file/);
+  for (const bad of ["99 99 * * *", "a b c d e", "0 8 31 2 *", "* * * *"]) assert.deepEqual(((await mk(bad)).contract as Contract).trigger, { event: "manual" }, bad);
+  const good = await mk("30 8 * * 1");
+  assert.deepEqual((good.contract as Contract).trigger, { cron: "30 8 * * 1", timezone: "UTC" });
+  assert.doesNotMatch(good.notice, /not a five-field cron/);
+  const none = await mk("");
+  assert.deepEqual((none.contract as Contract).trigger, { event: "manual" });
+  assert.doesNotMatch(none.notice, /not a five-field cron/, "an empty trigger needs no note");
 });

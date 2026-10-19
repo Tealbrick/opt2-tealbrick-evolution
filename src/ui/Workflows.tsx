@@ -2,6 +2,7 @@
 import { HARNESS_OPTION_IDS, type HarnessOptionId } from "@opt2-tealbrick/spec/routes";
 import { AppIcon, appArt, appName, Button, CopyBlock, EmptyState, Field, Ink, Notice, Select, Tag, TextInput } from "@opt2-tealbrick/ui";
 import { Fragment, useCallback, useEffect, useState } from "react";
+import { widens } from "./DraftBase.tsx";
 import { ALLOWLIST_TEXT, day, errorText, type Out, person } from "./ops.ts";
 import { downloadJson, importedFrom } from "./Pipeline.tsx";
 
@@ -19,15 +20,6 @@ const HARNESS_LABELS: Record<HarnessOptionId, string> = {
 const HARNESS_ORDER: readonly HarnessOptionId[] = ["claude-desktop", "claude-code", "codex-desktop", "eve", "generic-mcp", "tbd-default", "tealbrick-cli"];
 const rank = (id: HarnessOptionId) => (HARNESS_ORDER.includes(id) ? HARNESS_ORDER.indexOf(id) : HARNESS_ORDER.length);
 const HARNESSES = [...HARNESS_OPTION_IDS].sort((a, b) => rank(a) - rank(b)).map((value) => ({ value, label: HARNESS_LABELS[value] }));
-type Allowed = Out<"workflow_versions">["versions"][number]["allowed"];
-/** Same rule as the server's diff (src/model.ts diffSnapshots `widensAccess`): an operation or an access kind was added. */
-function widens(from: Allowed, to: Allowed): boolean {
-  const ops = (a: Allowed) => new Set(a.flatMap((x) => x.operations.map((o) => `${x.product}.${o}`)));
-  const crud = (a: Allowed) => new Set(a.flatMap((x) => x.crud.map((c) => `${x.product}:${c}`)));
-  const opsFrom = ops(from);
-  const crudFrom = crud(from);
-  return [...ops(to)].some((k) => !opsFrom.has(k)) || [...crud(to)].some((k) => !crudFrom.has(k));
-}
 const opsOf = (ops: { product: string; operation: string }[]) => ops.map((o) => `${o.product}.${o.operation}`).join(", ");
 
 export function Workflows({ openId, stills }: { openId: string | null; stills: string }) {
