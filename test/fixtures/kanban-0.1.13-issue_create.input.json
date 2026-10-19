@@ -1,0 +1,75 @@
+{
+  "$comment": "copied from Tealbrick/opt2-tealbrick-kanban v0.1.13 (06e94fc) tealbrick.manifest.json op issue_create input; refresh on a Kanban contract change",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "title"
+  ],
+  "properties": {
+    "project": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 0,
+      "maxLength": 4000
+    },
+    "priority": {
+      "type": "string",
+      "enum": [
+        "low",
+        "medium",
+        "high"
+      ]
+    },
+    "goal": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "backlog",
+        "todo",
+        "in_progress"
+      ]
+    },
+    "assignee": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "description": "An agent id (agt_…) from the workspace directory, \"me\", or \"owner\"."
+    },
+    "dependsOn": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 64
+      },
+      "maxItems": 20
+    },
+    "template": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 80,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+      "description": "Optional key for repeated work (set when the issue comes from a template or a routine). Lowercase only: a-z, 0-9 and . _ : - (e.g. weekly-report); an uppercase letter is refused with template_invalid."
+    }
+  }
+}
