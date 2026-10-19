@@ -1265,12 +1265,14 @@
               },
               "metrics": {
                 "type": "object",
-                "description": "Per-pipeline numbers: name to number. A name starts with a lower case letter and has 2 to 41 characters (lower case letters, digits, underscore). At most 20. Omit a metric you could not measure.",
+                "description": "Per-pipeline numbers: name to number (from -1e12 to 1e12). A name starts with a lower case letter and has 2 to 41 characters (lower case letters, digits, underscore). At most 20 per report, and at most 20 different names per workflow version. Omit a metric you could not measure.",
                 "propertyNames": {
                   "pattern": "^[a-z][a-z0-9_]{1,40}$"
                 },
                 "additionalProperties": {
-                  "type": "number"
+                  "type": "number",
+                  "minimum": -1000000000000.0,
+                  "maximum": 1000000000000.0
                 },
                 "maxProperties": 20
               },

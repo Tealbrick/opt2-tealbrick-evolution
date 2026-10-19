@@ -122,23 +122,27 @@ export function p50(values: readonly number[]): number | null {
   return s[Math.ceil(s.length / 2) - 1] ?? null;
 }
 
-/** Rollup of the metrics of one cycle's runs. Pure. Mean and ratio to 6 decimals; retries and questions count only the
- *  runs that sent them. */
+/** The named metrics of one cycle's runs, one entry per name (sorted): reports, median (nearest-rank), mean (6 decimals; the
+ *  values are bounded to 1e12 so the sum is finite, and a non-finite mean would fall back to the median), min, max. Pure. */
 export function namedRollup(m: readonly { named: readonly [string, number][] }[]): NamedRollup[] {
   const by = new Map<string, number[]>();
-  for (const x of m) for (const [name, v] of x.named) by.set(name, [...(by.get(name) ?? []), v]);
+  for (const x of m)
+    for (const [name, v] of x.named) {
+      const a = by.get(name);
+      if (a) a.push(v);
+      else by.set(name, [v]);
+    }
   return [...by.entries()]
     .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-    .map(([name, v]) => ({
-      name,
-      reports: v.length,
-      median: p50(v) as number,
-      mean: round(v.reduce((a, b) => a + b, 0) / v.length),
-      min: Math.min(...v),
-      max: Math.max(...v),
-    }));
+    .map(([name, v]) => {
+      const median = p50(v) as number;
+      const mean = round(v.reduce((a, b) => a + b, 0) / v.length);
+      return { name, reports: v.length, median, mean: Number.isFinite(mean) ? mean : median, min: v.reduce((a, b) => (b < a ? b : a)), max: v.reduce((a, b) => (b > a ? b : a)) };
+    });
 }
 
+/** Rollup of the metrics of one cycle's runs. Pure. Mean and ratio to 6 decimals; retries and questions count only the
+ *  runs that sent them. */
 export function metricsRollup(runs: readonly LedgerRun[]): MetricsRollup {
   const m = runs.flatMap((r) => (r.metrics ? [r.metrics] : []));
   const minutes = m.map((x) => x.minutes);

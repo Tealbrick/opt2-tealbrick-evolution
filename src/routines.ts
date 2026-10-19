@@ -550,7 +550,7 @@ export interface MetricsInput {
   retries?: number;
   questions_to_martin?: number;
   lessons?: string[];
-  /** the named per-pipeline numbers: name -> number (at most 20; any patterned name on this branch) */
+  /** the named per-pipeline numbers: name -> number (at most 20 per report, at most 20 distinct names per workflow version; |value| <= 1e12) */
   metrics?: Record<string, number>;
   /** the Task Board issue id of the run: accepted and IGNORED (the run row's kanban_issue_id is the truth) */
   issue?: string;
@@ -565,6 +565,7 @@ export interface StoredMetrics {
   named: [string, number][];
 }
 export const NAMED_MAX = 20;
+export const NAMED_VALUE_MAX = 1e12;
 export const NAME_PATTERN = /^[a-z][a-z0-9_]{1,40}$/;
 export const MINUTES_MAX = 10080;
 export const COUNT_MAX = 1000;
@@ -587,7 +588,7 @@ function namedOf(map: unknown): [string, number][] {
   if (entries.length > NAMED_MAX) throw refuse("/metrics/metrics", `metrics.metrics has at most ${NAMED_MAX} names.`);
   for (const [name, v] of entries) {
     if (!NAME_PATTERN.test(name)) throw refuse(`/metrics/metrics/${name}`, "A metric name starts with a lower case letter and has 2 to 41 characters: lower case letters, digits and underscore.");
-    if (typeof v !== "number" || !Number.isFinite(v)) throw refuse(`/metrics/metrics/${name}`, `metrics.metrics.${name} must be a finite number.`);
+    if (typeof v !== "number" || !Number.isFinite(v) || Math.abs(v) > NAMED_VALUE_MAX) throw refuse(`/metrics/metrics/${name}`, `metrics.metrics.${name} must be a number from -1e12 to 1e12.`);
   }
   return entries.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
 }
@@ -597,8 +598,9 @@ function namedOf(map: unknown): [string, number][] {
  *  the table's CHECKs would refuse. Lesson length counts code points, like the schema.
  *  - terminal status only: completed or failed (an `uncertain` report is not a result of the run);
  *  - `pipeline`, `version` and `issue` are ignored: they are not compared with the run (the run row is the truth);
- *  - `metrics` (the named map): at most 20 names, each ^[a-z][a-z0-9_]{1,40}$, finite numbers. R8 does not know which names
- *    a pipeline declares: any patterned name is stored (the declared-names check is R10's).
+ *  - `metrics` (the named map): at most 20 names, each ^[a-z][a-z0-9_]{1,40}$, finite numbers with |v| <= 1e12. Which names a
+ *    pipeline may declare is not checked here: any patterned name is stored (a caller may check declared names, R10).
+ *    `report` also keeps a workflow version to at most 20 distinct names over all its runs (metric_names_full).
  *  `ok` is not cross-checked with the status: it is the runner's own word on the outcome (a completed run can say ok: false). */
 export function checkMetrics(m: MetricsInput, status: ReportStatus): StoredMetrics {
   if (status !== "completed" && status !== "failed")
@@ -643,6 +645,25 @@ export function report(
     const run = getRun(db, occurrence);
     if (!run || run.claimedBy !== callerId) throw new StoreError("not_found", "No run of yours with this occurrence.");
     const stored = metrics ? checkMetrics(metrics, status) : null;
+    // at most 20 distinct names per workflow version, over all its runs: the cycle ledger lists them (cycles_list answers at most 20)
+    if (stored?.named.length) {
+      const have = new Set(
+        db
+          .prepare("SELECT DISTINCT v.name FROM run_metric_values v JOIN routine_runs r ON r.occurrence = v.occurrence WHERE r.workflow_id = ? AND r.workflow_version IS ?")
+          .all(run.workflowId, run.workflowVersion)
+          .map((x) => String(x.name)),
+      );
+      let free = NAMED_MAX - have.size;
+      for (const [name] of stored.named) {
+        if (have.has(name)) continue;
+        if (free-- <= 0)
+          throw new StoreError(
+            "metric_names_full",
+            `This workflow version already has ${NAMED_MAX} metric names. Send only those names, or send the report again without metrics.`,
+            { pointer: `/metrics/metrics/${name}` },
+          );
+      }
+    }
     if (run.status === status) return { run, changed: false };
     if (!NEXT_STATUS[run.status].includes(status)) throw new StoreError("conflict", `A ${run.status} run cannot become ${status}.`, { status: run.status });
     const sync = TERMINAL.has(status) && run.kanbanIssueId ? "pending" : run.kanbanSync;
