@@ -1,0 +1,137 @@
+{
+  "$schema": "../schemas/pipeline-contract.schema.json",
+  "id": "p5-post-meetup",
+  "version": 2,
+  "status": "draft",
+  "owner": "henry",
+  "purpose": "After the livestream: transcript into Knowledge, summary, deck PDF, the summary mail to that night's QR sign-ups (with a prominent newsletter button), hand-off to Atrin, and Martin's feedback at a slot from Tempo.",
+  "dictation_refs": [
+    "#part3 Job F",
+    "#part4 Q3 Q4"
+  ],
+  "trigger": {
+    "event": "meetup.ended",
+    "cron": "0 23 * * 3",
+    "timezone": "Asia/Bangkok"
+  },
+  "inputs": [
+    {
+      "source": "local:transcribe",
+      "what": "YouTube VOD of tonight (list-channel → newest stream)"
+    },
+    {
+      "source": "connect:listmonk",
+      "what": "subscribers who signed up tonight via the end-screen QR"
+    },
+    {
+      "source": "local:joininter",
+      "what": "approved deck (export PDF)"
+    }
+  ],
+  "steps": [
+    {
+      "id": "vod",
+      "do": "Wait for the VOD (transcribe_list_channel), then transcribe_video {url, store:true}: transcript and its Knowledge document in one call (audio deleted after). Never paste transcript text into a document yourself",
+      "tools": [
+        "mcp__transcribe__transcribe_list_channel",
+        "mcp__transcribe__transcribe_video"
+      ],
+      "skills": [
+        "transcribe-vod"
+      ],
+      "on_fail": "retry_once_then_block",
+      "out": "TranscriptRef"
+    },
+    {
+      "id": "kb",
+      "do": "Write the summary (from transcribe_read) in Knowledge 'Meetup transcripts', linked to the transcript document that transcribe_video stored; remember key lessons in the brain",
+      "tools": [
+        "mcp__transcribe__transcribe_read",
+        "mcp__tealbrick__knowledge__document_create",
+        "mcp__tealbrick__knowledge__link_add",
+        "mcp__tealbrick__knowledge__remember"
+      ]
+    },
+    {
+      "id": "pdf",
+      "do": "Deck → PDF → Nextcloud share link",
+      "skills": [
+        "nextcloud-files"
+      ]
+    },
+    {
+      "id": "mail",
+      "do": "Listmonk campaign to tonight's QR sign-ups: summary + PDF link + prominent 'join the newsletter feed' button (→ Mautic onboarding)",
+      "lead": "editorial-lead",
+      "skills": [
+        "listmonk-campaigns",
+        "newsletter-writing"
+      ],
+      "out": "RecapPack"
+    },
+    {
+      "id": "atrin",
+      "do": "Hand-off note to Atrin (transcript + summary ids) for video",
+      "tools": [
+        "buzz agents room"
+      ]
+    },
+    {
+      "id": "feedback",
+      "do": "Ask Tempo for Martin's free slot; at the slot ask Martin: slides well received? content up to par?",
+      "lead": "time-lead",
+      "out": "SlotRequest"
+    },
+    {
+      "id": "learn",
+      "do": "Store Martin's feedback in the brain; RunReport lessons",
+      "tools": [
+        "mcp__tealbrick__knowledge__remember"
+      ]
+    }
+  ],
+  "outputs": [
+    "transcript + summary in Knowledge",
+    "deck PDF in Nextcloud",
+    "Listmonk campaign sent (held first 3 weeks)",
+    "Atrin hand-off",
+    "feedback stored"
+  ],
+  "done_when": [
+    "transcript doc exists with words > 1000",
+    "campaign sent to tonight's sign-ups or 0 sign-ups recorded",
+    "Martin's feedback recorded or asked twice"
+  ],
+  "approvals": {
+    "outward": "held_first_3_weeks",
+    "notes": "Releasing the summary newsletter is the only message to individuals Henry sends."
+  },
+  "escalation": [
+    {
+      "to": "tempo",
+      "when": "slot for feedback",
+      "via": "buzz_agents_room"
+    },
+    {
+      "to": "atrin",
+      "when": "video hand-off",
+      "via": "buzz_agents_room"
+    },
+    {
+      "to": "martin",
+      "when": "feedback at the slot",
+      "via": "buzz_martin"
+    }
+  ],
+  "metrics": [
+    "vod_delay_min",
+    "transcribe_seconds",
+    "signups",
+    "prev_campaign_open_rate",
+    "feedback_score"
+  ],
+  "taskboard": {
+    "project": "Henry",
+    "issue_title": "P5 follow-up {meetup_date}"
+  }
+}

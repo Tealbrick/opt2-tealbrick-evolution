@@ -96,6 +96,8 @@ export interface StoredEval {
 }
 export interface Cycle extends RunStats {
   runMetrics: MetricsRollup;
+  /** The metric names the pipeline contract of this version declares, in contract order; null when it was not imported. Owner only. */
+  declaredMetrics: string[] | null;
   workflowId: string;
   workflowTitle: string;
   version: number;
@@ -329,6 +331,13 @@ function attribute(db: Db, workflowId: string): { versions: VersionRow[]; byVers
 /** Every cycle of one workflow, oldest version first (live evals at `now`). */
 export function workflowCycles(db: Db, workflowId: string, now: number = Date.now(), t: Thresholds = THRESHOLDS): Cycle[] {
   const { versions, byVersion } = attribute(db, workflowId);
+  // C288 R10: the declared metric names of the contract frozen with each version (SQL here: pipeline.ts imports the store, which imports this file)
+  const declared = new Map<number, string[]>(
+    db
+      .prepare("SELECT version, source FROM workflow_version_pipelines WHERE workflow_id = ?")
+      .all(workflowId)
+      .map((r) => [Number(r.version), ((JSON.parse(String(r.source)) as { metrics?: string[] }).metrics ?? []).slice()]),
+  );
   const out: Cycle[] = [];
   versions.forEach((v, i) => {
     const parent = i > 0 ? (versions[i - 1] as VersionRow) : null;
@@ -349,6 +358,7 @@ export function workflowCycles(db: Db, workflowId: string, now: number = Date.no
       widensAccess: parent ? diffSnapshots(parent.snapshot, v.snapshot).widensAccess : false,
       ...stats,
       runMetrics: metricsRollup(byVersion.get(v.version) ?? []),
+      declaredMetrics: declared.get(v.version) ?? null,
       evalLive: { verdict: "insufficient", results: [] },
       evalStored: latestStored(db, v.workflowId, v.version),
     };

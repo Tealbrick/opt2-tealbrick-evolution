@@ -1,0 +1,122 @@
+{
+  "$schema": "../schemas/pipeline-contract.schema.json",
+  "id": "p4-weekly-deck",
+  "version": 1,
+  "status": "draft",
+  "owner": "henry",
+  "purpose": "Research the week (cutoff Tuesday), build the deck and talk plan in Joininter on Tuesday, and run the Wednesday-morning review and spotlight re-do until Martin is happy.",
+  "dictation_refs": [
+    "#part1 spotlight re-do",
+    "#part2 Job D",
+    "#part6 end_screen"
+  ],
+  "trigger": {
+    "cron": "0 14 * * 2",
+    "timezone": "Asia/Bangkok",
+    "event": "martin.review_feedback"
+  },
+  "inputs": [
+    {
+      "source": "knowledge.research",
+      "what": "week notebooks (P1 items, deeper research)",
+      "type": "NewsItem"
+    },
+    {
+      "source": "knowledge.brain",
+      "what": "what landed before, Martin's style, last week's topics"
+    },
+    {
+      "source": "knowledge",
+      "what": "past transcripts and decks (backfill)",
+      "type": "TranscriptRef"
+    },
+    {
+      "source": "local:joininter",
+      "what": "get_plan_schema, get_deck_schema, list_templates (live)"
+    }
+  ],
+  "steps": [
+    {
+      "id": "select",
+      "do": "Pick the week's items + a follow-up on last week",
+      "lead": "research-lead",
+      "out": "NewsItem[]"
+    },
+    {
+      "id": "outline",
+      "do": "Outline the talk (40–90 min) with approximations",
+      "skills": [
+        "deck-outline",
+        "brand-voice"
+      ]
+    },
+    {
+      "id": "build",
+      "do": "Deck JSON + talk plan; end_screen links: newsletter (Listmonk sign-up), whatsapp, website; in_recap true",
+      "skills": [
+        "joininter-deck"
+      ],
+      "tools": [
+        "mcp__joininter__create_talk",
+        "mcp__joininter__update_talk",
+        "mcp__joininter__upload_deck"
+      ],
+      "out": "DeckDraft"
+    },
+    {
+      "id": "review",
+      "do": "Facts, clipping, schema, brand",
+      "lead": "review-lead",
+      "out": "Verdict"
+    },
+    {
+      "id": "submit",
+      "do": "render_stage_preview, get_prep_checklist, submit_for_review; tell Martin in Buzz",
+      "tools": [
+        "mcp__joininter__submit_for_review"
+      ]
+    },
+    {
+      "id": "redo",
+      "do": "Wednesday morning: apply Martin's changes and spotlight item, resubmit",
+      "when": "martin.review_feedback",
+      "out": "DeckDraft"
+    }
+  ],
+  "outputs": [
+    "Joininter draft submitted for review",
+    "Buzz note to Martin: what waits where",
+    "deck PDF export in Nextcloud after approval"
+  ],
+  "done_when": [
+    "submitted by Tuesday 20:00",
+    "Martin approved in Joininter before Wednesday 17:00",
+    "spotlight item included when given"
+  ],
+  "approvals": {
+    "outward": "free",
+    "notes": "Joininter is draft-only; Martin approves in the app."
+  },
+  "escalation": [
+    {
+      "to": "martin",
+      "when": "deck ready / review questions",
+      "via": "buzz_martin"
+    },
+    {
+      "to": "tempo",
+      "when": "need a Wednesday-morning review slot",
+      "via": "buzz_agents_room"
+    }
+  ],
+  "metrics": [
+    "revisions",
+    "minutes_research",
+    "minutes_build",
+    "review_blockers"
+  ],
+  "taskboard": {
+    "project": "Henry",
+    "issue_title": "P4 deck {meetup_date}"
+  }
+}

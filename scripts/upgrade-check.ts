@@ -1,6 +1,6 @@
-// C250 (D2) upgrade check on REAL data: node scripts/upgrade-check.ts <0.2.12, 0.2.13 or 0.3.0 app.db> --work <empty dir>
+// C250 (D2) upgrade check on REAL data: node scripts/upgrade-check.ts <0.2.12, 0.2.13, 0.3.0 or 0.3.0 + R8 app.db> --work <empty dir>
 // Copies the database (VACUUM INTO from a read-only handle; the source is never written), checks that it is at app
-// schema 3 (0.2.12), 4 (0.2.13) or 5 (0.3.0) with the released migration files, applies the pending app migrations the way the SDK does (one transaction
+// schema 3 (0.2.12), 4 (0.2.13), 5 (0.3.0) or 6 (0.3.0 + R8) with the released migration files, applies the pending app migrations the way the SDK does (one transaction
 // each, a tb_migrations row each), and compares every table row by row. It prints counts and check results only, never
 // row contents (the file may hold workspace data). Exit 0 = all checks pass.
 import assert from "node:assert/strict";
@@ -15,7 +15,7 @@ const args = process.argv.slice(2);
 const source = args[0];
 const work = args[args.indexOf("--work") + 1];
 if (!source || args.indexOf("--work") < 1 || !work) {
-  console.error("usage: node scripts/upgrade-check.ts <app.db of 0.2.12, 0.2.13 or 0.3.0> --work <empty dir>");
+  console.error("usage: node scripts/upgrade-check.ts <app.db of 0.2.12, 0.2.13, 0.3.0 or 0.3.0 + R8> --work <empty dir>");
   process.exit(2);
 }
 if (!existsSync(work) || readdirSync(work).length > 0) {
@@ -38,7 +38,7 @@ const sum = (b: Buffer) => createHash("sha256").update(b).digest("hex");
 
 const applied = db.prepare("SELECT version, name, sha256 FROM tb_migrations WHERE scope = 'app' ORDER BY version").all() as { version: number; name: string; sha256: string }[];
 const from = applied.length;
-assert.ok(from === 3 || from === 4 || from === 5, "the file is at app schema 3 (0.2.12), 4 (0.2.13) or 5 (0.3.0)");
+assert.ok(from >= 3 && from <= 6, "the file is at app schema 3 (0.2.12), 4 (0.2.13), 5 (0.3.0) or 6 (0.3.0 + R8)");
 assert.deepEqual(
   applied.map((a) => a.version),
   Array.from({ length: from }, (_, i) => i + 1),

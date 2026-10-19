@@ -14,6 +14,8 @@ import type { ReactElement } from "react";
 type Standard = typeof import("../src/ui/standard.tsx");
 type SchedulesUi = typeof import("../src/ui/Schedules.tsx");
 type CyclesUi = typeof import("../src/ui/Cycles.tsx");
+type DraftsUi = typeof import("../src/ui/Drafts.tsx");
+type WorkflowsUi = typeof import("../src/ui/Workflows.tsx");
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const outDir = join(root, "dist", "ui-test");
@@ -31,6 +33,36 @@ for (const k of ["window", "document", "navigator", "location", "history", "sess
   }
 }
 g.IS_REACT_ACT_ENVIRONMENT = true;
+
+const PIPE_REPORT = {
+  mapped: [
+    { from: "id", to: "pipeline key (stored with the draft)" },
+    { from: "steps[send].tools: mcp__tealbrick__knowledge__remember", to: "step operation and allowed operation knowledge.remember" },
+  ],
+  unmapped: { tools: [{ step: "send", tool: "buzz reply (runtime)", reason: "not a Teal Brick app operation" }] },
+  kept_as_data: [{ field: "owner" }, { field: "done_when" }, { field: "steps[].lead", steps: ["scan", "write"] }],
+  schedule_hint: { cron: "0 10 * * *", timezone: "Asia/Bangkok", event: null, once: null },
+  declaredMetrics: ["candidates_seen", "shortlist_size"],
+  agent_visible: ["title", "summary", "steps"],
+  notes: ["The whole contract is stored as it came in. Export gives it back."],
+};
+const PIPE_DRAFT = {
+  id: "wfd_01HZX3K8Q2V4N6P8R0S2T4V6W8",
+  suggestionId: null,
+  templateId: null,
+  workflowId: null,
+  title: "P1 daily tidbit",
+  summary: "Every day a shortlist.",
+  instruction: 'Run the pipeline "p1-daily-tidbit".',
+  trigger: "cron 0 10 * * * (Asia/Bangkok)",
+  steps: [{ id: "send", title: "Send it", instruction: "Send it", ops: [{ product: "knowledge", operation: "remember" }] }],
+  allowed: [{ product: "knowledge", operations: ["remember"], crud: ["create", "read"] }],
+  revision: 1,
+  state: "open",
+  promotedVersion: null,
+  createdAt: "2026-10-19T08:00:00.000Z",
+  updatedAt: "2026-10-19T08:00:00.000Z",
+};
 
 // ── stub server (the standard ops under /a/kanban/tb/v1/) ───────────────────
 const ULID = "01HZX3K8Q2V4N6P8R0S2T4V6W8";
@@ -58,8 +90,13 @@ interface Stub {
   cycles: Record<string, unknown>[];
   /** the lessons cycle_get answers (C288 R8) */
   lessons: { occurrence: string; reportedAt: string; text: string }[];
+  /** C288 R10: drafts (draft_get rows), workflow versions answer, the last downloaded file */
+  drafts: Record<string, unknown>[];
+  workflows: Record<string, unknown>[];
+  versions: Record<string, unknown> | null;
+  exported: Record<string, unknown> | null;
 }
-const stub: Stub = { holds: [], calls: [], fail: {}, gate: {}, networkDown: false, cycles: [], lessons: [] };
+const stub: Stub = { holds: [], calls: [], fail: {}, gate: {}, networkDown: false, cycles: [], lessons: [], drafts: [], workflows: [], versions: null, exported: null };
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
 globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
@@ -86,6 +123,17 @@ globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) =>
     stub.cycles = stub.cycles.map((c) => (c.workflowId === workflowId && c.version === version ? { ...c, evalStored: stored } : c));
     return json(200, { status: "ok", output: { ...stored, workflowId, version, results: [], appVersion: "0.2.13" } });
   }
+  if (op === "templates_list") return json(200, { status: "ok", output: { templates: [] } });
+  if (op === "workflows_list") return json(200, { status: "ok", output: { workflows: stub.workflows } });
+  if (op === "drafts_list") return json(200, { status: "ok", output: { drafts: stub.drafts.map((d) => ({ id: d.id, title: d.title, state: d.state, revision: d.revision, workflowId: d.workflowId, suggestionId: null, updatedAt: d.updatedAt })) } });
+  if (op === "draft_get") return json(200, { status: "ok", output: stub.drafts.find((d) => d.id === (body.input as { id: string }).id) });
+  if (op === "pipeline_import") {
+    const draft = { ...PIPE_DRAFT, pipeline: { id: "p1-daily-tidbit", version: 1, importedAt: "2026-10-19T08:00:00.000Z", baseVersion: null, report: PIPE_REPORT } };
+    stub.drafts = [draft];
+    return json(200, { status: "ok", output: { draft, report: PIPE_REPORT } });
+  }
+  if (op === "workflow_versions") return json(200, { status: "ok", output: stub.versions });
+  if (op === "pipeline_export") return json(200, { status: "ok", output: stub.exported });
   if (op === "tb.holds_list") return json(200, { status: "ok", output: { items: stub.holds, nextCursor: null } });
   if (op === "tb.holds_decide") {
     const id = (body.input as { holdId: string }).holdId;
@@ -129,6 +177,8 @@ const alerts = (host: Element) => [...host.querySelectorAll('[role="alert"]')].m
 let std: Standard;
 let sched: SchedulesUi;
 let cyc: CyclesUi;
+let drafts: DraftsUi;
+let wfs: WorkflowsUi;
 before(() => {
   const tsc = spawnSync(join(root, "node_modules", ".bin", "tsc"), ["-p", "tsconfig.build.json", "--outDir", outDir], { cwd: root, encoding: "utf8" });
   assert.equal(tsc.status, 0, `${tsc.stdout}${tsc.stderr}`);
@@ -137,6 +187,8 @@ before(async () => {
   std = (await import(pathToFileURL(join(outDir, "ui", "standard.js")).href)) as Standard;
   sched = (await import(pathToFileURL(join(outDir, "ui", "Schedules.js")).href)) as SchedulesUi;
   cyc = (await import(pathToFileURL(join(outDir, "ui", "Cycles.js")).href)) as CyclesUi;
+  drafts = (await import(pathToFileURL(join(outDir, "ui", "Drafts.js")).href)) as DraftsUi;
+  wfs = (await import(pathToFileURL(join(outDir, "ui", "Workflows.js")).href)) as WorkflowsUi;
 });
 after(() => rmSync(outDir, { recursive: true, force: true }));
 
@@ -148,6 +200,10 @@ const reset = (holds: StubHold[]) => {
   stub.networkDown = false;
   stub.cycles = [];
   stub.lessons = [];
+  stub.drafts = [];
+  stub.workflows = [];
+  stub.versions = null;
+  stub.exported = null;
 };
 
 describe("Holds page", () => {
@@ -355,6 +411,7 @@ describe("Cycles page (C250 Release B)", () => {
   const WF = "wfl_01HZX3K8Q2V4N6P8R0S2T4V6W8";
   const WF2 = "wfl_01HZX3K8Q2V4N6P8R0S2T4V6W9";
   const cycle = (workflowId: string, title: string, version: number, extra: Record<string, unknown> = {}) => ({
+    declaredMetrics: null as string[] | null,
     workflowId,
     workflowTitle: title,
     version,
@@ -505,8 +562,38 @@ describe("Cycles page (C250 Release B)", () => {
     assert.match(v1?.textContent ?? "", /candidates seen: 5 reports, typical 12/);
     assert.doesNotMatch(v1?.querySelector('[aria-label^="Named metrics compared"]')?.textContent ?? "", /./, "version 1 has no parent to compare with");
     assert.deepEqual(cyc.namedCompare(cycleOf(9), null), []);
+    // R10: a version whose contract declares names lists them in contract order, "not reported yet" for a name without data
+    const lines = cyc.namedLines((list[0] as unknown as { runMetrics: never }).runMetrics, ["shortlist_size", "never_reported", "candidates_seen"]);
+    assert.deepEqual(
+      lines.map((l) => l.split(":")[0]),
+      ["shortlist size", "never reported", "candidates seen", "new this week"],
+      "declared order first, then any other reported name",
+    );
+    assert.equal(lines[1], "never reported: not reported yet");
+    assert.deepEqual(cyc.namedLines(cycleOf(0).runMetrics, ["a_b"]), ["a b: not reported yet"]);
+    assert.deepEqual(cyc.namedLines(cycleOf(0).runMetrics, []), [], "a contract that declares none shows nothing");
+    assert.deepEqual(cyc.namedLines(cycleOf(0).runMetrics, null), []);
     assert.equal(cyc.humanName("questions_to_martin"), "questions to martin");
     assert.deepEqual(alerts(m.host), []);
+    await m.unmount();
+  });
+
+  it("R10: a version whose pipeline contract declares metrics lists them in contract order on the page, with not reported yet for a name that has no data", async () => {
+    reset([]);
+    const list = LIST();
+    (list[0] as { declaredMetrics: string[] }).declaredMetrics = ["shortlist_size", "never_reported", "candidates_seen"];
+    (list[0] as { runMetrics: { namedMetrics: unknown[] } }).runMetrics.namedMetrics = [
+      { name: "candidates_seen", reports: 8, median: 15, mean: 15.5, min: 14, max: 19 },
+      { name: "shortlist_size", reports: 8, median: 4, mean: 4.5, min: 3, max: 8 },
+    ];
+    stub.cycles = list;
+    const m = await mount(h(cyc.Cycles, {}));
+    await click(button(m.host, "Show versions"));
+    const [v2, v1] = [...m.host.querySelectorAll(".timeline > li")];
+    const items = [...(v2?.querySelectorAll('[aria-label="Named metrics of version 2"] li') ?? [])].map((x) => x.textContent ?? "");
+    assert.deepEqual(items.map((t) => t.split(":")[0]), ["shortlist size", "never reported", "candidates seen"]);
+    assert.equal(items[1], "never reported: not reported yet");
+    assert.equal(v1?.querySelector('[aria-label="Named metrics of version 1"]'), null, "a version without declared names and without reports shows no list");
     await m.unmount();
   });
 
@@ -578,5 +665,206 @@ describe("Cycles page (C250 Release B)", () => {
     assert.equal(cyc.pct(0.666667), "67%");
     assert.equal(cyc.pct(null), "–");
     assert.deepEqual([cyc.duration(45 * 60_000), cyc.duration(5 * 3_600_000), cyc.duration(3 * 86_400_000)], ["45 min", "5 h", "3 days"]);
+  });
+});
+
+describe("Pipeline contract import and export (C288 R10)", () => {
+  const WF = "wfl_01HZX3K8Q2V4N6P8R0S2T4V6W8";
+  const setText = (el: HTMLTextAreaElement, value: string) =>
+    act(async () => {
+      const set = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), "value")?.set;
+      set?.call(el, value);
+      el.dispatchEvent(new win.Event("input", { bubbles: true }) as unknown as Event);
+    });
+  const openBox = async (host: Element) => {
+    await click(button(host, "Import pipeline contract"));
+    await flush();
+    return host.querySelector("textarea") as HTMLTextAreaElement;
+  };
+
+  it("quiet: pasted JSON imports as a draft; the editor says where it came from and shows the report in plain words", async () => {
+    reset([]);
+    const m = await mount(h(drafts.Drafts, { openId: null, onPromoted: () => {} }));
+    const box = await openBox(m.host);
+    await setText(box, JSON.stringify({ id: "p1-daily-tidbit", version: 1 }));
+    await click(button(m.host, "Import"));
+    await flush();
+    const sent = stub.calls.filter((c) => c.op === "pipeline_import");
+    assert.equal(sent.length, 1);
+    assert.deepEqual(sent[0]?.input, { contract: { id: "p1-daily-tidbit", version: 1 } }, "no asDraftOf unless chosen");
+    assert.deepEqual(alerts(m.host), []);
+    assert.equal(m.host.querySelector('[aria-label="Import a pipeline contract"]'), null, "the box closes");
+    const text = m.host.textContent ?? "";
+    assert.match(text, /Imported from pipeline contract p1-daily-tidbit v1/);
+    assert.match(text, /Agents that run this workflow can read the title, summary and step text\. Kept-as-data fields \(sources, dictation references, escalation, approvals\) stay with you\./);
+    assert.match(text, /Not mapped: 1 tool is not a Teal Brick operation/);
+    assert.match(text, /Step send: buzz reply \(runtime\)/);
+    assert.match(text, /Kept as data, not enforced: owner; done_when; steps\[\]\.lead \(steps scan, write\)/);
+    assert.match(text, /cron 0 10 \* \* \* \(Asia\/Bangkok\)\. No schedule was created/);
+    assert.match(text, /Metrics the contract declares: candidates_seen, shortlist_size/);
+    assert.match(text, /Mapped to this draft \(2\)/);
+    await m.unmount();
+  });
+
+  it("fires: text that is not JSON, or not an object, shows a plain message and sends nothing", async () => {
+    reset([]);
+    const m = await mount(h(drafts.Drafts, { openId: null, onPromoted: () => {} }));
+    const box = await openBox(m.host);
+    await setText(box, "{ not json");
+    await click(button(m.host, "Import"));
+    assert.match(alerts(m.host)[0] ?? "", /not valid JSON/);
+    await setText(box, "[1]");
+    await click(button(m.host, "Import"));
+    assert.match(alerts(m.host)[0] ?? "", /one JSON object/);
+    assert.equal(stub.calls.filter((c) => c.op === "pipeline_import").length, 0);
+    assert.ok(m.host.querySelector("textarea"), "the box stays open with the text");
+    await m.unmount();
+  });
+
+  it("fires: a contract the app refuses shows the app's own message; the text stays so it can be fixed", async () => {
+    reset([]);
+    stub.fail.pipeline_import = { status: 422, code: "validation_failed" };
+    const m = await mount(h(drafts.Drafts, { openId: null, onPromoted: () => {} }));
+    const box = await openBox(m.host);
+    await setText(box, JSON.stringify({ id: "x" }));
+    await click(button(m.host, "Import"));
+    await flush();
+    assert.equal(alerts(m.host).length, 1);
+    assert.equal((m.host.querySelector("textarea") as HTMLTextAreaElement).value, JSON.stringify({ id: "x" }));
+    await m.unmount();
+  });
+
+  const versions = (extra: Record<string, unknown> = {}) => ({
+    workflow: { id: WF, title: "P1 daily tidbit", summary: "s", activeVersion: 2, draftId: PIPE_DRAFT.id, createdAt: "2026-10-19T08:00:00.000Z", updatedAt: "2026-10-19T08:00:00.000Z" },
+    versions: [1, 2].map((version) => ({ ...PIPE_DRAFT, workflowId: WF, version, draftId: PIPE_DRAFT.id, draftRevision: version, promotedAt: `2026-10-0${version}T08:00:00.000Z` })),
+    pipelines: [{ version: 2, id: "p1-daily-tidbit", pipelineVersion: 3 }],
+    ...extra,
+  });
+
+  it("quiet: the workflow page says which version came from a contract; Export downloads that version's contract", async () => {
+    reset([]);
+    stub.workflows = [{ id: WF, title: "P1 daily tidbit", summary: "s", activeVersion: 2, draftId: PIPE_DRAFT.id, createdAt: "x", updatedAt: "x" }];
+    stub.versions = versions();
+    stub.exported = { contract: { id: "p1-daily-tidbit", version: 3 }, filename: "p1-daily-tidbit.pipeline.json", imported: true, omitted: ["kanban.issues_list"], notice: "Rebuilt from the contract you imported." };
+    const saved: string[] = [];
+    (URL as unknown as { createObjectURL: (b: Blob) => string }).createObjectURL = (b: Blob) => {
+      void b.text().then((t) => saved.push(t));
+      return "blob:test";
+    };
+    (URL as unknown as { revokeObjectURL: (u: string) => void }).revokeObjectURL = () => {};
+    const clicked: string[] = [];
+    const proto = (win as unknown as { HTMLAnchorElement: { prototype: { click: () => void; download?: string } } }).HTMLAnchorElement.prototype;
+    const originalClick = proto.click;
+    proto.click = function (this: { download?: string }) {
+      clicked.push(String(this.download));
+    };
+    try {
+      const m = await mount(h(wfs.Workflows, { openId: WF, stills: "" }));
+      assert.match(m.host.textContent ?? "", /Imported from pipeline contract p1-daily-tidbit v3\./);
+      await click(button(m.host, "Export pipeline contract"));
+      await flush();
+      assert.deepEqual(stub.calls.filter((c) => c.op === "pipeline_export").map((c) => c.input), [{ workflowId: WF, version: 2 }]);
+      assert.deepEqual(clicked, ["p1-daily-tidbit.pipeline.json"]);
+      await flush();
+      assert.deepEqual(saved.map((t) => JSON.parse(t)), [{ id: "p1-daily-tidbit", version: 3 }]);
+      assert.match(m.host.textContent ?? "", /Rebuilt from the contract you imported\. Not in the file, because no step uses it: kanban\.issues_list\./);
+      assert.deepEqual(alerts(m.host), []);
+      await m.unmount();
+    } finally {
+      proto.click = originalClick;
+    }
+  });
+
+  it("a version that was not imported says so; a failed export shows a message and downloads nothing", async () => {
+    reset([]);
+    stub.workflows = [{ id: WF, title: "P1 daily tidbit", summary: "s", activeVersion: 2, draftId: PIPE_DRAFT.id, createdAt: "x", updatedAt: "x" }];
+    stub.versions = versions({ pipelines: [] });
+    stub.fail.pipeline_export = { status: 500, code: "internal_error" };
+    let downloads = 0;
+    (URL as unknown as { createObjectURL: () => string }).createObjectURL = () => {
+      downloads++;
+      return "blob:test";
+    };
+    const m = await mount(h(wfs.Workflows, { openId: WF, stills: "" }));
+    assert.match(m.host.textContent ?? "", /This version was not imported from a pipeline contract/);
+    assert.doesNotMatch(m.host.textContent ?? "", /Imported from pipeline contract/);
+    await click(button(m.host, "Export pipeline contract"));
+    await flush();
+    assert.equal(alerts(m.host).length, 1, "a message, not a silent failure");
+    assert.equal(downloads, 0, "nothing was downloaded");
+    await m.unmount();
+  });
+
+  it("S2: an import the app wants confirmed (a workflow never imported) shows the app's message and a Replace and import button; only that button sends confirmReplace", async () => {
+    reset([]);
+    stub.fail.pipeline_import = { status: 409, code: "confirm_replace_required" };
+    const m = await mount(h(drafts.Drafts, { openId: null, onPromoted: () => {} }));
+    const box = await openBox(m.host);
+    await setText(box, JSON.stringify({ id: "p1-daily-tidbit", version: 1 }));
+    await click(button(m.host, "Import"));
+    await flush();
+    assert.deepEqual(stub.calls.filter((c) => c.op === "pipeline_import").map((c) => c.input), [{ contract: { id: "p1-daily-tidbit", version: 1 } }], "the first call has no confirmReplace");
+    assert.equal(alerts(m.host).length, 1, "the message is shown once, with the button");
+    stub.fail.pipeline_import = undefined;
+    await click(button(m.host, "Replace and import"));
+    await flush();
+    assert.deepEqual(stub.calls.filter((c) => c.op === "pipeline_import").at(-1)?.input, { contract: { id: "p1-daily-tidbit", version: 1 }, confirmReplace: true });
+    assert.match(m.host.textContent ?? "", /Imported from pipeline contract p1-daily-tidbit v1/);
+    assert.equal(
+      [...m.host.querySelectorAll("button")].some((b) => b.textContent?.trim() === "Replace and import"),
+      false,
+      "the button is gone after the import",
+    );
+    await m.unmount();
+  });
+
+  const wide = [{ product: "knowledge", operations: ["remember"], crud: ["create", "read"] }];
+  const narrow = [{ product: "knowledge", operations: ["remember"], crud: ["read"] }];
+  const draftOf = (allowed: unknown, baseVersion: number | null) => ({
+    ...PIPE_DRAFT,
+    workflowId: WF,
+    allowed,
+    pipeline: baseVersion === null ? null : { id: "p1-daily-tidbit", version: 1, importedAt: "2026-10-19T08:00:00.000Z", baseVersion, report: PIPE_REPORT },
+  });
+  const active = (n: number, allowed: unknown) => ({
+    workflow: { id: WF, title: "P1", summary: "s", activeVersion: n, draftId: "wfd_x", createdAt: "x", updatedAt: "x" },
+    versions: Array.from({ length: n }, (_, i) => ({ ...PIPE_DRAFT, workflowId: WF, version: i + 1, allowed, draftId: "wfd_x", draftRevision: 1, promotedAt: "2026-10-01T08:00:00.000Z" })),
+    pipelines: [],
+  });
+
+  it("S2: ANY draft of an existing workflow that allows more than its active version says so (the Workflows page rule); one that does not widen says nothing", async () => {
+    reset([]);
+    stub.versions = active(1, narrow);
+    stub.drafts = [draftOf(wide, null)]; // not imported at all: an ordinary draft of a workflow
+    let m = await mount(h(drafts.Drafts, { openId: PIPE_DRAFT.id, onPromoted: () => {} }));
+    assert.match(m.host.textContent ?? "", /This draft allows more than v1, the active version\./);
+    assert.match(m.host.textContent ?? "", /keeps its old operation list until you change its policy in Portal/);
+    await m.unmount();
+    stub.drafts = [draftOf(narrow, null)];
+    m = await mount(h(drafts.Drafts, { openId: PIPE_DRAFT.id, onPromoted: () => {} }));
+    assert.doesNotMatch(m.host.textContent ?? "", /allows more than/);
+    await m.unmount();
+    stub.drafts = [{ ...PIPE_DRAFT, pipeline: null }]; // a draft of a new workflow: no comparison at all
+    stub.calls = [];
+    m = await mount(h(drafts.Drafts, { openId: PIPE_DRAFT.id, onPromoted: () => {} }));
+    assert.equal(stub.calls.filter((c) => c.op === "workflow_versions").length, 0);
+    await m.unmount();
+  });
+
+  it("S3: a draft based on v1 while v2 is active warns; based on the active version it does not; a failed comparison says so", async () => {
+    reset([]);
+    stub.versions = active(2, narrow);
+    stub.drafts = [draftOf(narrow, 1)];
+    let m = await mount(h(drafts.Drafts, { openId: PIPE_DRAFT.id, onPromoted: () => {} }));
+    assert.match(m.host.textContent ?? "", /This draft is based on v1; v2 is now active\. Check what changed before you promote\./);
+    await m.unmount();
+    stub.drafts = [draftOf(narrow, 2)];
+    m = await mount(h(drafts.Drafts, { openId: PIPE_DRAFT.id, onPromoted: () => {} }));
+    assert.doesNotMatch(m.host.textContent ?? "", /is based on/);
+    await m.unmount();
+    stub.fail.workflow_versions = { status: 500, code: "internal_error" };
+    m = await mount(h(drafts.Drafts, { openId: PIPE_DRAFT.id, onPromoted: () => {} }));
+    assert.match(m.host.textContent ?? "", /could not be loaded, so this draft was not compared/);
+    await m.unmount();
   });
 });

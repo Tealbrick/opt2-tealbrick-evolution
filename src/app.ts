@@ -13,6 +13,7 @@ import { OP, type OpId } from "#kit";
 import * as cycles from "./cycles.ts";
 import { DEFAULT_MIN_REPEATS, KANBAN } from "./detector.ts";
 import { ALLOWLIST_NOTICE, allowedFromSteps, diffNotice, diffSnapshots, ModelError, type Snapshot } from "./model.ts";
+import * as pipeline from "./pipeline.ts";
 import { buildRecipe } from "./recipe.ts";
 import * as routines from "./routines.ts";
 import { createDetectorRefresh, DETECTOR_REFRESH_MS, detectorStatus, scanKanban } from "./scan.ts";
@@ -38,7 +39,7 @@ function op<I, O>(spec: HandlerSpec<I, O>): HandlerSpec {
   } as unknown as HandlerSpec;
 }
 
-const STATUS: Record<store.StoreError["code"], number> = { not_found: 404, conflict: 409, revision_conflict: 409, validation_failed: 422, kanban_project_required: 422, metrics_need_terminal_status: 422, metric_names_full: 422 };
+const STATUS: Record<store.StoreError["code"], number> = { not_found: 404, conflict: 409, revision_conflict: 409, validation_failed: 422, kanban_project_required: 422, metrics_need_terminal_status: 422, metric_names_full: 422, pipeline_id_mismatch: 409, confirm_replace_required: 409, contract_too_large: 422, metric_not_declared: 422 };
 export function toTbError(e: unknown): unknown {
   if (e instanceof store.StoreError) return new TbError(e.code, e.message, STATUS[e.code], e.details);
   if (e instanceof ModelError) return new TbError("validation_failed", e.message, 422, { pointer: e.pointer });
@@ -211,7 +212,7 @@ export const handlers = {
     redact: (input) => `Run ${input.occurrence.slice(0, 12)}: ${input.status}${input.metrics ? " (with metrics)" : ""}`,
     async run(input, ctx) {
       const callApp = ctx.callApp.bind(ctx);
-      const { run, changed } = routines.report(ctx.db, ctx.caller.id, input.occurrence, input.status, input.summary?.trim() || null, Date.now(), input.metrics ?? null);
+      const { run, changed } = routines.report(ctx.db, ctx.caller.id, input.occurrence, input.status, input.summary?.trim() || null, Date.now(), input.metrics ?? null, (workflowId, version) => (version === null ? null : pipeline.declaredMetrics(ctx.db, workflowId, version)));
       if (changed) await closeRunIssue(ctx.db, callApp, run);
       await flushKanban(ctx.db, callApp);
       return routines.getRun(ctx.db, input.occurrence) ?? run;
@@ -279,7 +280,7 @@ export const handlers = {
   }),
   [OP.draftGet]: op<K.DraftGetInput, K.DraftGetOutput>({
     async run(input, ctx) {
-      return store.getDraft(ctx.db, input.id);
+      return { ...store.getDraft(ctx.db, input.id), pipeline: pipeline.pipelineOfDraft(ctx.db, input.id) };
     },
   }),
   [OP.draftUpdate]: op<K.DraftUpdateInput, K.DraftUpdateOutput>({
@@ -295,6 +296,46 @@ export const handlers = {
       return store.promote(ctx.db, input.draftId, input.revision, Date.now(), { log: ctx.log });
     },
   }),
+  // ── typed pipeline contract (C288 R10): person ops only; the stored contract is never returned by an agent op ──
+  [OP.pipelineImport]: op<K.PipelineImportInput, K.PipelineImportOutput>({
+    // the id of the contract only: purposes, dictation refs and owners are not receipt text
+    redact: (input, output) => {
+      const id = (input.contract as { id?: unknown } | null)?.id;
+      return `Imported pipeline ${typeof id === "string" ? id.slice(0, 41) : "contract"}${output ? ` as draft ${output.draft.id}` : ""}${input.asDraftOf ? ` for ${input.asDraftOf}` : ""}`;
+    },
+    async run(input, ctx) {
+      const r = pipeline.importPipeline(ctx.db, { contract: input.contract, asDraftOf: input.asDraftOf, confirmReplace: input.confirmReplace });
+      return { draft: { ...r.draft, pipeline: r.pipeline }, report: r.report };
+    },
+  }),
+  [OP.pipelineExport]: op<K.PipelineExportInput, K.PipelineExportOutput>({
+    async run(input, ctx) {
+      const wf = store.getWorkflow(ctx.db, input.workflowId);
+      const v = store.getVersion(ctx.db, wf.id, input.version);
+      const stored = pipeline.versionSource(ctx.db, wf.id, v.version);
+      const { contract, omitted, notes } = pipeline.exportContract({
+        workflowId: wf.id,
+        version: v.version,
+        active: v.version === wf.activeVersion,
+        snapshot: store.snapshotOf(v),
+        imported: stored,
+        automationCron: pipeline.automationCronOf(ctx.db, wf.id),
+      });
+      const imported = stored !== null;
+      return {
+        contract: contract as unknown as K.PipelineExportOutput["contract"],
+        filename: pipeline.exportFileName(contract),
+        imported,
+        omitted,
+        notice: [
+          imported
+            ? "Rebuilt from the contract you imported and the version you edited. Status is set by Evolution (active, or retired for an older version). Fields Evolution does not enforce come back as they were imported."
+            : "This workflow was not imported from a contract, so the required fields that Evolution has no data for are filled with defaults: owner unassigned, the Task Board run issue as input and output, a default done check, and no declared metrics.",
+          ...notes,
+        ].join(" "),
+      };
+    },
+  }),
   [OP.workflowsList]: op<K.WorkflowsListInput, K.WorkflowsListOutput>({
     async run(_input, ctx) {
       return { workflows: store.listWorkflows(ctx.db) };
@@ -302,7 +343,11 @@ export const handlers = {
   }),
   [OP.workflowVersions]: op<K.WorkflowVersionsInput, K.WorkflowVersionsOutput>({
     async run(input, ctx) {
-      return { workflow: store.getWorkflow(ctx.db, input.workflowId), versions: store.listVersions(ctx.db, input.workflowId) };
+      return {
+        workflow: store.getWorkflow(ctx.db, input.workflowId),
+        versions: store.listVersions(ctx.db, input.workflowId),
+        pipelines: pipeline.versionPipelines(ctx.db, input.workflowId),
+      };
     },
   }),
   [OP.workflowDiff]: op<K.WorkflowDiffInput, K.WorkflowDiffOutput>({

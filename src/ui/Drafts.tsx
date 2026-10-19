@@ -1,7 +1,10 @@
 // Drafts page: start a draft (template or blank), edit steps / allowed operations / trigger, promote to a version.
 import { Button, Chip, ChipGroup, EmptyState, Field, Ink, Notice, Select, Tag, Textarea, TextInput } from "@opt2-tealbrick/ui";
 import { useCallback, useEffect, useState } from "react";
+import type * as K from "#kit";
+import { DraftBase } from "./DraftBase.tsx";
 import { ALLOWLIST_TEXT, errorText, type Out, person } from "./ops.ts";
+import { ImportReportView, importedFrom } from "./Pipeline.tsx";
 
 type Draft = Out<"draft_get">;
 type Crud = "create" | "read" | "update" | "delete";
@@ -26,6 +29,14 @@ export function Drafts({ openId, onPromoted }: { openId: string | null; onPromot
   const [template, setTemplate] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [templateError, setTemplateError] = useState<string | null>(null);
+  const [importOpen, setImportOpen] = useState(false);
+  const [importText, setImportText] = useState("");
+  const [importFor, setImportFor] = useState("");
+  const [workflows, setWorkflows] = useState<Out<"workflows_list">["workflows"]>([]);
+  const [importError, setImportError] = useState<string | null>(null);
+  const [importing, setImporting] = useState(false);
+  /** the app asked the owner to confirm that the draft replaces a hand-made workflow (409 confirm_replace_required) */
+  const [needConfirm, setNeedConfirm] = useState<string | null>(null);
   const load = useCallback(async () => {
     try {
       setRows((await person("drafts_list", {})).drafts);
@@ -57,6 +68,45 @@ export function Drafts({ openId, onPromoted }: { openId: string | null; onPromot
   };
   const current = selected ?? rows?.[0]?.id ?? null;
 
+  const openImport = () => {
+    setImportOpen(true);
+    person("workflows_list", {})
+      .then((r) => setWorkflows(r.workflows))
+      .catch(() => setWorkflows([])); // only the optional "new version of" choice is lost
+  };
+  const doImport = async (confirmReplace = false) => {
+    if (importing) return;
+    let contract: unknown;
+    try {
+      contract = JSON.parse(importText);
+    } catch {
+      setImportError("This is not valid JSON. Paste the whole contract file.");
+      return;
+    }
+    if (typeof contract !== "object" || contract === null || Array.isArray(contract)) {
+      setImportError("A pipeline contract is one JSON object. Paste the whole contract file.");
+      return;
+    }
+    setImporting(true);
+    try {
+      const r = await person("pipeline_import", { contract, ...(importFor ? { asDraftOf: importFor } : {}), ...(confirmReplace ? { confirmReplace: true } : {}) } as K.PipelineImportInput);
+      await load();
+      setSelected(r.draft.id);
+      setImportText("");
+      setImportFor("");
+      setImportOpen(false);
+      setImportError(null);
+      setNeedConfirm(null);
+    } catch (e) {
+      if ((e as { code?: unknown } | null)?.code === "confirm_replace_required") {
+        setNeedConfirm(errorText(e));
+        setImportError(null);
+      } else setImportError(errorText(e));
+    } finally {
+      setImporting(false);
+    }
+  };
+
   return (
     <section className="app-page" aria-label="Drafts">
       <div className="page-head">
@@ -72,7 +122,57 @@ export function Drafts({ openId, onPromoted }: { openId: string | null; onPromot
           />
         </Field>
         <Button onClick={() => void create()}>New draft</Button>
+        <Button onClick={() => (importOpen ? setImportOpen(false) : openImport())}>Import pipeline contract</Button>
       </div>
+      {importOpen ? (
+        <section className="tb-card tb-stack import-box" aria-label="Import a pipeline contract">
+          <h2>Import a pipeline contract</h2>
+          <p className="tb-soft">
+            Paste the contract JSON (tealbrick.agents/pipeline-contract/0.1). Evolution makes a draft from it. It does not create a schedule. Tools that are not Teal Brick operations are
+            listed in the report and are not enforced.
+          </p>
+          <Field label="Contract JSON">
+            <Textarea
+              rows={8}
+              value={importText}
+              onChange={(e) => {
+                setImportText(e.target.value);
+                setNeedConfirm(null);
+              }}
+              spellCheck={false}
+            />
+          </Field>
+          <Field label="Add to" hint="Choose a workflow to make the draft its next version. It must come from the same pipeline id.">
+            <Select
+              value={importFor}
+              onValueChange={(v) => {
+                setImportFor(v);
+                setNeedConfirm(null);
+              }} options={[{ value: "", label: "A new workflow" }, ...workflows.map((w) => ({ value: w.id, label: `New version of: ${w.title}` }))]} />
+          </Field>
+          {needConfirm ? (
+            <Notice tone="needs-you" role="alert">
+              {needConfirm}
+              <div className="tb-ctas">
+                <Button onClick={() => void doImport(true)} disabled={importing}>
+                  Replace and import
+                </Button>
+              </div>
+            </Notice>
+          ) : null}
+          {importError ? (
+            <Notice tone="needs-you" role="alert">
+              {importError}
+            </Notice>
+          ) : null}
+          <div className="tb-ctas">
+            <Button variant="primary" onClick={() => void doImport()} disabled={importing || !importText.trim()}>
+              Import
+            </Button>
+            <Button onClick={() => setImportOpen(false)}>Cancel</Button>
+          </div>
+        </section>
+      ) : null}
       {templateError ? (
         <Notice tone="needs-you" role="alert">
           {templateError}
@@ -146,11 +246,12 @@ function Editor({ id, onSaved, onPromoted }: { id: string; onSaved: () => Promis
         steps: form.steps.map((s) => ({ id: s.id, title: s.title || "Untitled step", instruction: s.instruction, ops: s.ops.filter((o) => o.product && o.operation) })),
         allowed: form.allowed.filter((a) => a.product && a.operations.length).map((a) => ({ ...a, crud: a.crud.length ? a.crud : ["read"] })),
       });
-      setD(next);
-      setForm(structuredClone(next));
+      const saved = { ...next, pipeline: d.pipeline }; // draft_update does not carry the import; it does not change
+      setD(saved);
+      setForm(structuredClone(saved));
       setError(null);
       await onSaved();
-      return next;
+      return saved;
     } catch (e) {
       setError(errorText(e));
       return null;
@@ -177,6 +278,16 @@ function Editor({ id, onSaved, onPromoted }: { id: string; onSaved: () => Promis
         <h2>{form.title || "Untitled draft"}</h2>
         <span className="tb-hint">Revision {d.revision}</span>
       </div>
+      {d.pipeline ? (
+        <div className="tb-stack">
+          <Notice role="status">{importedFrom(d.pipeline.id, d.pipeline.version)}.</Notice>
+          <p className="tb-soft">
+            Agents that run this workflow can read the title, summary and step text. Kept-as-data fields (sources, dictation references, escalation, approvals) stay with you.
+          </p>
+          <ImportReportView report={d.pipeline.report} />
+        </div>
+      ) : null}
+      <DraftBase workflowId={d.workflowId} allowed={form.allowed} baseVersion={d.pipeline?.baseVersion ?? null} />
       <Field label="Title">
         <TextInput value={form.title} onChange={(e) => set({ title: e.target.value })} maxLength={200} />
       </Field>
