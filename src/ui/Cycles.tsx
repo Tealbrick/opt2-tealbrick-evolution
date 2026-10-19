@@ -58,20 +58,25 @@ const plural = (n: number, one: string, many: string): string => `${n} ${n === 1
 /** One plain sentence of what the runners reported for a version. */
 export function metricsText(m: RunMetrics): string {
   if (m.runs === 0) return "No run reports with metrics yet.";
-  return `${plural(m.runs, "run report", "run reports")} with metrics: ok ${pct(m.okRatio)}, median ${m.minutesMedian === null ? "–" : minutesText(m.minutesMedian)}, mean ${m.minutesMean === null ? "–" : minutesText(m.minutesMean)} · ${plural(m.retriesTotal, "retry", "retries")}, ${plural(m.questionsToMartinTotal, "question", "questions")} to you, ${plural(m.lessonCount, "lesson", "lessons")}`;
+  return `${plural(m.runs, "run report", "run reports")} with metrics: ${pct(m.okRatio)} reported as done well, typical time ${m.minutesMedian === null ? "–" : minutesText(m.minutesMedian)}, average ${m.minutesMean === null ? "–" : minutesText(m.minutesMean)} · ${plural(m.retriesTotal, "retry", "retries")}, ${plural(m.questionsToMartinTotal, "question", "questions")} to you, ${plural(m.lessonCount, "lesson", "lessons")}`;
 }
 
-/** The reported metrics of a version against its parent version; null when one of them has no run reports. */
-export function compareText(c: Pick<Cycle, "runMetrics">, parent: (Pick<Cycle, "runMetrics" | "version">) | null): string | null {
-  if (!parent || c.runMetrics.runs === 0 || parent.runMetrics.runs === 0) return null;
+/** Both versions need this many run reports with metrics before they are compared (the floor of the evals). */
+export const COMPARE_MIN_REPORTS = 5;
+
+/** The reported metrics of a version against its parent version. null: there is no parent, or neither version has a
+ *  report. Under the floor in either version: a plain "too few" sentence instead of numbers. */
+export function compareText(c: Pick<Cycle, "runMetrics">, parent: Pick<Cycle, "runMetrics" | "version"> | null): string | null {
+  if (!parent || (c.runMetrics.runs === 0 && parent.runMetrics.runs === 0)) return null;
+  if (c.runMetrics.runs < COMPARE_MIN_REPORTS || parent.runMetrics.runs < COMPARE_MIN_REPORTS) return `Too few reports to compare yet (needs ${COMPARE_MIN_REPORTS} per version).`;
   const parts: string[] = [];
   if (c.runMetrics.okRatio !== null && parent.runMetrics.okRatio !== null) {
     const d = Math.round((c.runMetrics.okRatio - parent.runMetrics.okRatio) * 100);
-    parts.push(d === 0 ? "ok rate the same" : `ok rate ${d > 0 ? "up" : "down"} ${Math.abs(d)} points`);
+    parts.push(d === 0 ? "share reported as done well the same" : `share reported as done well ${d > 0 ? "up" : "down"} ${Math.abs(d)} points`);
   }
   if (c.runMetrics.minutesMedian !== null && parent.runMetrics.minutesMedian !== null) {
     const d = c.runMetrics.minutesMedian - parent.runMetrics.minutesMedian;
-    parts.push(Math.abs(d) < 0.05 ? "median time the same" : `median time ${minutesText(Math.abs(d))} ${d < 0 ? "shorter" : "longer"}`);
+    parts.push(Math.abs(d) < 0.05 ? "typical time the same" : `typical time ${minutesText(Math.abs(d))} ${d < 0 ? "shorter" : "longer"}`);
   }
   return parts.length ? `Compared with version ${parent.version}: ${parts.join(", ")}.` : null;
 }

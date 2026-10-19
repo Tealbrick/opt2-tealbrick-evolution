@@ -540,7 +540,8 @@ export type ReportStatus = "dispatched" | "completed" | "failed" | "uncertain";
 export const TERMINAL: ReadonlySet<RunStatus> = new Set(["completed", "failed", "uncertain"]);
 
 /** The optional `metrics` of routine_report (C288 R8): the RunReport of the Henry contracts. `pipeline` and `version` are
- *  accepted for 1:1 compatibility only; the stored truth is the run's own workflow id and version. */
+ *  accepted for 1:1 compatibility and IGNORED (Henry's pipeline ids and contract version are not ours); the stored truth
+ *  is the run row's own workflow id and version. */
 export interface MetricsInput {
   pipeline?: string;
   version?: number;
@@ -564,20 +565,22 @@ export const LESSON_MAX_CHARS = 280;
 
 const refuse = (pointer: string, message: string): StoreError => new StoreError("validation_failed", message, { pointer });
 
-/** Checks `metrics` against the run it arrives on and returns what is stored (lessons trimmed). The manifest schema
- *  already refuses bad shapes with a pointer before the handler runs; the bounds are checked here too, so a direct call
- *  of `report` cannot store a value the table's CHECKs would refuse.
+/** Invisible "filler" characters that are letters or symbols by category but show nothing (braille blank, Hangul fillers,
+ *  Khmer inherent vowels). A lesson of only these is blank. Keep in step with the pattern in the manifest. */
+const FILLERS = new Set(["\u2800", "\u3164", "\u115F", "\u1160", "\uFFA0", "\u17B4", "\u17B5"]);
+const MEANINGFUL = /[\p{L}\p{N}\p{P}\p{S}]/u;
+/** A lesson must show at least one letter, digit, punctuation or symbol. */
+export const isMeaningful = (s: string): boolean => Array.from(s).some((ch) => MEANINGFUL.test(ch) && !FILLERS.has(ch));
+
+/** Checks `metrics` and returns what is stored (lessons trimmed). The manifest schema already refuses bad shapes with a
+ *  pointer before the handler runs; the bounds are checked here too, so a direct call of `report` cannot store a value
+ *  the table's CHECKs would refuse. Lesson length counts code points, like the schema.
  *  - terminal status only: completed or failed (an `uncertain` report is not a result of the run);
- *  - `pipeline` must be the run's workflow id (what `routine_claim` gives the agent as `job.workflowId`), `version` the
- *    run's workflow version: `metrics_run_mismatch`. A report cannot move numbers to another workflow or version.
+ *  - `pipeline` and `version` are ignored: they are not compared with the run (the run row is the truth).
  *  `ok` is not cross-checked with the status: it is the runner's own word on the outcome (a completed run can say ok: false). */
-export function checkMetrics(m: MetricsInput, run: Run, status: ReportStatus): StoredMetrics {
+export function checkMetrics(m: MetricsInput, status: ReportStatus): StoredMetrics {
   if (status !== "completed" && status !== "failed")
     throw new StoreError("metrics_need_terminal_status", "Send metrics only with the report that ends the run: status completed or failed.", { pointer: "/metrics", status });
-  if (m.pipeline !== undefined && m.pipeline !== run.workflowId)
-    throw new StoreError("metrics_run_mismatch", "metrics.pipeline is not the workflow of this run.", { pointer: "/metrics/pipeline" });
-  if (m.version !== undefined && m.version !== run.workflowVersion)
-    throw new StoreError("metrics_run_mismatch", "metrics.version is not the version of this run.", { pointer: "/metrics/version" });
   if (typeof m.ok !== "boolean") throw refuse("/metrics/ok", "metrics.ok must be true or false.");
   if (typeof m.minutes !== "number" || !Number.isFinite(m.minutes) || m.minutes < 0 || m.minutes > MINUTES_MAX) throw refuse("/metrics/minutes", `metrics.minutes must be a number from 0 to ${MINUTES_MAX}.`);
   const count = (k: "retries" | "questions_to_martin"): number | null => {
@@ -592,7 +595,8 @@ export function checkMetrics(m: MetricsInput, run: Run, status: ReportStatus): S
   if (!Array.isArray(lessons) || lessons.length > LESSONS_MAX) throw refuse("/metrics/lessons", `metrics.lessons has at most ${LESSONS_MAX} entries.`);
   const trimmed = lessons.map((l, i) => {
     const t = typeof l === "string" ? l.trim() : "";
-    if (t.length < 1 || t.length > LESSON_MAX_CHARS) throw refuse(`/metrics/lessons/${i}`, `Each lesson has 1 to ${LESSON_MAX_CHARS} characters.`);
+    const n = Array.from(t).length;
+    if (n < 1 || n > LESSON_MAX_CHARS || !isMeaningful(t)) throw refuse(`/metrics/lessons/${i}`, `Each lesson has 1 to ${LESSON_MAX_CHARS} characters and shows at least one letter, digit or symbol.`);
     return t;
   });
   return { ok: m.ok, minutes: m.minutes, retries, questionsToMartin, lessons: trimmed };
@@ -615,7 +619,7 @@ export function report(
     sweep(db, now);
     const run = getRun(db, occurrence);
     if (!run || run.claimedBy !== callerId) throw new StoreError("not_found", "No run of yours with this occurrence.");
-    const stored = metrics ? checkMetrics(metrics, run, status) : null;
+    const stored = metrics ? checkMetrics(metrics, status) : null;
     if (run.status === status) return { run, changed: false };
     if (!NEXT_STATUS[run.status].includes(status)) throw new StoreError("conflict", `A ${run.status} run cannot become ${status}.`, { status: run.status });
     const sync = TERMINAL.has(status) && run.kanbanIssueId ? "pending" : run.kanbanSync;

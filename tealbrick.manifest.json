@@ -1188,7 +1188,7 @@
     {
       "id": "routine_report",
       "title": "Report a run",
-      "description": "Report the state of a run you claimed: dispatched (the turn started), then completed, failed or uncertain, with a short summary. Repeating the same report changes nothing. With the report that ends the run (completed or failed) you may send metrics (the RunReport: ok, minutes, retries, questions_to_martin, lessons). They are stored once with that report; the owner sees them per workflow version, no agent sees them. metrics.pipeline and metrics.version are optional: pipeline is the workflow id of the run (job.workflowId), version the run's version; a different value is refused (metrics_run_mismatch). Metrics on any other status are refused (metrics_need_terminal_status). Metrics on a repeated report are not stored.",
+      "description": "Report the state of a run you claimed: dispatched (the turn started), then completed, failed or uncertain, with a short summary. Repeating the same report changes nothing. With the report that ends the run (completed or failed) you may send metrics (the RunReport: ok, minutes, retries, questions_to_martin, lessons). They are stored once with that report; the owner sees them per workflow version, no agent sees them. metrics.pipeline and metrics.version are optional and ignored (the run itself says which workflow and version it belongs to). Metrics on any other status are refused (metrics_need_terminal_status); metrics on a repeated report are not stored. If a report with metrics is refused, send the same report again without metrics, so the run still ends.",
       "input": {
         "type": "object",
         "additionalProperties": false,
@@ -1260,7 +1260,7 @@
                   "type": "string",
                   "minLength": 1,
                   "maxLength": 280,
-                  "pattern": "\\S"
+                  "pattern": "(?![\\u2800\\u3164\\u115F\\u1160\\uFFA0\\u17B4\\u17B5])[\\p{L}\\p{N}\\p{P}\\p{S}]"
                 }
               }
             }

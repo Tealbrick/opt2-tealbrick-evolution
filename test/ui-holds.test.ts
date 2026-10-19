@@ -383,7 +383,7 @@ describe("Cycles page (C250 Release B)", () => {
     ...extra,
   });
   const LIST = () => [
-    cycle(WF, "Morning rollup", 2, { widensAccess: true, completedRatio: 1, runMetrics: { runs: 4, okRuns: 3, okRatio: 0.75, minutesMedian: 12, minutesMean: 14.5, retriesTotal: 3, questionsToMartinTotal: 1, lessonCount: 2 } }),
+    cycle(WF, "Morning rollup", 2, { widensAccess: true, completedRatio: 1, runMetrics: { runs: 8, okRuns: 6, okRatio: 0.75, minutesMedian: 12, minutesMean: 14.5, retriesTotal: 3, questionsToMartinTotal: 1, lessonCount: 2 } }),
     cycle(WF, "Morning rollup", 1, { active: false, runMetrics: { runs: 5, okRuns: 3, okRatio: 0.6, minutesMedian: 20, minutesMean: 22, retriesTotal: 0, questionsToMartinTotal: 0, lessonCount: 0 }, retiredAt: "2026-10-02T08:00:00.000Z", completedRatio: 0.8, approvalDelayMs: 7_200_000, evalStored: { id: "evr_1", verdict: "fail", trigger: "promotion", createdAt: "2026-10-02T08:00:00.000Z" }, evalLive: { verdict: "fail", results: [] } }),
     cycle(WF2, "Invoice run", 1, { completedRatio: null, last10: [], evalLive: { verdict: "insufficient", results: [] }, counts: { total: 0, completed: 0, failed: 0, uncertain: 0, missed: 0, policyStale: 0, open: 0 } }),
   ];
@@ -468,12 +468,18 @@ describe("Cycles page (C250 Release B)", () => {
     const m = await mount(h(cyc.Cycles, {}));
     await click(button(m.host, "Show versions"));
     const [v2, v1] = [...m.host.querySelectorAll(".timeline > li")];
-    assert.match(v2?.textContent ?? "", /4 run reports with metrics: ok 75%, median 12 min, mean 14.5 min · 3 retries, 1 question to you, 2 lessons/);
-    assert.match(v2?.textContent ?? "", /Compared with version 1: ok rate up 15 points, median time 8 min shorter\./);
-    assert.match(v1?.textContent ?? "", /5 run reports with metrics: ok 60%, median 20 min/);
+    assert.match(v2?.textContent ?? "", /8 run reports with metrics: 75% reported as done well, typical time 12 min, average 14.5 min · 3 retries, 1 question to you, 2 lessons/);
+    assert.match(v2?.textContent ?? "", /Compared with version 1: share reported as done well up 15 points, typical time 8 min shorter\./);
+    assert.match(v1?.textContent ?? "", /5 run reports with metrics: 60% reported as done well, typical time 20 min/);
     assert.doesNotMatch(v1?.textContent ?? "", /Compared with/, "version 1 has no parent");
-    assert.equal(cyc.compareText({ runMetrics: LIST()[1]?.runMetrics as never }, { version: 1, runMetrics: LIST()[0]?.runMetrics as never }), "Compared with version 1: ok rate down 15 points, median time 8 min longer.");
-    assert.equal(cyc.compareText(cycleOf(0), cycleOf(5)), null, "no comparison when one version has no reports");
+    assert.equal(cyc.compareText({ runMetrics: LIST()[1]?.runMetrics as never }, { version: 1, runMetrics: LIST()[0]?.runMetrics as never }), "Compared with version 1: share reported as done well down 15 points, typical time 8 min longer.");
+    const TOO_FEW = "Too few reports to compare yet (needs 5 per version).";
+    assert.equal(cyc.compareText(cycleOf(0), cycleOf(5)), TOO_FEW, "no numbers when one version has no reports");
+    assert.equal(cyc.compareText(cycleOf(4), cycleOf(9)), TOO_FEW, "4 reports are under the floor");
+    assert.equal(cyc.compareText(cycleOf(9), cycleOf(4)), TOO_FEW);
+    assert.match(cyc.compareText(cycleOf(5), cycleOf(5)) ?? "", /^Compared with version 1: share reported as done well the same, typical time the same\.$/, "exactly 5 in both compares");
+    assert.equal(cyc.compareText(cycleOf(0), cycleOf(0)), null, "nothing reported anywhere: nothing to say");
+    assert.equal(cyc.compareText(cycleOf(9), null), null, "version 1 has no parent");
     assert.equal(cyc.metricsText(cycleOf(0).runMetrics), "No run reports with metrics yet.");
     assert.equal(cyc.minutesText(150), "2.5 h");
     assert.deepEqual(alerts(m.host), []);

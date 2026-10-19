@@ -166,6 +166,9 @@ test("fires (schema layer): every bound violated is refused with a pointer; the 
     ["lesson not a string", { ok: true, minutes: 1, lessons: [7] }, "/metrics/lessons/0"],
     ["unknown field", { ok: true, minutes: 1, cost: 3 }, "/metrics"],
     ["version zero", { ok: true, minutes: 1, version: 0 }, "/metrics/version"],
+    ["pipeline empty", { ok: true, minutes: 1, pipeline: "" }, "/metrics/pipeline"],
+    ["pipeline over 64", { ok: true, minutes: 1, pipeline: "p".repeat(65) }, "/metrics/pipeline"],
+    ["zero-width lesson", { ok: true, minutes: 1, lessons: ["\u200b"] }, "/metrics/lessons/0"],
     ["metrics not an object", "ok", "/metrics"],
   ];
   for (const [name, metrics, pointer] of cases) assert.ok(schemaErrors(metrics).includes(pointer), `${name}: ${pointer} in ${JSON.stringify(schemaErrors(metrics))}`);
@@ -195,24 +198,60 @@ test("fires (handler layer): a direct call cannot store a value outside the boun
   assert.equal(JSON.parse(String(metricsRows(db)[0]?.lessons))[0].length, 280);
 });
 
-test("fires: pipeline or version that is not the run's is 422 metrics_run_mismatch; the run's own values pass", () => {
+test("quiet: a Henry-style RunReport (its own pipeline id and contract version) is accepted and stored against the run's own workflow and version", () => {
   const { db, wf, occ } = setup();
-  const m = { ok: true, minutes: 3 };
-  for (const [extra, pointer] of [
-    [{ pipeline: "wfl_someone_else" }, "/metrics/pipeline"],
-    [{ version: 2 }, "/metrics/version"],
-    [{ pipeline: wf, version: 7 }, "/metrics/version"],
-    [{ pipeline: `${wf}x`, version: 1 }, "/metrics/pipeline"],
-  ] as const) {
-    const t = refusal(() => r.report(db, BOUND.id, occ, "completed", null, NOW, { ...m, ...extra }));
-    assert.deepEqual([t?.code, t?.httpStatus, (t?.details as { pointer?: string } | undefined)?.pointer], ["metrics_run_mismatch", 422, pointer], JSON.stringify(extra));
+  const henry = { pipeline: "p1-daily-tidbit", version: 7, ok: true, minutes: 3 };
+  assert.deepEqual(schemaErrors(henry), [], "the schema accepts them");
+  assert.equal(r.report(db, BOUND.id, occ, "completed", null, NOW, henry).changed, true);
+  // nothing of pipeline / version is stored: the run row is the truth
+  assert.deepEqual(Object.keys(metricsRows(db)[0] ?? {}).sort(), ["created_at", "lessons", "minutes", "occurrence", "ok", "questions_to_martin", "retries"]);
+  assert.equal(metricsRows(db)[0]?.occurrence, occ);
+  const c = cycles.getCycle(db, wf, 1, NOW);
+  assert.equal(c.runMetrics.runs, 1, "counted in the run's own workflow version (1), not in version 7");
+  assert.equal(cycles.workflowCycles(db, wf, NOW).length, 1);
+});
+
+test("a lesson counts code points like the schema: 200 emoji pass, 281 are refused (schema and handler)", () => {
+  const emoji = (n: number) => "😀".repeat(n);
+  assert.equal(emoji(200).length, 400, "400 UTF-16 units");
+  assert.deepEqual(schemaErrors({ ok: true, minutes: 1, lessons: [emoji(200), emoji(280)] }), []);
+  assert.ok(schemaErrors({ ok: true, minutes: 1, lessons: [emoji(281)] }).includes("/metrics/lessons/0"));
+  const { db, occ } = setup();
+  const t = refusal(() => r.report(db, BOUND.id, occ, "completed", null, NOW, { ok: true, minutes: 1, lessons: [emoji(281)] }));
+  assert.deepEqual([t?.code, t?.httpStatus, (t?.details as { pointer?: string } | undefined)?.pointer], ["validation_failed", 422, "/metrics/lessons/0"]);
+  r.report(db, BOUND.id, occ, "completed", null, NOW, { ok: true, minutes: 1, lessons: [emoji(200), `  ${emoji(280)}  `] });
+  assert.deepEqual(JSON.parse(String(metricsRows(db)[0]?.lessons)).map((l: string) => Array.from(l).length), [200, 280]);
+});
+
+test("a lesson must show something: zero-width space, braille blank and Hangul filler are blank; punctuation, digits and symbols count", () => {
+  const blanks = ["\u200b", "\u2800", "\u3164", " \u200b\u2800 ", "\u115f\u1160\uffa0", "\u200d\u2060\ufeff"];
+  const { db, occ } = setup();
+  for (const b of blanks) {
+    assert.ok(schemaErrors({ ok: true, minutes: 1, lessons: [b] }).includes("/metrics/lessons/0"), `schema refuses U+${b.codePointAt(0)?.toString(16)}`);
+    const t = refusal(() => r.report(db, BOUND.id, occ, "completed", null, NOW, { ok: true, minutes: 1, lessons: [b] }));
+    assert.deepEqual([t?.code, (t?.details as { pointer?: string } | undefined)?.pointer], ["validation_failed", "/metrics/lessons/0"], `handler refuses U+${b.codePointAt(0)?.toString(16)}`);
   }
   assert.equal(r.getRun(db, occ)?.status, "claimed");
+  const shown = [".", "5", "✓", "é", "日本", "\u200b ok \u200b", "😀"];
+  assert.deepEqual(schemaErrors({ ok: true, minutes: 1, lessons: shown }), []);
+  assert.equal(r.report(db, BOUND.id, occ, "completed", null, NOW, { ok: true, minutes: 1, lessons: shown }).changed, true);
+});
+
+test("retry rule: a refused report with metrics leaves the run claimed; the same report without metrics ends it", () => {
+  const { db, wf, occ } = setup();
+  const bad = { ok: true, minutes: 99999, lessons: ["fine"] };
+  assert.equal(refusal(() => r.report(db, BOUND.id, occ, "completed", "Rollup written.", NOW, bad))?.code, "validation_failed");
+  assert.deepEqual([r.getRun(db, occ)?.status, r.getRun(db, occ)?.summary], ["claimed", null], "nothing of the refused report was applied");
   assert.deepEqual(metricsRows(db), []);
-  assert.equal(r.report(db, BOUND.id, occ, "completed", null, NOW, { ...m, pipeline: wf, version: 1 }).changed, true, "RunReport 1:1: its own pipeline and version are accepted");
-  assert.equal(metricsRows(db).length, 1);
-  // the stored truth is the run's own workflow and version: nothing of pipeline / version is stored
-  assert.deepEqual(Object.keys(metricsRows(db)[0] ?? {}).sort(), ["created_at", "lessons", "minutes", "occurrence", "ok", "questions_to_martin", "retries"]);
+  const again = r.report(db, BOUND.id, occ, "completed", "Rollup written.", NOW);
+  assert.deepEqual([again.changed, again.run.status, again.run.summary], [true, "completed", "Rollup written."]);
+  assert.deepEqual(metricsRows(db), [], "the run ended without metrics");
+  assert.equal(cycles.getCycle(db, wf, 1, NOW).counts.completed, 1);
+  // the same holds for the non-terminal refusal
+  const o2 = claimedRun(db, wf, r.getRun(db, occ)?.automationId as string, 13, 1);
+  assert.equal(refusal(() => r.report(db, BOUND.id, o2, "dispatched", null, NOW, { ok: true, minutes: 1 }))?.code, "metrics_need_terminal_status");
+  assert.equal(r.getRun(db, o2)?.status, "claimed");
+  assert.equal(r.report(db, BOUND.id, o2, "dispatched", null, NOW).changed, true);
 });
 
 test("fires: metrics on a status that does not end the run are 422 metrics_need_terminal_status, even on a repeat; the report is not applied", () => {
@@ -273,7 +312,7 @@ test("a run that finished without metrics does not take them from a later repeat
 test("a refused report rolls back as a whole: no status change, no Kanban sync mark", () => {
   const { db, occ } = setup();
   db.prepare("UPDATE routine_runs SET kanban_issue_id = 'iss_1' WHERE occurrence = ?").run(occ);
-  assert.ok(refusal(() => r.report(db, BOUND.id, occ, "completed", "x", NOW, { ok: true, minutes: 1, pipeline: "wfl_other" })));
+  assert.ok(refusal(() => r.report(db, BOUND.id, occ, "completed", "x", NOW, { ok: true, minutes: 99999 })));
   const run = r.getRun(db, occ);
   assert.deepEqual([run?.status, run?.summary, run?.kanbanSync], ["claimed", null, "none"]);
 });
