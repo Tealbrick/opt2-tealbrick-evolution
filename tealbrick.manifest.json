@@ -1188,7 +1188,7 @@
     {
       "id": "routine_report",
       "title": "Report a run",
-      "description": "Report the state of a run you claimed: dispatched (the turn started), then completed, failed or uncertain, with a short summary. Repeating the same report changes nothing.",
+      "description": "Report the state of a run you claimed: dispatched (the turn started), then completed, failed or uncertain, with a short summary. Repeating the same report changes nothing. With the report that ends the run (completed or failed) you may send metrics (the RunReport: ok, minutes, retries, questions_to_martin, lessons). They are stored once with that report; the owner sees them per workflow version, no agent sees them. metrics.pipeline and metrics.version are optional: pipeline is the workflow id of the run (job.workflowId), version the run's version; a different value is refused (metrics_run_mismatch). Metrics on any other status are refused (metrics_need_terminal_status). Metrics on a repeated report are not stored.",
       "input": {
         "type": "object",
         "additionalProperties": false,
@@ -1216,6 +1216,54 @@
             "type": "string",
             "minLength": 0,
             "maxLength": 500
+          },
+          "metrics": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "ok",
+              "minutes"
+            ],
+            "properties": {
+              "pipeline": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64
+              },
+              "version": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 100000
+              },
+              "ok": {
+                "type": "boolean"
+              },
+              "minutes": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 10080
+              },
+              "retries": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 1000
+              },
+              "questions_to_martin": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 1000
+              },
+              "lessons": {
+                "type": "array",
+                "maxItems": 20,
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 280,
+                  "pattern": "\\S"
+                }
+              }
+            }
           }
         }
       },
@@ -4733,7 +4781,7 @@
     {
       "id": "cycles_list",
       "title": "Workflow cycles",
-      "description": "The cycle ledger: one cycle per workflow version, from its promotion until the next version is promoted. Run counts, ratios and the live eval (gates: no duplicate claim, uncertain at most 5%, completed at least 80%, no drop over 10 points from the previous version). Newest promotion first, at most 500.",
+      "description": "The cycle ledger: one cycle per workflow version, from its promotion until the next version is promoted. Run counts, ratios and the live eval (gates: no duplicate claim, uncertain at most 5%, completed at least 80%, no drop over 10 points from the previous version). Newest promotion first, at most 500. Each cycle carries runMetrics: what the runners reported with routine_report metrics (runs with metrics, ok ratio, median and mean minutes, total retries, total questions to the owner, lesson count), to compare versions.",
       "input": {
         "type": "object",
         "additionalProperties": false,
@@ -4782,6 +4830,7 @@
                 "kanbanClosedRatio",
                 "duplicateClaims",
                 "last10",
+                "runMetrics",
                 "evalLive",
                 "evalStored"
               ],
@@ -4931,6 +4980,55 @@
                     ]
                   }
                 },
+                "runMetrics": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "runs",
+                    "okRuns",
+                    "okRatio",
+                    "minutesMedian",
+                    "minutesMean",
+                    "retriesTotal",
+                    "questionsToMartinTotal",
+                    "lessonCount"
+                  ],
+                  "properties": {
+                    "runs": {
+                      "type": "integer"
+                    },
+                    "okRuns": {
+                      "type": "integer"
+                    },
+                    "okRatio": {
+                      "type": [
+                        "number",
+                        "null"
+                      ]
+                    },
+                    "minutesMedian": {
+                      "type": [
+                        "number",
+                        "null"
+                      ]
+                    },
+                    "minutesMean": {
+                      "type": [
+                        "number",
+                        "null"
+                      ]
+                    },
+                    "retriesTotal": {
+                      "type": "integer"
+                    },
+                    "questionsToMartinTotal": {
+                      "type": "integer"
+                    },
+                    "lessonCount": {
+                      "type": "integer"
+                    }
+                  }
+                },
                 "evalLive": {
                   "type": "object",
                   "additionalProperties": false,
@@ -5074,7 +5172,7 @@
     {
       "id": "cycle_get",
       "title": "One workflow cycle",
-      "description": "One cycle (workflow version) with its live eval and its stored evals, newest first (at most 50).",
+      "description": "One cycle (workflow version) with its live eval and its stored evals, newest first (at most 50), its runMetrics, and the lessons the runners reported for this version (owner only; free text written by agents; newest first, at most 500).",
       "input": {
         "type": "object",
         "additionalProperties": false,
@@ -5101,7 +5199,8 @@
         "additionalProperties": false,
         "required": [
           "cycle",
-          "evals"
+          "evals",
+          "lessons"
         ],
         "properties": {
           "cycle": {
@@ -5130,6 +5229,7 @@
               "kanbanClosedRatio",
               "duplicateClaims",
               "last10",
+              "runMetrics",
               "evalLive",
               "evalStored"
             ],
@@ -5277,6 +5377,55 @@
                     "uncertain",
                     "policy_stale"
                   ]
+                }
+              },
+              "runMetrics": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "runs",
+                  "okRuns",
+                  "okRatio",
+                  "minutesMedian",
+                  "minutesMean",
+                  "retriesTotal",
+                  "questionsToMartinTotal",
+                  "lessonCount"
+                ],
+                "properties": {
+                  "runs": {
+                    "type": "integer"
+                  },
+                  "okRuns": {
+                    "type": "integer"
+                  },
+                  "okRatio": {
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  },
+                  "minutesMedian": {
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  },
+                  "minutesMean": {
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  },
+                  "retriesTotal": {
+                    "type": "integer"
+                  },
+                  "questionsToMartinTotal": {
+                    "type": "integer"
+                  },
+                  "lessonCount": {
+                    "type": "integer"
+                  }
                 }
               },
               "evalLive": {
@@ -5522,6 +5671,30 @@
                   "type": "string"
                 },
                 "createdAt": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "lessons": {
+            "type": "array",
+            "maxItems": 500,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "occurrence",
+                "reportedAt",
+                "text"
+              ],
+              "properties": {
+                "occurrence": {
+                  "type": "string"
+                },
+                "reportedAt": {
+                  "type": "string"
+                },
+                "text": {
                   "type": "string"
                 }
               }

@@ -54,3 +54,4 @@
 .timeline { display: grid; gap: var(--tb-s3); list-style: none; padding: 0; margin: 0; }
 .timeline > li { display: grid; gap: 4px; }
 .timeline-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+.lessons { margin: 0; padding-left: var(--tb-s4); display: grid; gap: 4px; overflow-wrap: anywhere; }

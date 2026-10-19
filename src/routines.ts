@@ -539,12 +539,83 @@ const NEXT_STATUS: Record<RunStatus, RunStatus[]> = {
 export type ReportStatus = "dispatched" | "completed" | "failed" | "uncertain";
 export const TERMINAL: ReadonlySet<RunStatus> = new Set(["completed", "failed", "uncertain"]);
 
-/** routine_report: only the claimer; repeating the current status is a no-op; terminal states are final. */
-export function report(db: Db, callerId: string, occurrence: string, status: ReportStatus, summary: string | null, now: number = Date.now()): { run: Run; changed: boolean } {
+/** The optional `metrics` of routine_report (C288 R8): the RunReport of the Henry contracts. `pipeline` and `version` are
+ *  accepted for 1:1 compatibility only; the stored truth is the run's own workflow id and version. */
+export interface MetricsInput {
+  pipeline?: string;
+  version?: number;
+  ok: boolean;
+  minutes: number;
+  retries?: number;
+  questions_to_martin?: number;
+  lessons?: string[];
+}
+export interface StoredMetrics {
+  ok: boolean;
+  minutes: number;
+  retries: number | null;
+  questionsToMartin: number | null;
+  lessons: string[];
+}
+export const MINUTES_MAX = 10080;
+export const COUNT_MAX = 1000;
+export const LESSONS_MAX = 20;
+export const LESSON_MAX_CHARS = 280;
+
+const refuse = (pointer: string, message: string): StoreError => new StoreError("validation_failed", message, { pointer });
+
+/** Checks `metrics` against the run it arrives on and returns what is stored (lessons trimmed). The manifest schema
+ *  already refuses bad shapes with a pointer before the handler runs; the bounds are checked here too, so a direct call
+ *  of `report` cannot store a value the table's CHECKs would refuse.
+ *  - terminal status only: completed or failed (an `uncertain` report is not a result of the run);
+ *  - `pipeline` must be the run's workflow id (what `routine_claim` gives the agent as `job.workflowId`), `version` the
+ *    run's workflow version: `metrics_run_mismatch`. A report cannot move numbers to another workflow or version.
+ *  `ok` is not cross-checked with the status: it is the runner's own word on the outcome (a completed run can say ok: false). */
+export function checkMetrics(m: MetricsInput, run: Run, status: ReportStatus): StoredMetrics {
+  if (status !== "completed" && status !== "failed")
+    throw new StoreError("metrics_need_terminal_status", "Send metrics only with the report that ends the run: status completed or failed.", { pointer: "/metrics", status });
+  if (m.pipeline !== undefined && m.pipeline !== run.workflowId)
+    throw new StoreError("metrics_run_mismatch", "metrics.pipeline is not the workflow of this run.", { pointer: "/metrics/pipeline" });
+  if (m.version !== undefined && m.version !== run.workflowVersion)
+    throw new StoreError("metrics_run_mismatch", "metrics.version is not the version of this run.", { pointer: "/metrics/version" });
+  if (typeof m.ok !== "boolean") throw refuse("/metrics/ok", "metrics.ok must be true or false.");
+  if (typeof m.minutes !== "number" || !Number.isFinite(m.minutes) || m.minutes < 0 || m.minutes > MINUTES_MAX) throw refuse("/metrics/minutes", `metrics.minutes must be a number from 0 to ${MINUTES_MAX}.`);
+  const count = (k: "retries" | "questions_to_martin"): number | null => {
+    const v = m[k];
+    if (v === undefined) return null;
+    if (!Number.isInteger(v) || v < 0 || v > COUNT_MAX) throw refuse(`/metrics/${k}`, `metrics.${k} must be a whole number from 0 to ${COUNT_MAX}.`);
+    return v;
+  };
+  const retries = count("retries");
+  const questionsToMartin = count("questions_to_martin");
+  const lessons = m.lessons ?? [];
+  if (!Array.isArray(lessons) || lessons.length > LESSONS_MAX) throw refuse("/metrics/lessons", `metrics.lessons has at most ${LESSONS_MAX} entries.`);
+  const trimmed = lessons.map((l, i) => {
+    const t = typeof l === "string" ? l.trim() : "";
+    if (t.length < 1 || t.length > LESSON_MAX_CHARS) throw refuse(`/metrics/lessons/${i}`, `Each lesson has 1 to ${LESSON_MAX_CHARS} characters.`);
+    return t;
+  });
+  return { ok: m.ok, minutes: m.minutes, retries, questionsToMartin, lessons: trimmed };
+}
+
+/** routine_report: only the claimer; repeating the current status is a no-op; terminal states are final.
+ *  `metrics` (C288 R8) are stored with the report that moves the run to completed / failed, in the same transaction.
+ *  They are checked on every call (a bad payload is refused even on a repeat), but a REPEAT of the current status
+ *  changes nothing: metrics that arrive on it, same or different, are not stored (the first terminal report decides). */
+export function report(
+  db: Db,
+  callerId: string,
+  occurrence: string,
+  status: ReportStatus,
+  summary: string | null,
+  now: number = Date.now(),
+  metrics: MetricsInput | null = null,
+): { run: Run; changed: boolean } {
   return db.transaction(() => {
     sweep(db, now);
     const run = getRun(db, occurrence);
     if (!run || run.claimedBy !== callerId) throw new StoreError("not_found", "No run of yours with this occurrence.");
+    const stored = metrics ? checkMetrics(metrics, run, status) : null;
     if (run.status === status) return { run, changed: false };
     if (!NEXT_STATUS[run.status].includes(status)) throw new StoreError("conflict", `A ${run.status} run cannot become ${status}.`, { status: run.status });
     const sync = TERMINAL.has(status) && run.kanbanIssueId ? "pending" : run.kanbanSync;
@@ -553,6 +624,16 @@ export function report(db: Db, callerId: string, occurrence: string, status: Rep
     db.prepare(
       "UPDATE routine_runs SET status = ?, summary = COALESCE(?, summary), kanban_sync = ?, updated_at = ?, reported_at = CASE WHEN ? THEN ? ELSE reported_at END WHERE occurrence = ?",
     ).run(status, summary, sync, now, TERMINAL.has(status) ? 1 : 0, now, occurrence);
+    if (stored)
+      db.prepare("INSERT INTO run_metrics (occurrence, ok, minutes, retries, questions_to_martin, lessons, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)").run(
+        occurrence,
+        stored.ok ? 1 : 0,
+        stored.minutes,
+        stored.retries,
+        stored.questionsToMartin,
+        JSON.stringify(stored.lessons),
+        now,
+      );
     return { run: getRun(db, occurrence) as Run, changed: true };
   });
 }

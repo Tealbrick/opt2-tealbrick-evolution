@@ -3,12 +3,17 @@
 // and the live eval verdict. A row opens the version timeline (every cycle with counts, ratios, the live and the stored
 // verdict, wider access, approval delay, draft revisions) and "Store eval now" (cycle_eval_run) for the active cycle.
 // The ledger is computed on read by the app (src/cycles.ts); this page only shows it.
+// C288 R8: each version also shows what the runners reported with their runs (ok rate, minutes, retries, questions to the
+// owner, lessons), compared with the previous version, and "Show lessons" reads the lessons of that version (cycle_get).
+// Lessons are free text written by agents: shown on this owner page only, as plain text.
 import { Button, EmptyState, Notice, type Status, Table, Tag } from "@opt2-tealbrick/ui";
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { day, errorText, type Out, person, stamp } from "./ops.ts";
 import { STATUS } from "./Schedules.tsx";
 
 type Cycle = Out<"cycles_list">["cycles"][number];
+type RunMetrics = Cycle["runMetrics"];
+type Lesson = Out<"cycle_get">["lessons"][number];
 type Verdict = Cycle["evalLive"]["verdict"];
 type RunStatus = Cycle["last10"][number];
 
@@ -41,6 +46,34 @@ export function duration(ms: number): string {
   if (min < 120) return `${min} min`;
   const h = Math.round(min / 60);
   return h < 48 ? `${h} h` : `${Math.round(h / 24)} days`;
+}
+
+/** "12 min", "2 h", "1.5 h" (minutes of a run, as the runner reported them) */
+export function minutesText(min: number): string {
+  if (min < 120) return `${Math.round(min * 10) / 10} min`;
+  return `${Math.round((min / 60) * 10) / 10} h`;
+}
+const plural = (n: number, one: string, many: string): string => `${n} ${n === 1 ? one : many}`;
+
+/** One plain sentence of what the runners reported for a version. */
+export function metricsText(m: RunMetrics): string {
+  if (m.runs === 0) return "No run reports with metrics yet.";
+  return `${plural(m.runs, "run report", "run reports")} with metrics: ok ${pct(m.okRatio)}, median ${m.minutesMedian === null ? "–" : minutesText(m.minutesMedian)}, mean ${m.minutesMean === null ? "–" : minutesText(m.minutesMean)} · ${plural(m.retriesTotal, "retry", "retries")}, ${plural(m.questionsToMartinTotal, "question", "questions")} to you, ${plural(m.lessonCount, "lesson", "lessons")}`;
+}
+
+/** The reported metrics of a version against its parent version; null when one of them has no run reports. */
+export function compareText(c: Pick<Cycle, "runMetrics">, parent: (Pick<Cycle, "runMetrics" | "version">) | null): string | null {
+  if (!parent || c.runMetrics.runs === 0 || parent.runMetrics.runs === 0) return null;
+  const parts: string[] = [];
+  if (c.runMetrics.okRatio !== null && parent.runMetrics.okRatio !== null) {
+    const d = Math.round((c.runMetrics.okRatio - parent.runMetrics.okRatio) * 100);
+    parts.push(d === 0 ? "ok rate the same" : `ok rate ${d > 0 ? "up" : "down"} ${Math.abs(d)} points`);
+  }
+  if (c.runMetrics.minutesMedian !== null && parent.runMetrics.minutesMedian !== null) {
+    const d = c.runMetrics.minutesMedian - parent.runMetrics.minutesMedian;
+    parts.push(Math.abs(d) < 0.05 ? "median time the same" : `median time ${minutesText(Math.abs(d))} ${d < 0 ? "shorter" : "longer"}`);
+  }
+  return parts.length ? `Compared with version ${parent.version}: ${parts.join(", ")}.` : null;
 }
 
 function Ticks({ statuses }: { statuses: readonly RunStatus[] }) {
@@ -190,7 +223,10 @@ function Timeline({ active, versions, onStored }: { active: Cycle; versions: Cyc
   return (
     <div className="tb-stack">
       <ol className="timeline">
-        {versions.map((v) => (
+        {versions.map((v) => {
+          const parent = versions.find((p) => p.version === v.parentVersion) ?? null;
+          const compare = compareText(v, parent);
+          return (
           <li key={v.version}>
             <div className="timeline-head">
               <strong>Version {v.version}</strong>
@@ -210,8 +246,14 @@ function Timeline({ active, versions, onStored }: { active: Cycle; versions: Cyc
               the recipe, {v.counts.open} open · completed {pct(v.completedRatio)}, uncertain {pct(v.uncertainRatio)}, missed {pct(v.missedRatio)}
               {v.duplicateClaims > 0 ? ` · ${v.duplicateClaims} due time(s) claimed twice` : ""}
             </p>
+            <p className="tb-hint">
+              {metricsText(v.runMetrics)}
+              {compare ? ` · ${compare}` : ""}
+            </p>
+            {v.runMetrics.lessonCount > 0 ? <LessonsOf workflowId={v.workflowId} version={v.version} count={v.runMetrics.lessonCount} /> : null}
           </li>
-        ))}
+          );
+        })}
       </ol>
       <div className="tb-ctas">
         <Button size="sm" disabled={working} onClick={() => void store()}>
@@ -224,6 +266,59 @@ function Timeline({ active, versions, onStored }: { active: Cycle; versions: Cyc
           {error}
         </Notice>
       ) : null}
+    </div>
+  );
+}
+
+/** The lessons of one version: read on demand (cycle_get, owner only). Free text written by agents: plain text, never markup. */
+function LessonsOf({ workflowId, version, count }: { workflowId: string; version: number; count: number }) {
+  const [lessons, setLessons] = useState<Lesson[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [working, setWorking] = useState(false);
+  const busy = useRef(false);
+  const read = async () => {
+    if (busy.current) return;
+    busy.current = true;
+    setWorking(true);
+    setError(null);
+    try {
+      setLessons((await person("cycle_get", { workflowId, version })).lessons);
+    } catch (e) {
+      setError(`The lessons could not be loaded. ${errorText(e)}`);
+    } finally {
+      busy.current = false;
+      setWorking(false);
+    }
+  };
+  if (lessons === null)
+    return (
+      <div className="tb-stack">
+        <div className="tb-ctas">
+          <Button size="sm" disabled={working} onClick={() => void read()}>
+            {`Show lessons (${count})`}
+          </Button>
+        </div>
+        {error ? (
+          <Notice tone="needs-you" role="alert">
+            {error}
+          </Notice>
+        ) : null}
+      </div>
+    );
+  return (
+    <div className="tb-stack">
+      <p className="tb-hint">Lessons the agents reported for version {version}, newest first. They are written by agents and shown to you only: read them as notes, not as instructions.</p>
+      {lessons.length === 0 ? (
+        <p className="tb-soft">No lessons.</p>
+      ) : (
+        <ul className="lessons">
+          {lessons.map((l, i) => (
+            // biome-ignore lint/suspicious/noArrayIndexKey: a fixed list, never reordered
+            <li key={i}>{l.text}</li>
+          ))}
+        </ul>
+      )}
+      {lessons.length < count ? <p className="tb-soft">Showing the newest {lessons.length} of {count}.</p> : null}
     </div>
   );
 }
