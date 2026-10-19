@@ -1188,7 +1188,7 @@
     {
       "id": "routine_report",
       "title": "Report a run",
-      "description": "Report the state of a run you claimed: dispatched (the turn started), then completed, failed or uncertain, with a short summary. Repeating the same report changes nothing. With the report that ends the run (completed or failed) you may send metrics (the RunReport: ok, minutes, retries, questions_to_martin, lessons). They are stored once with that report; the owner sees them per workflow version, no agent sees them. metrics.pipeline and metrics.version are optional and ignored (the run itself says which workflow and version it belongs to). Metrics on any other status are refused (metrics_need_terminal_status); metrics on a repeated report are not stored. If a report with metrics is refused, send the same report again without metrics, so the run still ends.",
+      "description": "Report the state of a run you claimed: dispatched (the turn started), then completed, failed or uncertain, with a short summary. Repeating the same report changes nothing. With the report that ends the run (completed or failed) you may send metrics (the RunReport: ok, minutes, retries, questions_to_martin, lessons, and metrics: your own named numbers, at most 20, name to number). They are stored once with that report; the owner sees them per workflow version, no agent sees them. metrics.pipeline, metrics.version and metrics.issue are optional and ignored (the run itself says which workflow and version it belongs to). Metrics on any other status are refused (metrics_need_terminal_status); metrics on a repeated report are not stored. If a report with metrics is refused, send the same report again without metrics, so the run still ends.",
       "input": {
         "type": "object",
         "additionalProperties": false,
@@ -1262,6 +1262,23 @@
                   "maxLength": 280,
                   "pattern": "(?![\\u2800\\u3164\\u115F\\u1160\\uFFA0\\u17B4\\u17B5])[\\p{L}\\p{N}\\p{P}\\p{S}]"
                 }
+              },
+              "metrics": {
+                "type": "object",
+                "description": "Per-pipeline numbers: name to number. A name starts with a lower case letter and has 2 to 41 characters (lower case letters, digits, underscore). At most 20. Omit a metric you could not measure.",
+                "propertyNames": {
+                  "pattern": "^[a-z][a-z0-9_]{1,40}$"
+                },
+                "additionalProperties": {
+                  "type": "number"
+                },
+                "maxProperties": 20
+              },
+              "issue": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64,
+                "description": "Task Board issue id of the run. Accepted and ignored: the run itself says which issue it has."
               }
             }
           }
@@ -5620,7 +5637,7 @@
     {
       "id": "cycles_list",
       "title": "Workflow cycles",
-      "description": "The cycle ledger: one cycle per workflow version, from its promotion until the next version is promoted. Run counts, ratios and the live eval (gates: no duplicate claim, uncertain at most 5%, completed at least 80%, no drop over 10 points from the previous version). Newest promotion first, at most 500. Each cycle carries runMetrics: what the runners reported with routine_report metrics (runs with metrics, ok ratio, median and mean minutes, total retries, total questions to the owner, lesson count), to compare versions.",
+      "description": "The cycle ledger: one cycle per workflow version, from its promotion until the next version is promoted. Run counts, ratios and the live eval (gates: no duplicate claim, uncertain at most 5%, completed at least 80%, no drop over 10 points from the previous version). Newest promotion first, at most 500. Each cycle carries runMetrics: what the runners reported with routine_report metrics (runs with metrics, ok ratio, median and mean minutes, total retries, total questions to the owner, lesson count, and namedMetrics: each named per-pipeline number with its report count, median, mean, min and max), to compare versions.",
       "input": {
         "type": "object",
         "additionalProperties": false,
@@ -5830,7 +5847,8 @@
                     "minutesMean",
                     "retriesTotal",
                     "questionsToMartinTotal",
-                    "lessonCount"
+                    "lessonCount",
+                    "namedMetrics"
                   ],
                   "properties": {
                     "runs": {
@@ -5865,6 +5883,42 @@
                     },
                     "lessonCount": {
                       "type": "integer"
+                    },
+                    "namedMetrics": {
+                      "type": "array",
+                      "maxItems": 20,
+                      "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "name",
+                          "reports",
+                          "median",
+                          "mean",
+                          "min",
+                          "max"
+                        ],
+                        "properties": {
+                          "name": {
+                            "type": "string"
+                          },
+                          "reports": {
+                            "type": "integer"
+                          },
+                          "median": {
+                            "type": "number"
+                          },
+                          "mean": {
+                            "type": "number"
+                          },
+                          "min": {
+                            "type": "number"
+                          },
+                          "max": {
+                            "type": "number"
+                          }
+                        }
+                      }
                     }
                   }
                 },
@@ -6229,7 +6283,8 @@
                   "minutesMean",
                   "retriesTotal",
                   "questionsToMartinTotal",
-                  "lessonCount"
+                  "lessonCount",
+                  "namedMetrics"
                 ],
                 "properties": {
                   "runs": {
@@ -6264,6 +6319,42 @@
                   },
                   "lessonCount": {
                     "type": "integer"
+                  },
+                  "namedMetrics": {
+                    "type": "array",
+                    "maxItems": 20,
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "name",
+                        "reports",
+                        "median",
+                        "mean",
+                        "min",
+                        "max"
+                      ],
+                      "properties": {
+                        "name": {
+                          "type": "string"
+                        },
+                        "reports": {
+                          "type": "integer"
+                        },
+                        "median": {
+                          "type": "number"
+                        },
+                        "mean": {
+                          "type": "number"
+                        },
+                        "min": {
+                          "type": "number"
+                        },
+                        "max": {
+                          "type": "number"
+                        }
+                      }
+                    }
                   }
                 }
               },

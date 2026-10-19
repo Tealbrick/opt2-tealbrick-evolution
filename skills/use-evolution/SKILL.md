@@ -26,7 +26,8 @@ description: When and how to suggest a workflow for repeated work, and how a Bou
   - `ok` (true or false, required): did the run reach its goal; `minutes` (required, 0 to 10080): how long it took.
   - `retries` and `questions_to_martin` (whole numbers, 0 to 1000), if you know them.
   - `lessons` (at most 20 short texts, 1 to 280 characters each, each with real words or symbols): what to do differently next time. Only the owner reads them. Write plain notes, no secrets, no personal data.
-  - `pipeline` and `version` may be in the object (the RunReport shape) but are ignored.
+  - `metrics` (an object of name to number, at most 20 names, finite numbers): the numbers your pipeline contract declares. Send only the names the contract lists, and leave out a number you could not measure. A name is lower case letters, digits and underscore, 2 to 41 characters, starting with a letter.
+  - `pipeline`, `version` and `issue` may be in the object (the RunReport shape) but are ignored.
   - Metrics on any other status are refused. Metrics sent again on a report that was already accepted are not stored.
   - **If a report with metrics is refused, send the same report again without metrics, so the run still ends.**
 - Do one run per claim and then stop. Never start another run of the workflow on your own.

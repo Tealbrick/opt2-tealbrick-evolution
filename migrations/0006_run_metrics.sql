@@ -14,3 +14,19 @@ CREATE TABLE run_metrics (
   lessons TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(lessons) AND json_type(lessons) = 'array' AND json_array_length(lessons) <= 20),
   created_at INTEGER NOT NULL
 );
+
+-- The NAMED per-pipeline numbers of the same report (RunReport.metrics: a map name -> number, at most 20 names, each
+-- name ^[a-z][a-z0-9_]{1,40}$, finite numbers). One row per run and name, written in the same transaction as the run_metrics
+-- row; never changed afterwards. This table was added to 0006 BEFORE 0006 was released on any channel (R8 is open as PR #14,
+-- no tag), so no database has applied the first form of the file. Owner-only data, like the lessons (C88 / L12).
+CREATE TABLE run_metric_values (
+  occurrence TEXT NOT NULL REFERENCES run_metrics (occurrence),
+  name TEXT NOT NULL CHECK (length(name) BETWEEN 2 AND 41 AND name GLOB '[a-z]*' AND name NOT GLOB '*[^a-z0-9_]*'),
+  value REAL NOT NULL CHECK (typeof(value) = 'real' AND value BETWEEN -1.7976931348623157e308 AND 1.7976931348623157e308),
+  PRIMARY KEY (occurrence, name)
+);
+CREATE TRIGGER run_metric_values_at_most_20 BEFORE INSERT ON run_metric_values
+WHEN (SELECT count(*) FROM run_metric_values WHERE occurrence = NEW.occurrence) >= 20
+BEGIN
+  SELECT RAISE(ABORT, 'at most 20 named metrics per run');
+END;

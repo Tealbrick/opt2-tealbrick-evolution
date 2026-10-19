@@ -213,7 +213,7 @@ test("the ledger reads migrated 0.2.13 rows: version-less missed rows go to the 
   assert.equal(v1?.retiredAt, v2?.promotedAt);
   assert.equal(v2?.active, true);
   // no run reported metrics before 0006: the rollup is empty, not wrong
-  for (const c of [v1, v2]) assert.deepEqual(c?.runMetrics, { runs: 0, okRuns: 0, okRatio: null, minutesMedian: null, minutesMean: null, retriesTotal: 0, questionsToMartinTotal: 0, lessonCount: 0 });
+  for (const c of [v1, v2]) assert.deepEqual(c?.runMetrics, { runs: 0, okRuns: 0, okRatio: null, minutesMedian: null, minutesMean: null, retriesTotal: 0, questionsToMartinTotal: 0, lessonCount: 0, namedMetrics: [] });
 });
 
 /** 0.3.0 data: the 0.2.13 rows migrated by 0005 (a 0.3.0 runner has also reported: reported_at set on one run). */
@@ -239,7 +239,9 @@ test("0006 on 0.3.0 data: every row of every table unchanged, run_metrics is new
   raw.exec("COMMIT");
   const after = tables(raw);
   assert.deepEqual(after.run_metrics, [], "new table, no rows");
+  assert.deepEqual(after.run_metric_values, [], "new table, no rows");
   delete after.run_metrics;
+  delete after.run_metric_values;
   assert.deepEqual(after, before, "same tables, same rows, same order, same columns");
   assert.deepEqual(raw.prepare("PRAGMA foreign_key_check").all(), []);
   assert.equal((raw.prepare("PRAGMA integrity_check").get() as Record<string, string>).integrity_check, "ok");
@@ -260,6 +262,16 @@ test("0006 on 0.3.0 data: every row of every table unchanged, run_metrics is new
   assert.throws(() => ins.run(occ, 1, 5, null, null, JSON.stringify(Array(21).fill("x"))), /CHECK constraint/);
   ins.run(occ, 1, 10080, 1000, 0, JSON.stringify(Array(20).fill("x")));
   assert.throws(() => ins.run(occ, 0, 1, null, null, "[]"), /UNIQUE|PRIMARY KEY/, "one metrics row per run");
+  // the named values of the same report (also in 0006): constraints hold, one row per run and name, at most 20 names
+  const val = raw.prepare("INSERT INTO run_metric_values (occurrence, name, value) VALUES (?, ?, ?)");
+  assert.throws(() => val.run("run_missing", "candidates_seen", 1), /FOREIGN KEY/);
+  assert.throws(() => val.run(occ, "Candidates", 1), /CHECK constraint/, "name pattern");
+  assert.throws(() => val.run(occ, "a", 1), /CHECK constraint/);
+  assert.throws(() => val.run(occ, "candidates_seen", Number.POSITIVE_INFINITY), /CHECK constraint/, "finite numbers only");
+  val.run(occ, "candidates_seen", 12);
+  assert.throws(() => val.run(occ, "candidates_seen", 13), /UNIQUE|PRIMARY KEY/);
+  for (let i = 0; i < 19; i++) val.run(occ, `m_${i}`, i);
+  assert.throws(() => val.run(occ, "one_more", 1), /at most 20/);
 });
 
 test("the code works on migrated 0.3.0 data: a late report of an old uncertain run stores metrics, the ledger rolls them up, the old rows still read", () => {
@@ -272,7 +284,7 @@ test("the code works on migrated 0.3.0 data: a late report of an old uncertain r
   const done = r.report(db, BOUND.id, uncertain, "completed", "late", now, { ok: true, minutes: 12, retries: 1, lessons: [" late but fine "] });
   assert.equal(done.changed, true);
   const [v1] = cycles.workflowCycles(db, store.listWorkflows(db)[0]?.id as string, now);
-  assert.deepEqual(v1?.runMetrics, { runs: 1, okRuns: 1, okRatio: 1, minutesMedian: 12, minutesMean: 12, retriesTotal: 1, questionsToMartinTotal: 0, lessonCount: 1 });
+  assert.deepEqual(v1?.runMetrics, { runs: 1, okRuns: 1, okRatio: 1, minutesMedian: 12, minutesMean: 12, retriesTotal: 1, questionsToMartinTotal: 0, lessonCount: 1, namedMetrics: [] });
   assert.deepEqual(v1?.counts, { total: 5, completed: 2, failed: 1, uncertain: 2, missed: 0, policyStale: 0, open: 0 });
 });
 

@@ -81,6 +81,28 @@ export function compareText(c: Pick<Cycle, "runMetrics">, parent: Pick<Cycle, "r
   return parts.length ? `Compared with version ${parent.version}: ${parts.join(", ")}.` : null;
 }
 
+/** A metric name for the owner: "candidates_seen" is "candidates seen". */
+export const humanName = (name: string): string => name.replaceAll("_", " ");
+const num = (x: number): string => String(Math.round(x * 100) / 100);
+
+/** One line per named metric the runners reported for a version (the pipeline's own numbers). */
+export function namedLines(m: RunMetrics): string[] {
+  return m.namedMetrics.map((n) => `${humanName(n.name)}: ${plural(n.reports, "report", "reports")}, typical ${num(n.median)}, average ${num(n.mean)}, lowest ${num(n.min)}, highest ${num(n.max)}`);
+}
+
+/** The named metrics of a version against its parent, by name; each name needs COMPARE_MIN_REPORTS reports in BOTH versions. */
+export function namedCompare(c: Pick<Cycle, "runMetrics">, parent: Pick<Cycle, "runMetrics" | "version"> | null): string[] {
+  if (!parent) return [];
+  const before = new Map(parent.runMetrics.namedMetrics.map((n) => [n.name, n]));
+  const after = new Map(c.runMetrics.namedMetrics.map((n) => [n.name, n]));
+  return [...new Set([...after.keys(), ...before.keys()])].sort().map((name) => {
+    const a = before.get(name);
+    const b = after.get(name);
+    if (!a || !b || a.reports < COMPARE_MIN_REPORTS || b.reports < COMPARE_MIN_REPORTS) return `${humanName(name)}: too few reports to compare yet (needs ${COMPARE_MIN_REPORTS} per version)`;
+    return `${humanName(name)}: typical ${num(a.median)} → ${num(b.median)}`;
+  });
+}
+
 function Ticks({ statuses }: { statuses: readonly RunStatus[] }) {
   if (statuses.length === 0) return <span className="tb-soft">No runs yet</span>;
   return (
@@ -255,6 +277,20 @@ function Timeline({ active, versions, onStored }: { active: Cycle; versions: Cyc
               {metricsText(v.runMetrics)}
               {compare ? ` · ${compare}` : ""}
             </p>
+            {namedLines(v.runMetrics).length ? (
+              <ul className="plain tb-hint" aria-label={`Named metrics of version ${v.version}`}>
+                {namedLines(v.runMetrics).map((l) => (
+                  <li key={l}>{l}</li>
+                ))}
+              </ul>
+            ) : null}
+            {namedCompare(v, parent).length ? (
+              <ul className="plain tb-hint" aria-label={`Named metrics compared with version ${parent?.version}`}>
+                {namedCompare(v, parent).map((l) => (
+                  <li key={l}>{l}</li>
+                ))}
+              </ul>
+            ) : null}
             {v.runMetrics.lessonCount > 0 ? <LessonsOf workflowId={v.workflowId} version={v.version} count={v.runMetrics.lessonCount} /> : null}
           </li>
           );

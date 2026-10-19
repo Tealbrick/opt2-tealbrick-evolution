@@ -550,6 +550,10 @@ export interface MetricsInput {
   retries?: number;
   questions_to_martin?: number;
   lessons?: string[];
+  /** the named per-pipeline numbers: name -> number (at most 20; any patterned name on this branch) */
+  metrics?: Record<string, number>;
+  /** the Task Board issue id of the run: accepted and IGNORED (the run row's kanban_issue_id is the truth) */
+  issue?: string;
 }
 export interface StoredMetrics {
   ok: boolean;
@@ -557,7 +561,11 @@ export interface StoredMetrics {
   retries: number | null;
   questionsToMartin: number | null;
   lessons: string[];
+  /** the named numbers, sorted by name */
+  named: [string, number][];
 }
+export const NAMED_MAX = 20;
+export const NAME_PATTERN = /^[a-z][a-z0-9_]{1,40}$/;
 export const MINUTES_MAX = 10080;
 export const COUNT_MAX = 1000;
 export const LESSONS_MAX = 20;
@@ -572,11 +580,25 @@ const MEANINGFUL = /[\p{L}\p{N}\p{P}\p{S}]/u;
 /** A lesson must show at least one letter, digit, punctuation or symbol. */
 export const isMeaningful = (s: string): boolean => Array.from(s).some((ch) => MEANINGFUL.test(ch) && !FILLERS.has(ch));
 
+function namedOf(map: unknown): [string, number][] {
+  if (map === undefined) return [];
+  if (typeof map !== "object" || map === null || Array.isArray(map)) throw refuse("/metrics/metrics", "metrics.metrics must be an object of names and numbers.");
+  const entries = Object.entries(map);
+  if (entries.length > NAMED_MAX) throw refuse("/metrics/metrics", `metrics.metrics has at most ${NAMED_MAX} names.`);
+  for (const [name, v] of entries) {
+    if (!NAME_PATTERN.test(name)) throw refuse(`/metrics/metrics/${name}`, "A metric name starts with a lower case letter and has 2 to 41 characters: lower case letters, digits and underscore.");
+    if (typeof v !== "number" || !Number.isFinite(v)) throw refuse(`/metrics/metrics/${name}`, `metrics.metrics.${name} must be a finite number.`);
+  }
+  return entries.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+}
+
 /** Checks `metrics` and returns what is stored (lessons trimmed). The manifest schema already refuses bad shapes with a
  *  pointer before the handler runs; the bounds are checked here too, so a direct call of `report` cannot store a value
  *  the table's CHECKs would refuse. Lesson length counts code points, like the schema.
  *  - terminal status only: completed or failed (an `uncertain` report is not a result of the run);
- *  - `pipeline` and `version` are ignored: they are not compared with the run (the run row is the truth).
+ *  - `pipeline`, `version` and `issue` are ignored: they are not compared with the run (the run row is the truth);
+ *  - `metrics` (the named map): at most 20 names, each ^[a-z][a-z0-9_]{1,40}$, finite numbers. R8 does not know which names
+ *    a pipeline declares: any patterned name is stored (the declared-names check is R10's).
  *  `ok` is not cross-checked with the status: it is the runner's own word on the outcome (a completed run can say ok: false). */
 export function checkMetrics(m: MetricsInput, status: ReportStatus): StoredMetrics {
   if (status !== "completed" && status !== "failed")
@@ -599,7 +621,8 @@ export function checkMetrics(m: MetricsInput, status: ReportStatus): StoredMetri
     if (n < 1 || n > LESSON_MAX_CHARS || !isMeaningful(t)) throw refuse(`/metrics/lessons/${i}`, `Each lesson has 1 to ${LESSON_MAX_CHARS} characters and shows at least one letter, digit or symbol.`);
     return t;
   });
-  return { ok: m.ok, minutes: m.minutes, retries, questionsToMartin, lessons: trimmed };
+  const named = namedOf(m.metrics);
+  return { ok: m.ok, minutes: m.minutes, retries, questionsToMartin, lessons: trimmed, named };
 }
 
 /** routine_report: only the claimer; repeating the current status is a no-op; terminal states are final.
@@ -628,7 +651,7 @@ export function report(
     db.prepare(
       "UPDATE routine_runs SET status = ?, summary = COALESCE(?, summary), kanban_sync = ?, updated_at = ?, reported_at = CASE WHEN ? THEN ? ELSE reported_at END WHERE occurrence = ?",
     ).run(status, summary, sync, now, TERMINAL.has(status) ? 1 : 0, now, occurrence);
-    if (stored)
+    if (stored) {
       db.prepare("INSERT INTO run_metrics (occurrence, ok, minutes, retries, questions_to_martin, lessons, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)").run(
         occurrence,
         stored.ok ? 1 : 0,
@@ -638,6 +661,8 @@ export function report(
         JSON.stringify(stored.lessons),
         now,
       );
+      for (const [name, value] of stored.named) db.prepare("INSERT INTO run_metric_values (occurrence, name, value) VALUES (?, ?, ?)").run(occurrence, name, value);
+    }
     return { run: getRun(db, occurrence) as Run, changed: true };
   });
 }

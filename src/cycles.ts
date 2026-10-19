@@ -45,6 +45,17 @@ export interface MetricsRollup {
   retriesTotal: number;
   questionsToMartinTotal: number;
   lessonCount: number;
+  /** the named per-pipeline numbers (RunReport.metrics), one entry per name, sorted by name */
+  namedMetrics: NamedRollup[];
+}
+/** One named metric over the runs of a cycle that reported it. Median is nearest-rank (lower middle); mean to 6 decimals. */
+export interface NamedRollup {
+  name: string;
+  reports: number;
+  median: number;
+  mean: number;
+  min: number;
+  max: number;
 }
 export interface Lesson {
   occurrence: string;
@@ -113,6 +124,21 @@ export function p50(values: readonly number[]): number | null {
 
 /** Rollup of the metrics of one cycle's runs. Pure. Mean and ratio to 6 decimals; retries and questions count only the
  *  runs that sent them. */
+export function namedRollup(m: readonly { named: readonly [string, number][] }[]): NamedRollup[] {
+  const by = new Map<string, number[]>();
+  for (const x of m) for (const [name, v] of x.named) by.set(name, [...(by.get(name) ?? []), v]);
+  return [...by.entries()]
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .map(([name, v]) => ({
+      name,
+      reports: v.length,
+      median: p50(v) as number,
+      mean: round(v.reduce((a, b) => a + b, 0) / v.length),
+      min: Math.min(...v),
+      max: Math.max(...v),
+    }));
+}
+
 export function metricsRollup(runs: readonly LedgerRun[]): MetricsRollup {
   const m = runs.flatMap((r) => (r.metrics ? [r.metrics] : []));
   const minutes = m.map((x) => x.minutes);
@@ -126,6 +152,7 @@ export function metricsRollup(runs: readonly LedgerRun[]): MetricsRollup {
     retriesTotal: m.reduce((a, x) => a + (x.retries ?? 0), 0),
     questionsToMartinTotal: m.reduce((a, x) => a + (x.questionsToMartin ?? 0), 0),
     lessonCount: m.reduce((a, x) => a + x.lessons.length, 0),
+    namedMetrics: namedRollup(m),
   };
 }
 
@@ -229,6 +256,11 @@ function versionRows(db: Db, workflowId: string): VersionRow[] {
 }
 
 function runsOf(db: Db, workflowId: string): LedgerRun[] {
+  const named = new Map<string, [string, number][]>();
+  for (const v of db
+    .prepare("SELECT v.occurrence, v.name, v.value FROM run_metric_values v JOIN routine_runs r ON r.occurrence = v.occurrence WHERE r.workflow_id = ? ORDER BY v.occurrence, v.name")
+    .all(workflowId))
+    named.set(String(v.occurrence), [...(named.get(String(v.occurrence)) ?? []), [String(v.name), Number(v.value)]]);
   return db
     .prepare(
       `SELECT r.occurrence, r.automation_id, r.due_at, r.status, r.workflow_version, r.claimed_at, r.updated_at, r.reported_at, r.kanban_issue_id, r.kanban_sync,
@@ -257,6 +289,7 @@ function runsOf(db: Db, workflowId: string): LedgerRun[] {
               retries: r.m_retries === null ? null : Number(r.m_retries),
               questionsToMartin: r.m_questions === null ? null : Number(r.m_questions),
               lessons: JSON.parse(String(r.m_lessons)) as string[],
+              named: named.get(String(r.occurrence)) ?? [],
               createdAt: Number(r.m_created_at),
             },
     }));
