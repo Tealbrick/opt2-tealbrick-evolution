@@ -10,6 +10,8 @@ import * as store from "./engine-store.ts";
 import { EngineError } from "./errors.ts";
 import type { Json } from "./json.ts";
 import { deleteSchedule, describeSchedule, pauseSchedule, type ScheduleLive, syncAndRecord, triggerSchedule } from "./schedules.ts";
+import { readStepIo } from "./history.ts";
+import { startRun } from "./start-run.ts";
 import { getTemporal } from "./temporal.ts";
 import { type OpUse, type ValidationIssue, type ValidationResult, validateContract } from "./validate.ts";
 
@@ -36,7 +38,7 @@ function eop<I, O>(spec: HandlerSpec<I, O>): HandlerSpec {
 
 /** UsageRow of the owner UI: the ops a version calls, with the scope type and whether the target op is held. */
 export function usageRows(uses: readonly OpUse[]) {
-  return uses.map((u) => ({ product: u.product, op: u.op, crud: u.crud, effect: u.effect, scope: u.scopeType ?? null, held: u.holdFamily !== undefined, ...(u.tools ? { tools: u.tools } : {}) }));
+  return uses.map((u) => ({ product: u.product, op: u.op, crud: u.crud, effect: u.effect, scope: u.scopeType ?? null, held: u.holdFamily !== undefined, ...(u.tools ? { tools: u.tools } : {}), ...(u.via ? { via: u.via } : {}) }));
 }
 
 export function engineHandlers(manifest: { companions?: Companions }) {
@@ -93,10 +95,44 @@ export function engineHandlers(manifest: { companions?: Companions }) {
       cursorAt: row.cursorAt,
       temporalState: row.temporalState,
       temporalError: row.temporalError,
+      stale: row.staleReason,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
       live: l,
     } as K.ScheduleSetOutput;
+  }
+
+  /**
+   * F6: a schedule that follows the active version was resolved against the version that was active when it was made. After a
+   * newer version is activated, resolve it again: it still fits (its trigger, its input) -> it follows the new version; it does
+   * not fit -> it is paused and carries the reason (`stale`) until the owner edits it. A pinned schedule whose pin is no longer
+   * the active version is stale for the same reason: a replaced version starts no new run.
+   */
+  async function revalidateSchedules(ctx: OpContext, workflowId: string): Promise<{ id: string; reason: string }[]> {
+    const out: { id: string; reason: string }[] = [];
+    for (const s of store.listSchedules(ctx.db, workflowId)) {
+      let reason: string | null = null;
+      let next: ReturnType<typeof resolveSchedule> | null = null;
+      try {
+        next = resolveSchedule(ctx, { workflowId, kind: s.kind, versionPin: s.versionPin } as K.ScheduleSetInput, s);
+      } catch (e) {
+        reason = e instanceof EngineError ? e.message : "The schedule could not be checked.";
+      }
+      if (next && !reason) {
+        const changedPoll = JSON.stringify(next.poll) !== JSON.stringify(s.poll);
+        if (changedPoll || JSON.stringify(next.spec) !== JSON.stringify(s.spec)) store.updateSchedule(ctx.db, s.id, s.revision, { spec: next.spec, input: next.input, poll: next.poll }, Date.now());
+        if (changedPoll) ctx.db.prepare("UPDATE engine_schedules SET cursor = NULL, cursor_at = NULL, pending_cursor = NULL, pending_run_id = NULL WHERE id = ?").run(s.id);
+        if (s.staleReason) store.setStale(ctx.db, s.id, null, Date.now());
+      } else if (reason) {
+        const fresh = store.getSchedule(ctx.db, s.id) as store.ScheduleRow;
+        if (!fresh.paused) store.updateSchedule(ctx.db, s.id, fresh.revision, { paused: true }, Date.now());
+        store.setStale(ctx.db, s.id, reason, Date.now());
+        out.push({ id: s.id, reason });
+      }
+      const row = store.getSchedule(ctx.db, s.id);
+      if (row) await pushToTemporal(ctx, row);
+    }
+    return out;
   }
 
   /** Pushes a row to Temporal; a failure is recorded on the row (the reconcile job retries) and does not fail the owner's call. */
@@ -114,7 +150,7 @@ export function engineHandlers(manifest: { companions?: Companions }) {
     return store.getSchedule(ctx.db, row.id) as store.ScheduleRow;
   }
 
-  function resolveSchedule(ctx: OpContext, input: K.ScheduleSetInput, prior: store.ScheduleRow | null): Omit<store.ScheduleRow, "revision" | "cursor" | "cursorAt" | "temporalState" | "temporalError" | "createdAt" | "updatedAt" | "id"> {
+  function resolveSchedule(ctx: OpContext, input: K.ScheduleSetInput, prior: store.ScheduleRow | null): Omit<store.ScheduleRow, "revision" | "cursor" | "cursorAt" | "temporalState" | "temporalError" | "staleReason" | "createdAt" | "updatedAt" | "id"> {
     const workflowId = prior?.workflowId ?? input.workflowId;
     if (prior && input.workflowId !== prior.workflowId) throw new EngineError("validation_failed", "A schedule keeps its workflow. Create a new schedule for another workflow.", 422);
     const act = store.activeActivation(ctx.db, workflowId);
@@ -122,7 +158,8 @@ export function engineHandlers(manifest: { companions?: Companions }) {
     const versionPin = input.versionPin === undefined ? (prior?.versionPin ?? null) : input.versionPin;
     if (versionPin !== null) {
       const a = store.getActivation(ctx.db, workflowId, versionPin);
-      if (!a || a.state === "deactivated") throw new EngineError("not_activated", `Version ${versionPin} of ${workflowId} is not activated.`, 409);
+      // F3: only the ACTIVE version starts runs, so a pin may name the active version only
+      if (!a || a.state !== "active") throw new EngineError("not_activated", `Version ${versionPin} of ${workflowId} is not the active version; a schedule can follow the active version or pin it.`, 409);
     }
     const def = mustDefinition(ctx, workflowId, versionPin ?? act.version);
     const c: WorkflowContract = def.contract;
@@ -155,6 +192,11 @@ export function engineHandlers(manifest: { companions?: Companions }) {
     const v = validateAgainstSchema((c.inputs ?? { type: "object", additionalProperties: false }) as never, inputObj as never);
     if (!v.ok) throw new EngineError("validation_failed", `The schedule input does not fit the workflow inputs: ${v.errors.map((e) => `${e.path || "/"} ${e.message}`).join("; ")}`, 422);
     return { workflowId, versionPin, kind, spec, input: inputObj, poll, overlap: input.overlap ?? prior?.overlap ?? "skip", paused: input.paused ?? prior?.paused ?? false };
+  }
+
+  async function ioOf(temporalWorkflowId: string): Promise<Awaited<ReturnType<typeof readStepIo>>> {
+    const t = await getTemporal();
+    return t.connected ? readStepIo(t.client, temporalWorkflowId) : null;
   }
 
   async function mustTemporal(): Promise<Awaited<ReturnType<typeof getTemporal>>> {
@@ -206,11 +248,23 @@ export function engineHandlers(manifest: { companions?: Companions }) {
         const d = mustDefinition(ctx, input.workflowId, input.version);
         const r = validate(ctx, d.contract);
         if (!r.ok) failValidation(r);
-        const { activation, previous } = store.activate(ctx.db, d.workflowId, d.version, r.uses, Date.now());
+        // F4: a workflow step starts another workflow: the child must be ACTIVE now, and its ops are part of what the owner approves
+        const uses: OpUse[] = [...r.uses];
+        walkSteps(d.contract.steps, (s) => {
+          if (s.type !== "workflow") return;
+          const child = s.version !== undefined ? store.getActivation(ctx.db, s.workflow, s.version) : store.activeActivation(ctx.db, s.workflow);
+          if (!child || child.state !== "active") throw new EngineError("child_not_active", `The workflow ${s.workflow}${s.version !== undefined ? ` version ${s.version}` : ""} (step ${s.id}) is not active. Activate it first.`, 409);
+          for (const u of child.uses) {
+            const via = [...new Set([...(u.via ?? []), s.workflow])];
+            if (!uses.some((x) => x.product === u.product && x.op === u.op && JSON.stringify(x.via ?? []) === JSON.stringify(via))) uses.push({ ...u, steps: [s.id], via });
+          }
+        });
+        const { activation, previous } = store.activate(ctx.db, d.workflowId, d.version, uses, Date.now());
         const crud: Record<string, string[]> = {};
-        for (const u of r.uses) crud[u.product] = [...new Set([...(crud[u.product] ?? []), ...u.crud])].sort();
-        const scopes = [...new Map(r.uses.filter((u) => u.scopeType).map((u) => [`${u.product}/${u.scopeType}`, { product: u.product, scopeType: u.scopeType as string }])).values()];
-        return { workflowId: d.workflowId, version: d.version, previousVersion: previous, activatedAt: activation.activatedAt, ops: r.uses as OpUse[], activeVersion: d.version, usage: usageRows(r.uses), crud, scopes, warnings: r.warnings as ValidationIssue[], notice: GRANT_NOTICE } as unknown as K.WorkflowActivateOutput;
+        for (const u of uses) crud[u.product] = [...new Set([...(crud[u.product] ?? []), ...u.crud])].sort();
+        const scopes = [...new Map(uses.filter((u) => u.scopeType).map((u) => [`${u.product}/${u.scopeType}`, { product: u.product, scopeType: u.scopeType as string }])).values()];
+        const staleSchedules = await revalidateSchedules(ctx, d.workflowId);
+        return { workflowId: d.workflowId, version: d.version, previousVersion: previous, activatedAt: activation.activatedAt, ops: uses, activeVersion: d.version, usage: usageRows(uses), crud, scopes, staleSchedules, warnings: r.warnings as ValidationIssue[], notice: GRANT_NOTICE } as unknown as K.WorkflowActivateOutput;
       },
     }),
     [OP.workflowDeactivate]: eop<K.WorkflowDeactivateInput, K.WorkflowDeactivateOutput>({
@@ -249,7 +303,8 @@ export function engineHandlers(manifest: { companions?: Companions }) {
           const n = resolveSchedule(ctx, input, null);
           row = store.insertSchedule(ctx.db, { id: store.newScheduleId(now), ...n }, now);
         }
-        return viewOf(await pushToTemporal(ctx, row));
+        if (row.staleReason) store.setStale(ctx.db, row.id, null, now);
+        return viewOf(await pushToTemporal(ctx, store.getSchedule(ctx.db, row.id) as store.ScheduleRow));
       },
     }),
     [OP.schedulePause]: eop<K.SchedulePauseInput, K.SchedulePauseOutput>({
@@ -312,6 +367,21 @@ export function engineHandlers(manifest: { companions?: Companions }) {
         return { schedules: await Promise.all(rows.map((r, i) => viewOf(r, lives[i] ?? null))), temporalConnected: t.connected } as unknown as K.SchedulesListOutput;
       },
     }),
+    [OP.workflowRunNow]: eop<K.WorkflowRunNowInput, K.WorkflowRunNowOutput>({
+      redact: (i) => `Run ${i.workflowId} now`,
+      async run(input, ctx) {
+        const act = input.version === undefined || input.version === null ? store.activeActivation(ctx.db, input.workflowId) : store.getActivation(ctx.db, input.workflowId, input.version);
+        if (!act || act.state === "deactivated") throw new EngineError("not_activated", `${input.workflowId} has no activated version${input.version ? ` ${input.version}` : ""}. Activate one first.`, 409);
+        const def = mustDefinition(ctx, input.workflowId, act.version);
+        const inputs = (input.inputs ?? {}) as Record<string, Json>;
+        const merged = { ...(def.contract.triggers.flatMap((t) => (t.kind === "manual" ? [t.inputs ?? {}] : []))[0] ?? {}), ...inputs };
+        const v = validateAgainstSchema((def.contract.inputs ?? { type: "object", additionalProperties: false }) as never, merged as never);
+        if (!v.ok) throw new EngineError("validation_failed", `The run inputs do not fit the workflow inputs: ${v.errors.map((e) => `${e.path || "/"} ${e.message}`).join("; ")}`, 422);
+        await mustTemporal();
+        const started = await startRun({ workflowId: input.workflowId, version: act.version, input: inputs, maxRunMinutes: def.contract.limits?.maxRunMinutes });
+        return { runId: started.runId, workflowId: input.workflowId, version: act.version, temporalWorkflowId: started.temporalWorkflowId };
+      },
+    }),
     [OP.engineRunsList]: eop<K.EngineRunsListInput, K.EngineRunsListOutput>({
       async run(input, ctx) {
         return { runs: store.listRuns(ctx.db, { ...(input.workflowId ? { workflowId: input.workflowId } : {}), ...(input.version !== undefined ? { version: input.version } : {}), ...(input.status ? { status: input.status } : {}), ...(input.scheduleId ? { scheduleId: input.scheduleId } : {}), limit: input.limit ?? 50 }) } as unknown as K.EngineRunsListOutput;
@@ -335,7 +405,9 @@ export function engineHandlers(manifest: { companions?: Companions }) {
         const stages = new Map<string, string>();
         const def = r.run.version === null ? null : store.getDefinition(ctx.db, r.run.workflowId, r.run.version);
         if (def) walkSteps(def.contract.steps, (s) => (s.stage ? stages.set(s.id, s.stage) : undefined));
-        const steps = r.steps.map((s) => ({ ...s, attempt: s.attempts, stage: stages.get(s.stepId) ?? null }));
+        // C88: what each step got and gave comes from the Temporal history, only for the owner, never from app.db
+        const io = await ioOf(r.run.temporalWorkflowId);
+        const steps = r.steps.map((s) => ({ ...s, attempt: s.attempts, stage: stages.get(s.stepId) ?? null, ...(io?.[s.stepKey] ?? {}) }));
         return { run: r.run, steps, outputs } as unknown as K.EngineRunGetOutput;
       },
     }),

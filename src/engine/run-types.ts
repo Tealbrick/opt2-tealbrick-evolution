@@ -46,6 +46,8 @@ export interface ResumeState {
   loop?: { stepId: string; nextIndex: number; results: Json[] };
   executed: number;
   startedAtMs: number;
+  /** model tokens used so far in this run (limits.maxModelTokens) */
+  tokens?: number;
 }
 
 export interface RunResult {
@@ -109,6 +111,8 @@ export interface AppStepArgs extends StepRef {
   input: Json;
   maxAttempts: number;
   startedAtMs: number;
+  /** the owner approved this hold: repeat the SAME call (same input, same key) once */
+  afterHold?: string;
 }
 export type AppStepResult = { status: "ok"; output: Json } | { status: "held"; holdId: string; expiresAt: string };
 
@@ -130,15 +134,50 @@ export interface AiStepResult {
   tokensOut?: number;
 }
 
-export interface ApprovalArgs extends StepRef {
+/** Asks the owner in Inbox (`inbox_ask`, key wfrun:...). `purpose` approval = an approval step; on_fail = `onFail: "ask"`. */
+export interface ApprovalAskArgs extends StepRef {
   title: string;
   context: string;
   timeoutSec: number;
+  responses: ("approve" | "deny" | "clarify")[];
+  purpose: "approval" | "on_fail";
+  /** the n-th question for this step (on_fail: one per failure) */
+  askNo: number;
   startedAtMs: number;
 }
-export interface ApprovalResult {
-  response: string;
+export interface ApprovalAskResult {
+  itemId: string;
+  expiresAt: string;
+}
+export interface ApprovalPollArgs extends StepRef {
+  itemId: string;
+  purpose: "approval" | "on_fail";
+  /** the workflow saw the item expire locally: close the index row */
+  closeAs?: "expired";
+}
+/** Only `answered` with response `approve` is an approval (Inbox rule). */
+export interface ApprovalPollResult {
+  status: "open" | "answered" | "expired" | "unknown";
+  response: string | null;
   message: string | null;
+}
+
+export interface CheckActiveArgs {
+  workflowId: string;
+  version: number;
+  /** a workflow step: the child must be active */
+  child?: { workflowId: string; version: number | null };
+}
+
+export interface HoldCheckArgs extends StepRef {
+  product: string;
+  holdId: string;
+}
+/** pending = still waiting; approved / denied / expired = the owner (or the clock) decided; decided = the hold left the pending list
+ *  (fallback without tb.hold_status: the outcome is not known, repeat the call once); gone = the engine cannot see the hold. */
+export interface HoldCheckResult {
+  state: "pending" | "approved" | "denied" | "expired" | "decided" | "gone";
+  via: "hold_status" | "holds_pending";
 }
 
 export interface FinishArgs {
@@ -157,6 +196,8 @@ export interface RecordStepArgs extends StepRef {
   status: "running" | "completed" | "failed" | "skipped" | "waiting_hold" | "waiting_agent" | "waiting_owner";
   startedAtMs: number;
   endedAtMs?: number;
+  /** hold wait ended: how */
+  holdOutcome?: string;
   product?: string;
   op?: string;
   errorCode?: string;
@@ -174,10 +215,19 @@ export interface Activities {
   pollCheck(a: PollArgs): Promise<PollResult>;
   appStep(a: AppStepArgs): Promise<AppStepResult>;
   aiStep(a: AiStepArgs): Promise<AiStepResult>;
-  approvalStep(a: ApprovalArgs): Promise<ApprovalResult>;
+  approvalAsk(a: ApprovalAskArgs): Promise<ApprovalAskResult>;
+  approvalPoll(a: ApprovalPollArgs): Promise<ApprovalPollResult>;
+  holdCheck(a: HoldCheckArgs): Promise<HoldCheckResult>;
+  checkActive(a: CheckActiveArgs): Promise<void>;
   finishRun(a: FinishArgs): Promise<void>;
 }
 export interface LocalActivities {
   recordStep(a: RecordStepArgs): Promise<void>;
   validateOutput(a: ValidateOutputArgs): Promise<{ ok: boolean; message?: string }>;
+}
+
+/** The hard ceiling Temporal enforces on a whole run (every continue-as-new run included): maxRunMinutes of working time plus 30 days
+ *  for the owner's waits (holds, approvals), which do not count as working time. The interpreter enforces maxRunMinutes itself. */
+export function executionCeilingMs(maxRunMinutes: number | undefined): number {
+  return ((maxRunMinutes ?? 60) + 30 * 24 * 60) * 60_000;
 }

@@ -335,25 +335,6 @@ test("a deactivated workflow cannot start, and a run in flight fails at its next
   assert.equal(calls("knowledge", "recall"), 0);
 });
 
-test("a held answer is recorded as waiting_hold and onFail decides (M1 does not wait)", async () => {
-  reset();
-  t.apps.on["knowledge.recall"] = () => ({});
-  t.apps.held["kanban.issue_create"] = "hld_01";
-  const stop = install([read("before"), write("send")]);
-  const f = await failure(t.run({ workflowId: stop, runId: "run_hold" }));
-  assert.equal(f.code, "held");
-  const s = indexOf(t.db, stop, "run_hold").steps.find((x) => x.step_id === "send");
-  assert.deepEqual([s?.status, s?.hold_id], ["waiting_hold", "hld_01"]);
-  assert.ok(Number(s?.hold_started_at) > 0);
-  assert.equal(indexOf(t.db, stop, "run_hold").run?.held_waits, 1);
-  assert.equal(indexOf(t.db, stop, "run_hold").run?.status, "failed");
-  const cont = install([write("send", { onFail: "continue" }), read("after")], { outputs: { sent: "$steps.send.output" } });
-  const ok = await t.run({ workflowId: cont });
-  assert.equal(ok.status, "completed");
-  assert.equal(ok.outputs.sent, null, "a skipped step has a null output");
-  delete t.apps.held["kanban.issue_create"];
-});
-
 test("onFail continue keeps the run going with a null output; the step is recorded as failed", async () => {
   reset();
   t.apps.on["knowledge.recall"] = () => {
@@ -423,12 +404,6 @@ test("ai step with an agent and no port registered: a clear code, not a hang", a
   }
 });
 
-test("approval steps are M2: they fail with not_implemented (and onFail continue is not offered for them)", async () => {
-  const id = install([{ id: "ok", type: "approval", title: "Send {{ $trigger.date }}?", timeoutSec: 3600 }]);
-  const f = await failure(t.run({ workflowId: id }));
-  assert.equal(f.code, "not_implemented");
-});
-
 test("a workflow step runs another workflow as a child (depth 1) and returns its outputs", async () => {
   reset();
   t.apps.on["knowledge.recall"] = (i) => ({ q: (i as { query: string }).query });
@@ -482,6 +457,33 @@ test("poll trigger: an unchanged cursor ends the run early with no index row; a 
   assert.equal(third.status, "completed");
   assert.equal(store.getSchedule(t.db, sid)?.cursor, "h2");
   assert.equal(t.db.prepare("SELECT count(*) AS c FROM engine_runs WHERE workflow_id = ?").get(id)?.c, 2);
+});
+
+test("F7: a poll cursor moves only when the run it started COMPLETED; a failed run leaves it, so the change is seen again", async () => {
+  reset();
+  const id = install([{ id: "boom", type: "app", product: "kanban", op: "issue_create", input: { title: "t" } }], {
+    triggers: [{ kind: "poll", product: "knowledge", op: "recall", input: { query: "inbox" }, cursorPath: "/cursor", every: "5m" }],
+  });
+  const sid = "sch_poll7";
+  t.db
+    .prepare("INSERT INTO engine_schedules (id, workflow_id, kind, spec, input, poll, paused, revision, created_at, updated_at) VALUES (?, ?, 'poll', ?, '{}', ?, 0, 1, 1, 1)")
+    .run(sid, id, JSON.stringify({ every: "5m", timezone: "UTC" }), JSON.stringify({ product: "knowledge", op: "recall", input: { query: "inbox" }, cursorPath: "/cursor" }));
+  t.apps.on["knowledge.recall"] = () => ({ cursor: "c1" });
+  t.apps.on["kanban.issue_create"] = () => {
+    throw new TbError("validation_failed", "bad", 422);
+  };
+  const trigger = { kind: "poll" as const, scheduleId: sid, timezone: "UTC", input: {} };
+  const f = await failure(t.run({ workflowId: id, runId: "run_p7a", trigger }));
+  assert.equal(f.code, "validation_failed");
+  const row = store.getSchedule(t.db, sid);
+  assert.equal(row?.cursor, null, "the failed run did not move the cursor");
+  // the same change is seen again by the next poll and runs again
+  t.apps.on["kanban.issue_create"] = () => ({ issue: { id: "ok" } });
+  const again = await t.run({ workflowId: id, runId: "run_p7b", trigger });
+  assert.equal(again.status, "completed", "not skipped: the cursor never moved");
+  assert.equal(store.getSchedule(t.db, sid)?.cursor, "c1", "the completed run committed it");
+  const third = await t.run({ workflowId: id, runId: "run_p7c", trigger });
+  assert.equal(third.status, "skipped");
 });
 
 test("a step whose output is bigger than the engine keeps fails with output_too_large (the answer is not stored in Temporal history)", async () => {

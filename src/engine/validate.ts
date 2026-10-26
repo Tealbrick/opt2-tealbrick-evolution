@@ -16,6 +16,7 @@ import { CONTRACT_SCHEMA, LIMITS } from "./contract-schema.ts";
 import { checkExpr, ExprError, exprRefs, hasTemplate, type PathSeg, parseRef, parseTemplate, type Ref, type ValueExpr } from "./expr.ts";
 import type { Json, JsonObject } from "./json.ts";
 import { MODEL_ROLES } from "./model-roles.ts";
+import { TEXT_ROLES } from "./model-text-roles.ts";
 import { clash, type Schema, schemaAt, schemaOfLiteral, typesOf } from "./schema-types.ts";
 import { opOfTransform, TRANSFORM_OPS } from "./transform.ts";
 
@@ -41,6 +42,8 @@ export interface OpUse {
   steps: string[];
   /** a dynamic op (Connect `tools`): the tool names the workflow calls; the engine refuses any other tool */
   tools?: string[];
+  /** F4: listed because a CHILD workflow calls it (workflow step); the engine never lets the parent's own steps use these */
+  via?: string[];
 }
 
 export interface ValidationResult {
@@ -415,6 +418,8 @@ export function validateContract(contract: unknown, opts: ValidateOptions = {}):
         out = checkWorkflow(s, sc, path);
         break;
     }
+    // approval steps and `onFail: "ask"` ask the owner through Inbox: the engine needs inbox_ask / inbox_status in the activated list
+    if (s.type === "approval" || ("onFail" in s && s.onFail === "ask")) needInbox(s.id, path);
     stepTypes[s.id] = out;
     sc.steps.set(s.id, out);
   }
@@ -457,6 +462,7 @@ export function validateContract(contract: unknown, opts: ValidateOptions = {}):
   function checkAi(s: AiStep, sc: SScope, path: string): Schema {
     if ("role" in s.by) {
       if (!roles.includes(s.by.role)) err("unknown_model_role", `${path}/by/role`, `"${s.by.role}" is not a model role (${roles.join(", ")})`, s.id);
+      else if (!TEXT_ROLES.includes(s.by.role)) warn("model_role_not_text", `${path}/by/role`, `${s.by.role} is not a text role: the engine runs reasoning, utility, dreaming and summarize steps; this step would fail with model_role_unsupported`, s.id);
     }
     if (hasTemplate(s.instruction)) refsOk(s.instruction, sc, `${path}/instruction`, s.id);
     for (const [name, v] of Object.entries(s.inputs ?? {})) {
@@ -470,10 +476,17 @@ export function validateContract(contract: unknown, opts: ValidateOptions = {}):
     return s.outputSchema;
   }
 
+  function needInbox(stepId: string, path: string): void {
+    for (const opId of ["inbox_ask", "inbox_status"]) {
+      const op = checkTargetOp("inbox", opId, path, stepId);
+      if (op) addUse(op, "inbox", stepId, undefined);
+    }
+  }
+
   function checkApproval(s: ApprovalStep, sc: SScope, path: string): Schema {
     refsOk(s.title, sc, `${path}/title`, s.id);
     if (s.context) refsOk(s.context, sc, `${path}/context`, s.id);
-    return { type: "object", required: ["response", "message"], properties: { response: { enum: ["approve", "deny", "answer", "clarify"] }, message: { type: ["string", "null"] } } };
+    return { type: "object", required: ["response", "message"], properties: { response: { enum: ["approve", "deny", "answer", "clarify", "expired"] }, message: { type: ["string", "null"] } } };
   }
 
   function checkTimer(s: TimerStep, sc: SScope, path: string): Schema {

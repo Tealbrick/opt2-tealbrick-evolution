@@ -9,7 +9,7 @@ import { manifest } from "../../src/app.ts";
 import * as store from "../../src/engine/engine-store.ts";
 import { engineHandlers } from "../../src/engine/ops.ts";
 import { reconcile } from "../../src/engine/reconcile.ts";
-import { everyMs, scheduleAction, scheduleIdOf, toScheduleSpec } from "../../src/engine/schedules.ts";
+import { everyMs, scheduleAction, scheduleIdOf, syncAndRecord, toScheduleSpec } from "../../src/engine/schedules.ts";
 import { setTemporalClientForTests } from "../../src/engine/temporal.ts";
 import { call, ctxFor, OWNER } from "../helpers.ts";
 import { type Env, indexOf, read, startEnv, wf } from "./harness.ts";
@@ -234,4 +234,62 @@ test("reconcile records the failure code of a run that failed in Temporal but ne
   await reconcile(t.db, t.client);
   const run = indexOf(t.db, id, "run_boom").run;
   assert.deepEqual([run?.status, run?.error_code], ["failed", "timer_until_invalid"]);
+});
+
+// ───────────────────────────── review fixes F3, F6 ─────────────────────────────
+
+test("F3: a schedule may pin the ACTIVE version only; a replaced version starts nothing, also from a schedule", async () => {
+  const id = install();
+  t.install(wf([read("a")], { id, version: 2, title: "v2" }));
+  await assert.rejects(op("schedule_set", { workflowId: id, versionPin: 1, cron: "0 3 * * *", timezone: "UTC" }), (e: unknown) => e instanceof TbError && e.code === "not_activated" && e.httpStatus === 409);
+  const pinned = await op<Sched>("schedule_set", { workflowId: id, versionPin: 2, cron: "0 3 * * *", timezone: "UTC" });
+  assert.equal(pinned.live?.state, "ok");
+  // a schedule row that still pins the old version (made before the fix, or a restore) fails its run, not silently
+  const stale = await op<Sched>("schedule_set", { workflowId: id, cron: "0 4 * * *", timezone: "UTC" });
+  t.db.prepare("UPDATE engine_schedules SET version_pin = 1 WHERE id = ?").run(stale.id);
+  await syncAndRecord(t.db, t.client, store.getSchedule(t.db, stale.id) as store.ScheduleRow, Date.now());
+  await op("schedule_run_now", { id: stale.id });
+  let wid = "";
+  await waitFor(async () => {
+    for await (const w of t.client.workflow.list({ query: `WorkflowId STARTS_WITH "evo:${id}:${stale.id}"` })) wid = w.workflowId;
+    return wid !== "";
+  });
+  const err = await t.client.workflow.getHandle(wid).result().then(
+    () => null,
+    (e: unknown) => e as { cause?: { type?: string } },
+  );
+  assert.equal(err?.cause?.type, "version_not_active", "the run of the replaced version is refused at its start");
+  assert.equal(t.db.prepare("SELECT count(*) AS c FROM engine_runs WHERE workflow_id = ? AND schedule_id = ?").get(id, stale.id)?.c, 0);
+});
+
+test("F6: activating a newer version checks the schedules again: one that still fits follows it, one that does not is paused and stale with the reason; a pin on the old version is stale", async () => {
+  const id = `f6-flow-${++n}`;
+  t.install(wf([read("a")], { id, version: 1, inputs: { type: "object", properties: { account: { type: "string" } } }, triggers: [{ kind: "manual" }, { kind: "schedule", cron: "0 8 * * *", timezone: "UTC" }] }));
+  const follows = await op<Sched & { input: Record<string, unknown> }>("schedule_set", { workflowId: id, input: { account: "acc1" } });
+  const second = await op<Sched>("schedule_set", { workflowId: id, cron: "0 9 * * *", timezone: "UTC", input: { account: "acc2" } });
+  const pinned = await op<Sched>("schedule_set", { workflowId: id, versionPin: 1, cron: "0 10 * * *", timezone: "UTC", input: { account: "acc3" } });
+  // v2 changes the inputs: `region` is now required and the schedules do not give it; the account field keeps its type
+  await call(H, "workflow_contract_save", { contract: wf([read("a")], { id, version: 2, inputs: { type: "object", required: ["region"], additionalProperties: false, properties: { account: { type: "string" }, region: { type: "string" } } }, triggers: [{ kind: "manual" }, { kind: "schedule", cron: "0 8 * * *", timezone: "UTC" }] }) }, ctx());
+  const act = await op<{ staleSchedules: { id: string; reason: string }[] }>("workflow_activate", { workflowId: id, version: 2 });
+  assert.deepEqual(act.staleSchedules.map((x) => x.id).sort(), [follows.id, second.id, pinned.id].sort());
+  const reasonOf = (sid: string) => act.staleSchedules.find((x) => x.id === sid)?.reason ?? "";
+  assert.match(reasonOf(follows.id), /region/);
+  assert.match(reasonOf(pinned.id), /not the active version/);
+  for (const s of [follows, second, pinned]) {
+    const row = store.getSchedule(t.db, s.id);
+    assert.equal(row?.paused, true, "a stale schedule is paused");
+    assert.ok(row?.staleReason);
+    assert.equal((await t.client.schedule.getHandle(scheduleIdOf(s.id)).describe()).state.paused, true, "also in Temporal");
+  }
+  const list = await op<{ schedules: (Sched & { stale: string | null })[] }>("schedules_list", { workflowId: id });
+  assert.ok(list.schedules.every((s) => s.stale));
+  // the owner edits it: it fits again, the stale flag goes (it stays paused until resumed)
+  const fixed = await op<Sched & { stale: string | null }>("schedule_set", { id: follows.id, revision: store.getSchedule(t.db, follows.id)?.revision, workflowId: id, input: { account: "acc1", region: "eu" } });
+  assert.equal(fixed.stale, null);
+  assert.equal(fixed.paused, true);
+  // v3 is compatible: a schedule that fits follows it and is NOT stale
+  await call(H, "workflow_contract_save", { contract: wf([read("a")], { id, version: 3, inputs: { type: "object", additionalProperties: false, properties: { account: { type: "string" }, region: { type: "string" } } }, triggers: [{ kind: "manual" }, { kind: "schedule", cron: "0 8 * * *", timezone: "UTC" }] }) }, ctx());
+  const act3 = await op<{ staleSchedules: { id: string }[] }>("workflow_activate", { workflowId: id, version: 3 });
+  assert.ok(!act3.staleSchedules.some((x) => x.id === follows.id), "it still fits");
+  assert.equal(store.getSchedule(t.db, follows.id)?.staleReason, null);
 });

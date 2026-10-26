@@ -40,7 +40,8 @@ test("quiet on good: example A and B validate (companions of this app checked); 
   );
   assert.deepEqual(
     b.uses.map((u) => `${u.product}.${u.op}`),
-    ["connect.tools", "knowledge.recall"],
+    ["connect.tools", "inbox.inbox_ask", "inbox.inbox_status", "knowledge.recall"],
+    "the approval step needs the two Inbox ops in the activated list",
   );
   assert.equal(b.uses.find((u) => u.op === "recall")?.crud.join(), "read");
 });
@@ -216,8 +217,10 @@ test("M-CP-2: the superset companion block equals the union of its ops' crud, ch
   assert.equal(v.ok, true, JSON.stringify(v.ok ? [] : v.errors));
   assert.deepEqual(
     (manifest.companions ?? []).map((c) => c.product),
-    [...COMPANION_PRODUCTS],
+    [...COMPANION_PRODUCTS, "*"],
+    "the five apps and the wildcard tb.holds_pending (owner consent, read): never tb.hold_status (Core pin pending)",
   );
+  assert.deepEqual((manifest.companions ?? []).find((c) => c.product === "*")?.operations, ["tb.holds_pending"]);
   // the block in the manifest is the one the sync script derives from the snapshot (no hand edit)
   assert.deepEqual(
     JSON.parse(JSON.stringify(manifest.companions)),
@@ -225,7 +228,7 @@ test("M-CP-2: the superset companion block equals the union of its ops' crud, ch
   );
   // least privilege: no destructive, outward or money op; Connect only reads + tools; never item_decide_dm
   const cat = bundledCatalog();
-  for (const c of manifest.companions ?? []) for (const id of c.operations) assert.ok(["read", "write"].includes(cat[c.product]?.operations.find((o) => o.id === id)?.effect ?? "?"), `${c.product}.${id}`);
+  for (const c of (manifest.companions ?? []).filter((x) => x.product !== "*")) for (const id of c.operations) assert.ok(["read", "write"].includes(cat[c.product]?.operations.find((o) => o.id === id)?.effect ?? "?"), `${c.product}.${id}`);
   assert.ok(!(manifest.companions ?? []).find((c) => c.product === "inbox")?.operations.includes("item_decide_dm"));
   assert.deepEqual((manifest.companions ?? []).find((c) => c.product === "connect")?.crud, ["read"]);
   // a drifted block fails: add a destructive op

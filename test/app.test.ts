@@ -49,7 +49,7 @@ test("agents suggest, read, and claim/report their runs; deciding, editing, prom
   // C367: the superset companion block (ENGINE-BUILD §4); the detector and the run issues still need these four Task Board ops
   const kanban = manifest.companions?.find((c) => c.product === "kanban");
   for (const id of ["issues_list", "issue_create", "issue_complete", "issue_block"]) assert.ok(kanban?.operations.includes(id), `kanban.${id}`);
-  assert.deepEqual(manifest.companions?.map((c) => c.product), ["kanban", "knowledge", "inbox", "rules", "connect"]);
+  assert.deepEqual(manifest.companions?.map((c) => c.product), ["kanban", "knowledge", "inbox", "rules", "connect", "*"]);
 });
 
 test("boots on the SDK, serves derived routes, refuses agent calls without a bridge", async (t) => {

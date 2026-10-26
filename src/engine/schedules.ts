@@ -8,7 +8,7 @@ import type { Db } from "@opt2-tealbrick/miniapp-sdk";
 import { type Client, type ScheduleDescription, ScheduleNotFoundError, type ScheduleOptions, ScheduleOverlapPolicy, type ScheduleSpec } from "@temporalio/client";
 import * as store from "./engine-store.ts";
 import type { RunInput } from "./run-types.ts";
-import { TASK_QUEUE, WORKFLOW_TYPE } from "./run-types.ts";
+import { executionCeilingMs, TASK_QUEUE, WORKFLOW_TYPE } from "./run-types.ts";
 
 export const scheduleIdOf = (id: string): string => `evo-sched:${id}`;
 
@@ -28,7 +28,7 @@ export function toScheduleSpec(spec: store.ScheduleSpecRow): ScheduleSpec {
   throw new Error("a schedule needs cron or every");
 }
 
-export function scheduleAction(row: store.ScheduleRow): NonNullable<ScheduleOptions["action"]> {
+export function scheduleAction(row: store.ScheduleRow, executionTimeoutMs?: number): NonNullable<ScheduleOptions["action"]> {
   const args: RunInput = {
     workflowId: row.workflowId,
     version: row.versionPin,
@@ -42,15 +42,17 @@ export function scheduleAction(row: store.ScheduleRow): NonNullable<ScheduleOpti
     taskQueue: TASK_QUEUE,
     workflowId: `evo:${row.workflowId}:${row.id}`,
     args: [args],
+    // F2: a hard ceiling for the whole run, so a run that wedges ends
+    ...(executionTimeoutMs ? { workflowExecutionTimeout: executionTimeoutMs } : {}),
     memo: { scheduleId: row.id, evolutionWorkflowId: row.workflowId },
   };
 }
 
-function options(row: store.ScheduleRow, note: string): ScheduleOptions {
+function options(row: store.ScheduleRow, note: string, timeoutMs?: number): ScheduleOptions {
   return {
     scheduleId: scheduleIdOf(row.id),
     spec: toScheduleSpec(row.spec),
-    action: scheduleAction(row),
+    action: scheduleAction(row, timeoutMs),
     policies: {
       overlap: row.overlap === "buffer_one" ? ScheduleOverlapPolicy.BUFFER_ONE : ScheduleOverlapPolicy.SKIP,
       catchupWindow: "1h",
@@ -63,18 +65,18 @@ function options(row: store.ScheduleRow, note: string): ScheduleOptions {
 }
 
 /** Creates the Temporal Schedule of a row, or updates it when it exists (idempotent: the reconcile job uses it too). */
-export async function syncSchedule(client: Client, row: store.ScheduleRow): Promise<"created" | "updated"> {
+export async function syncSchedule(client: Client, row: store.ScheduleRow, timeoutMs?: number): Promise<"created" | "updated"> {
   const handle = client.schedule.getHandle(scheduleIdOf(row.id));
   try {
     await handle.describe();
   } catch (e) {
     if (e instanceof ScheduleNotFoundError) {
-      await client.schedule.create(options(row, row.paused ? "Created paused by Evolving Workflows." : "Created by Evolving Workflows."));
+      await client.schedule.create(options(row, row.paused ? "Created paused by Evolving Workflows." : "Created by Evolving Workflows.", timeoutMs));
       return "created";
     }
     throw e;
   }
-  const o = options(row, "Updated by Evolving Workflows.");
+  const o = options(row, "Updated by Evolving Workflows.", timeoutMs);
   await handle.update((prev) => ({ ...prev, spec: o.spec, action: o.action as never, policies: { ...prev.policies, ...o.policies }, state: { ...prev.state, paused: row.paused, note: o.state?.note } }));
   return "updated";
 }
@@ -137,7 +139,9 @@ export async function describeSchedule(client: Client, id: string): Promise<Sche
 /** Marks a row `synced` or `error` after a sync attempt. */
 export async function syncAndRecord(db: Db, client: Client, row: store.ScheduleRow, now: number): Promise<void> {
   try {
-    await syncSchedule(client, row);
+    const version = row.versionPin ?? store.activeActivation(db, row.workflowId)?.version ?? store.latestVersion(db, row.workflowId);
+    const def = version === null ? null : store.getDefinition(db, row.workflowId, version);
+    await syncSchedule(client, row, executionCeilingMs(def?.contract.limits?.maxRunMinutes));
     store.setScheduleSync(db, row.id, "synced", null, now);
   } catch (e) {
     store.setScheduleSync(db, row.id, "error", e instanceof Error ? e.message : String(e), now);

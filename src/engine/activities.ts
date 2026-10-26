@@ -13,9 +13,15 @@ import { currentCatalog, findOp } from "./catalog.ts";
 import { walkSteps } from "./contract.ts";
 import * as store from "./engine-store.ts";
 import type { Json } from "./json.ts";
-import type { Activities, AiStepArgs, AiStepResult, ApprovalArgs, ApprovalResult, AppStepArgs, AppStepResult, FinishArgs, LocalActivities, PollArgs, PollResult, PrepareArgs, Prepared, RecordStepArgs, TriggerInfo, ValidateOutputArgs } from "./run-types.ts";
+import { ModelError } from "./models.ts";
+import type { Activities, AiStepArgs, AiStepResult, ApprovalAskArgs, ApprovalAskResult, ApprovalPollArgs, ApprovalPollResult, AppStepArgs, AppStepResult, CheckActiveArgs, FinishArgs, HoldCheckArgs, HoldCheckResult, LocalActivities, PollArgs, PollResult, PrepareArgs, Prepared, RecordStepArgs, StepRef, TriggerInfo, ValidateOutputArgs } from "./run-types.ts";
 
-export type CallApp = (product: string, op: string, input: Json, opts?: { idempotencyKey?: string }) => Promise<CompanionResult>;
+/** `context` is sent only when the bridge declares the cap `app_call_context` (P4); the SDK of this build ignores it otherwise. */
+export type CallApp = (product: string, op: string, input: Json, opts?: { idempotencyKey?: string; context?: Record<string, Json> }) => Promise<CompanionResult>;
+
+/** Bridge capabilities the engine reads (ctx.bridgeCaps()): advisory, never a grant. */
+export const CAP_HOLD_STATUS = "app_hold_status";
+export const CAP_CALL_CONTEXT = "app_call_context";
 
 export interface EngineDeps {
   db: Db;
@@ -26,6 +32,8 @@ export interface EngineDeps {
   agentPort?: () => AgentStepPort;
   /** default: the registered model port (M2) */
   models?: () => ModelPort;
+  /** the capabilities of the current slice's bridge (`ctx.bridgeCaps()`); default none */
+  bridgeCaps?: () => readonly string[];
 }
 
 const MAX_OUTPUT_BYTES = 1_500_000;
@@ -36,15 +44,16 @@ export function permanent(type: string, message: string): ApplicationFailure {
 }
 
 /** Idempotency key of an `app` call (§3): wfrun:<workflowId>:<runId>:<stepId>[:<i>]. Over 128 characters it is hashed (the SDK allows 8..128). */
-export function idempotencyKey(workflowId: string, runId: string, stepId: string, loopPath: readonly number[]): string {
-  const key = `wfrun:${workflowId}:${runId}:${stepId}${loopPath.length ? `:${loopPath.join(".")}` : ""}`;
+export function idempotencyKey(workflowId: string, runId: string, stepId: string, loopPath: readonly number[], suffix = ""): string {
+  const key = `wfrun:${workflowId}:${runId}:${stepId}${loopPath.length ? `:${loopPath.join(".")}` : ""}${suffix}`;
   return key.length <= 128 ? key : `wfrun:${createHash("sha256").update(key).digest("hex").slice(0, 60)}`;
 }
 
 function classify(e: unknown): ApplicationFailure {
   if (e instanceof TbError) {
     const transient = e.httpStatus >= 500 || e.httpStatus === 429 || e.httpStatus === 408 || e.code === "rate_limited" || e.code === "timeout";
-    return ApplicationFailure.create({ message: `${e.code}: ${e.message}`.slice(0, 300), type: e.code, nonRetryable: !transient });
+    // the code and the status only: the text of another app may hold its data, and a failure is stored in Temporal history
+    return ApplicationFailure.create({ message: `${e.code} (HTTP ${e.httpStatus})`, type: e.code, nonRetryable: !transient });
   }
   if (e instanceof ApplicationFailure) return e;
   return ApplicationFailure.create({ message: (e instanceof Error ? e.message : String(e)).slice(0, 300), type: "call_failed", nonRetryable: false });
@@ -82,6 +91,13 @@ export function pointerGet(v: unknown, pointer: string): unknown {
 export function createActivities(deps: EngineDeps): Activities & LocalActivities {
   const now = deps.now ?? Date.now;
   const { db } = deps;
+  const caps = (): readonly string[] => deps.bridgeCaps?.() ?? [];
+
+  /** callApp with the idempotency key and, behind the cap app_call_context, the call context (holds and receipts show the workflow). */
+  function invoke(product: string, op: string, input: Json, key: string, r: StepRef): Promise<CompanionResult> {
+    const context: Record<string, Json> | undefined = caps().includes(CAP_CALL_CONTEXT) ? { "evolution.workflow": r.workflowId, "evolution.version": r.version, "evolution.run": r.runId, "evolution.step": r.stepKey } : undefined;
+    return deps.callApp(product, op, input, { idempotencyKey: key, ...(context ? { context } : {}) });
+  }
 
   /** An activated version (active, or superseded with runs still finishing) may call; a deactivated or never activated one may not. */
   function activationFor(workflowId: string, version: number): store.Activation {
@@ -120,7 +136,10 @@ export function createActivities(deps: EngineDeps): Activities & LocalActivities
       if (version === null) throw permanent("not_activated", `${a.workflowId} has no active version. Activate a version first.`);
       const def = store.getDefinition(db, a.workflowId, version);
       if (!def) throw permanent("not_found", `No stored version ${version} of ${a.workflowId}.`);
-            activationFor(a.workflowId, version);
+            const act = activationFor(a.workflowId, version);
+      // F3: a version that a newer one replaced still lets its runs in flight finish (every call is checked against its own list),
+      // but it starts nothing new: not by hand, not by a pinned schedule, not as a child step
+      if (!a.resumed && act.state !== "active") throw permanent("version_not_active", `Version ${version} of ${a.workflowId} was replaced by a newer active version; it starts no new run.`);
       const c = def.contract;
 
       const timezone = a.trigger.timezone ?? c.triggers.flatMap((t) => (t.kind === "schedule" ? [t.timezone] : []))[0] ?? "UTC";
@@ -141,8 +160,8 @@ export function createActivities(deps: EngineDeps): Activities & LocalActivities
 
       db.transaction(() => {
         store.startRun(db, { workflowId: a.workflowId, runId: a.runId, version, scheduleId: a.trigger.scheduleId ?? null, temporalWorkflowId: a.temporalWorkflowId, temporalRunId: a.temporalRunId, triggerKind: a.trigger.kind, startedAt: a.startedAtMs }, now());
-        // the poll cursor moves together with the run that it starts (a retry of this activity does not lose a change)
-        if (a.trigger.kind === "poll" && a.trigger.scheduleId && a.trigger.cursor !== undefined && !a.resumed) store.setCursor(db, a.trigger.scheduleId, a.trigger.cursor, now());
+        // F7: the new cursor is pending until THIS run completes (engine-store finishRun); a failed run leaves the cursor, the change is seen again
+        if (a.trigger.kind === "poll" && a.trigger.scheduleId && a.trigger.cursor !== undefined && !a.resumed) store.setPendingCursor(db, a.trigger.scheduleId, a.runId, a.trigger.cursor);
       });
       return { version, contract: c, trigger, noRetry, startedAtMs: a.startedAtMs };
     },
@@ -181,7 +200,7 @@ export function createActivities(deps: EngineDeps): Activities & LocalActivities
         store.writeStep(db, { ...base, status: "failed", endedAt: now(), attempts, errorCode: "not_in_workflow" }, now());
         throw permanent("not_in_workflow", message);
       };
-      const use = act.uses.find((u) => u.product === a.product && u.op === a.op);
+      const use = act.uses.find((u) => u.product === a.product && u.op === a.op && !u.via);
       if (!use) return refuse(`${a.product}.${a.op} is not in the activated list of ${a.workflowId} v${a.version}. The owner activates a list; the engine refuses every other call.`);
       if (use.tools) {
         const tool = (a.input as { tool?: unknown } | null)?.tool;
@@ -190,7 +209,7 @@ export function createActivities(deps: EngineDeps): Activities & LocalActivities
       store.writeStep(db, { ...base, status: "running", attempts, inBytes: sizeOf(a.input) }, now());
       let r: CompanionResult;
       try {
-        r = await deps.callApp(a.product, a.op, a.input, { idempotencyKey: idempotencyKey(a.workflowId, a.runId, a.stepId, a.loopPath) });
+        r = await invoke(a.product, a.op, a.input, idempotencyKey(a.workflowId, a.runId, a.stepId, a.loopPath), a);
       } catch (e) {
         const f = classify(e);
         // the last attempt (or a refusal that no retry changes) closes the step row; an earlier one leaves it `running`
@@ -198,7 +217,12 @@ export function createActivities(deps: EngineDeps): Activities & LocalActivities
         throw f;
       }
       if (r.status === "held") {
-        // M1: only record it. The owner sees `waiting_hold` with the hold id; onFail decides. M2 waits for the decision.
+        if (a.afterHold) {
+          // the owner approved hold X and the repeated call is held AGAIN: the approval did not carry (the content changed): stop
+          store.writeStep(db, { ...base, status: "failed", endedAt: now(), attempts, errorCode: "held_again" }, now());
+          throw permanent("held_again", `The call was held again after the owner approved hold ${a.afterHold} (the request changed, or the approval was used).`);
+        }
+        // the owner sees `waiting_hold` with the hold id; the workflow waits durably and repeats the call once on approval
         store.writeStep(db, { ...base, status: "waiting_hold", attempts, hold: { id: r.holdId, startedAt: now() } }, now());
         return { status: "held", holdId: r.holdId, expiresAt: r.expiresAt };
       }
@@ -213,6 +237,7 @@ export function createActivities(deps: EngineDeps): Activities & LocalActivities
 
     // ── an `ai` step ──
     async aiStep(a: AiStepArgs): Promise<AiStepResult> {
+      activationFor(a.workflowId, a.version); // F4: deactivated mid-run -> nothing is offered or called
       const attempts = attemptNo();
       const base = { workflowId: a.workflowId, runId: a.runId, stepKey: a.stepKey, stepId: a.stepId, loopPath: a.loopPath, kind: "ai", startedAt: a.startedAtMs };
       store.writeStep(db, { ...base, status: "running", attempts, inBytes: sizeOf(a.inputs) }, now());
@@ -250,18 +275,113 @@ export function createActivities(deps: EngineDeps): Activities & LocalActivities
       try {
         res = await (deps.models ?? currentModelPort)().run({ role: a.by.role, instruction: a.instruction, inputs: a.inputs, outputSchema: a.outputSchema, maxTokens: Math.min(a.maxTokens ?? 4000, 4000), timeoutSec: a.timeoutSec });
       } catch (e) {
-        const code = e instanceof Error && e.message === "not_implemented" ? "not_implemented" : "model_failed";
-        store.writeStep(db, { ...base, status: "failed", endedAt: now(), attempts, errorCode: code }, now());
-        throw permanent(code, code === "not_implemented" ? "Model-role steps arrive with M2 (this build has no model call)." : "The model call failed.");
+        const code = e instanceof ModelError ? e.code : e instanceof Error && e.message === "not_implemented" ? "not_implemented" : "model_failed";
+        const retryable = e instanceof ModelError && e.retryable;
+        if (!retryable || attempts >= a.maxAttempts) store.writeStep(db, { ...base, status: "failed", endedAt: now(), attempts, errorCode: code }, now());
+        const message = e instanceof ModelError ? e.message : code === "not_implemented" ? "This build has no model call." : "The model call failed.";
+        throw ApplicationFailure.create({ message, type: code, nonRetryable: !retryable });
       }
       store.writeStep(db, { ...base, status: "completed", endedAt: now(), attempts, outBytes: sizeOf(res.output), tokensIn: res.tokensIn ?? null, tokensOut: res.tokensOut ?? null }, now());
       return { output: res.output, ...(res.tokensIn !== undefined ? { tokensIn: res.tokensIn } : {}), ...(res.tokensOut !== undefined ? { tokensOut: res.tokensOut } : {}) };
     },
 
-    // ── approval: M2 (Inbox inbox_ask + durable inbox_status poll) ──
-    async approvalStep(a: ApprovalArgs): Promise<ApprovalResult> {
-      store.writeStep(db, { workflowId: a.workflowId, runId: a.runId, stepKey: a.stepKey, stepId: a.stepId, loopPath: a.loopPath, kind: "approval", status: "failed", startedAt: a.startedAtMs, endedAt: now(), errorCode: "not_implemented" }, now());
-      throw permanent("not_implemented", "Approval steps arrive with M2.");
+    // ── approval (also the question of onFail "ask"): Inbox inbox_ask now, inbox_status polls from the workflow ──
+    async approvalAsk(a: ApprovalAskArgs): Promise<ApprovalAskResult> {
+      const act = activationFor(a.workflowId, a.version);
+      if (!act.uses.some((u) => u.product === "inbox" && u.op === "inbox_ask")) throw permanent("not_in_workflow", `inbox.inbox_ask is not in the activated list of ${a.workflowId} v${a.version}.`);
+      const attempts = attemptNo();
+      const base = { workflowId: a.workflowId, runId: a.runId, stepKey: a.stepKey, stepId: a.stepId, loopPath: a.loopPath, kind: a.purpose === "approval" ? "approval" : "app", startedAt: a.startedAtMs };
+      const key = idempotencyKey(a.workflowId, a.runId, a.stepId, a.loopPath, a.purpose === "approval" ? "" : `:ask${a.askNo}`);
+      let r: CompanionResult;
+      try {
+        r = await invoke("inbox", "inbox_ask", { title: a.title.slice(0, 200) || "Workflow question", kind: "approval", context: (a.context || "No details.").slice(0, 8000), responses: a.responses, expiresInS: Math.max(60, Math.min(a.timeoutSec, 2_592_000)) }, key, a);
+      } catch (e) {
+        const f = classify(e);
+        if (a.purpose === "approval" && (f.nonRetryable || attempts >= 5)) store.writeStep(db, { ...base, status: "failed", endedAt: now(), attempts, errorCode: f.type ?? "call_failed" }, now());
+        throw f;
+      }
+      if (r.status !== "ok") {
+        if (a.purpose === "approval") store.writeStep(db, { ...base, status: "failed", endedAt: now(), attempts, errorCode: "held" }, now());
+        throw permanent("held", "Inbox held the question for the owner; the engine cannot ask.");
+      }
+      const out = r.output as { itemId?: unknown; expiresAt?: unknown };
+      if (typeof out?.itemId !== "string") throw permanent("inbox_answer_invalid", "Inbox answered without an item id.");
+      // the owner is asked now: the step waits for the owner (the index shows it; a reply ends it)
+      if (a.purpose === "approval") store.writeStep(db, { ...base, status: "waiting_owner", attempts }, now());
+      return { itemId: out.itemId, expiresAt: typeof out.expiresAt === "string" ? out.expiresAt : new Date(now() + a.timeoutSec * 1000).toISOString() };
+    },
+
+    async approvalPoll(a: ApprovalPollArgs): Promise<ApprovalPollResult> {
+      const act = activationFor(a.workflowId, a.version);
+      if (!act.uses.some((u) => u.product === "inbox" && u.op === "inbox_status")) throw permanent("not_in_workflow", `inbox.inbox_status is not in the activated list of ${a.workflowId} v${a.version}.`);
+      let r: CompanionResult;
+      try {
+        r = await deps.callApp("inbox", "inbox_status", { itemId: a.itemId });
+      } catch (e) {
+        throw classify(e);
+      }
+      if (r.status !== "ok") throw permanent("held", "Inbox held the status call.");
+      const o = r.output as { status?: unknown; response?: unknown; message?: unknown };
+      const status = o.status === "open" || o.status === "answered" || o.status === "expired" || o.status === "unknown" ? o.status : "unknown";
+      // NEVER treat a missing, expired or unknown answer as approval (Inbox rule): only status answered carries a response
+      return { status, response: status === "answered" && typeof o.response === "string" ? o.response : null, message: typeof o.message === "string" ? o.message.slice(0, 1000) : null };
+    },
+
+    // ── a held app call: is the hold decided? tb.hold_status behind the bridge cap, else the tb.holds_pending list ──
+    async holdCheck(a: HoldCheckArgs): Promise<HoldCheckResult> {
+      const act = activationFor(a.workflowId, a.version);
+      if (!act.uses.some((u) => u.product === a.product)) throw permanent("not_in_workflow", `${a.product} is not in the activated list of ${a.workflowId} v${a.version}.`);
+      const end = (outcome: string): void => store.endHold(db, a.workflowId, a.runId, a.stepKey, outcome, now());
+      if (caps().includes(CAP_HOLD_STATUS)) {
+        let r: CompanionResult;
+        try {
+          r = await deps.callApp(a.product, "tb.hold_status", { holdId: a.holdId });
+        } catch (e) {
+          if (e instanceof TbError && e.code === "hold_not_found") return { state: "gone", via: "hold_status" };
+          throw classify(e);
+        }
+        const st = r.status === "ok" ? String((r.output as { status?: unknown }).status) : "held";
+        if (st === "held") return { state: "pending", via: "hold_status" };
+        if (st === "denied") {
+          end("denied");
+          return { state: "denied", via: "hold_status" };
+        }
+        if (st === "expired") {
+          end("expired");
+          return { state: "expired", via: "hold_status" };
+        }
+        // approved, run (the approval was used) or anything else decided: repeat the call; the key makes it safe
+        end("approved");
+        return { state: "approved", via: "hold_status" };
+      }
+      // fallback: the hold is pending while the instance lists it (read, owner consent). Gone from the list = decided or expired.
+      let cursor: string | undefined;
+      for (let page = 0; page < 20; page++) {
+        let r: CompanionResult;
+        try {
+          r = await deps.callApp(a.product, "tb.holds_pending", { limit: 100, ...(cursor ? { cursor } : {}) });
+        } catch (e) {
+          if (e instanceof TbError && (e.httpStatus === 403 || e.code === "not_in_workflow" || e.code === "grant_invalid")) throw permanent("hold_check_unavailable", `The engine may not read the pending holds of ${a.product} (the owner has not consented to tb.holds_pending).`);
+          throw classify(e);
+        }
+        if (r.status !== "ok") throw permanent("held", "The hold list call was held.");
+        const out = r.output as { items?: { id?: unknown }[]; nextCursor?: unknown };
+        if ((out.items ?? []).some((i) => i.id === a.holdId)) return { state: "pending", via: "holds_pending" };
+        if (typeof out.nextCursor !== "string" || !out.nextCursor) break;
+        cursor = out.nextCursor;
+      }
+      end("decided");
+      return { state: "decided", via: "holds_pending" };
+    },
+
+    /** F4: the parent (and the child it is about to start) must still be activated; the child must be ACTIVE (it starts a new run). */
+    async checkActive(a: CheckActiveArgs): Promise<void> {
+      activationFor(a.workflowId, a.version);
+      if (a.child) {
+        const v = a.child.version ?? store.activeActivation(db, a.child.workflowId)?.version ?? null;
+        const ca = v === null ? null : store.getActivation(db, a.child.workflowId, v);
+        if (!ca || ca.state !== "active") throw permanent("child_not_active", `The workflow ${a.child.workflowId} is not active, so a workflow step cannot start it.`);
+      }
     },
 
     async finishRun(a: FinishArgs): Promise<void> {

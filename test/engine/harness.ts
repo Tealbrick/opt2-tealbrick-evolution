@@ -40,16 +40,28 @@ export interface FakeApps {
   on: Record<string, (input: Json, n: number) => unknown>;
   /** "product.op" -> the bridge holds the call for the owner (answer {status:"held"}) */
   held: Record<string, string>;
+  /** "product.op" -> the first `times` calls are held with `holdId`, then the call runs */
+  heldFirst: Record<string, { holdId: string; times: number; expiresAt?: string; expiresInMs?: number }>;
+  /** the test server clock (time skipping moves it far ahead of the real clock) */
+  clock: () => Promise<number>;
+  /** the options of every call, in order */
+  options: (({ idempotencyKey?: string; context?: Record<string, Json> }) | undefined)[];
 }
 export function fakeApps(): FakeApps {
   const f: FakeApps = {
     calls: [],
     on: {},
     held: {},
+    heldFirst: {},
+    options: [],
+    clock: async () => Date.now(),
     callApp: async (product, op, input, opts) => {
       f.calls.push({ product, op, input, key: opts?.idempotencyKey });
+      f.options.push(opts);
       const hold = f.held[`${product}.${op}`];
-      if (hold) return { status: "held", holdId: hold, expiresAt: "2026-10-27T00:00:00Z" };
+      if (hold) return { status: "held", holdId: hold, expiresAt: "9999-12-31T00:00:00Z" };
+      const first = f.heldFirst[`${product}.${op}`];
+      if (first && f.calls.filter((c) => c.product === product && c.op === op).length <= first.times) return { status: "held", holdId: first.holdId, expiresAt: first.expiresInMs !== undefined ? new Date((await f.clock()) + first.expiresInMs).toISOString() : (first.expiresAt ?? "9999-12-31T00:00:00Z") };
       const h = f.on[`${product}.${op}`];
       if (!h) throw new Error(`no fake answer for ${product}.${op}`);
       const n = f.calls.filter((c) => c.product === product && c.op === op).length;
@@ -66,6 +78,8 @@ export interface Env {
   apps: FakeApps;
   worker: Worker;
   stop(): Promise<void>;
+  /** the bridge capabilities the activities see (mutate it in a test) */
+  caps: string[];
   /** run the workflow and wait for the result */
   run(input: Partial<RunInput> & { workflowId: string }): Promise<RunResult>;
   /** save + validate + activate a contract (returns the OpUse list) */
@@ -74,12 +88,14 @@ export interface Env {
 
 export async function startEnv(opts: {
   /** a real local dev server (schedules need it; the time-skipping server has none) */
-  local?: boolean; models?: (typeof import("../../src/engine/agent-port.ts"))["notImplementedModels"]; agentPort?: import("../../src/engine/agent-port.ts").AgentStepPort } = {}): Promise<Env> {
+  local?: boolean; models?: import("../../src/engine/agent-port.ts").ModelPort; agentPort?: import("../../src/engine/agent-port.ts").AgentStepPort } = {}): Promise<Env> {
   const env = opts.local ? await TestWorkflowEnvironment.createLocal() : await TestWorkflowEnvironment.createTimeSkipping();
   setTemporalClientForTests(env.client);
   const db = migratedDb();
   const apps = fakeApps();
-  const acts = createActivities({ db, callApp: apps.callApp, log: console as never, ...(opts.models ? { models: () => opts.models as never } : {}), ...(opts.agentPort ? { agentPort: () => opts.agentPort as never } : {}) });
+  apps.clock = () => env.currentTimeMs();
+  const caps: string[] = [];
+  const acts = createActivities({ db, callApp: apps.callApp, bridgeCaps: () => caps, log: console as never, ...(opts.models ? { models: () => opts.models as never } : {}), ...(opts.agentPort ? { agentPort: () => opts.agentPort as never } : {}) });
   const worker = await Worker.create({ connection: env.nativeConnection, taskQueue: TASK_QUEUE, workflowBundle: await workflowBundle(), activities: acts as never });
   const running = worker.run();
   const client = env.client;
@@ -88,6 +104,7 @@ export async function startEnv(opts: {
     client,
     db,
     apps,
+    caps,
     worker,
     async stop() {
       worker.shutdown();

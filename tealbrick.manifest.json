@@ -7818,6 +7818,12 @@
                   "items": {
                     "type": "string"
                   }
+                },
+                "via": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
                 }
               }
             }
@@ -8074,7 +8080,7 @@
     {
       "id": "workflow_activate",
       "title": "Activate a workflow version",
-      "description": "Activate a saved version. The answer lists every operation, CRUD action, scope type and tool the version uses. The engine refuses any other call of this workflow (not_in_workflow). The bridge limits Evolving Workflows as a whole; each workflow's own limit is enforced by the engine until per-workflow grants. A newer version replaces the active one; runs already started may finish. Owner only.",
+      "description": "Activate a saved version. The answer lists every operation, CRUD action, scope type and tool the version uses. The engine refuses any other call of this workflow (not_in_workflow). The bridge limits Evolving Workflows as a whole; each workflow's own limit is enforced by the engine until per-workflow grants. A newer version replaces the active one; runs already started may finish. Owner only. Schedules that follow the active version are checked again against the new version; one that no longer fits is paused and listed in staleSchedules with the reason. A workflow step that starts another workflow needs that workflow to be active; its operations are listed with via.",
       "input": {
         "type": "object",
         "additionalProperties": false,
@@ -8152,6 +8158,12 @@
                   }
                 },
                 "tools": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "via": {
                   "type": "array",
                   "items": {
                     "type": "string"
@@ -8272,6 +8284,31 @@
                   "items": {
                     "type": "string"
                   }
+                },
+                "via": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          },
+          "staleSchedules": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "id",
+                "reason"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "reason": {
+                  "type": "string"
                 }
               }
             }
@@ -8288,7 +8325,8 @@
           "warnings",
           "notice",
           "activeVersion",
-          "usage"
+          "usage",
+          "staleSchedules"
         ]
       },
       "crud": [
@@ -8580,6 +8618,12 @@
                 "type": "null"
               }
             ]
+          },
+          "stale": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -8601,7 +8645,8 @@
           "temporalError",
           "createdAt",
           "updatedAt",
-          "live"
+          "live",
+          "stale"
         ]
       },
       "crud": [
@@ -8799,6 +8844,12 @@
                 "type": "null"
               }
             ]
+          },
+          "stale": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [
@@ -8820,7 +8871,8 @@
           "temporalError",
           "createdAt",
           "updatedAt",
-          "live"
+          "live",
+          "stale"
         ]
       },
       "crud": [
@@ -9105,6 +9157,12 @@
                       "type": "null"
                     }
                   ]
+                },
+                "stale": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
                 }
               },
               "required": [
@@ -9126,7 +9184,8 @@
                 "temporalError",
                 "createdAt",
                 "updatedAt",
-                "live"
+                "live",
+                "stale"
               ]
             }
           },
@@ -9344,7 +9403,7 @@
     {
       "id": "engine_run_get",
       "title": "Workflow run",
-      "description": "One run with its step timeline (attempts, held waits, sizes, error codes) and, when it finished, its outputs. Owner only. The workflow id is optional: a run id is unique in practice.",
+      "description": "One run with its step timeline (attempts, held waits, sizes, error codes) and, when it finished, its outputs. Owner only. The workflow id is optional: a run id is unique in practice. Each step also carries input, output and error when Temporal still has the history (owner only; app.db keeps sizes, not bodies).",
       "input": {
         "type": "object",
         "additionalProperties": false,
@@ -9630,6 +9689,11 @@
                     "string",
                     "null"
                   ]
+                },
+                "input": {},
+                "output": {},
+                "error": {
+                  "type": "string"
                 }
               },
               "required": [
@@ -9679,6 +9743,68 @@
       "effect": "read",
       "idempotency": "none",
       "receipt": false,
+      "audience": "person"
+    },
+    {
+      "id": "workflow_run_now",
+      "title": "Run a workflow now",
+      "description": "Start one run of an activated workflow now (a manual trigger). Give the inputs the workflow declares; the run uses the active version unless you name another activated version. Owner only.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "workflowId"
+        ],
+        "properties": {
+          "workflowId": {
+            "type": "string",
+            "minLength": 3,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9_-]{2,63}$"
+          },
+          "version": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 1,
+            "maximum": 100000
+          },
+          "inputs": {
+            "type": "object"
+          }
+        }
+      },
+      "output": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "runId",
+          "workflowId",
+          "version",
+          "temporalWorkflowId"
+        ],
+        "properties": {
+          "runId": {
+            "type": "string"
+          },
+          "workflowId": {
+            "type": "string"
+          },
+          "version": {
+            "type": "integer"
+          },
+          "temporalWorkflowId": {
+            "type": "string"
+          }
+        }
+      },
+      "crud": [
+        "create"
+      ],
+      "effect": "write",
+      "idempotency": "required",
+      "receipt": true,
       "audience": "person"
     }
   ],
@@ -9806,6 +9932,16 @@
         "read"
       ],
       "purpose": "Approved workflow steps read connected services (mail, calendars, data) and call the tools the owner approved."
+    },
+    {
+      "product": "*",
+      "operations": [
+        "tb.holds_pending"
+      ],
+      "crud": [
+        "read"
+      ],
+      "purpose": "Lets a workflow wait for the owner to decide a held call: it reads which holds are still pending. Read only."
     }
   ],
   "needsAgentDirectory": true,
@@ -9823,5 +9959,42 @@
   "ui": {
     "launchPath": "/",
     "configurePath": "/configure"
+  },
+  "settings": {
+    "steps": [],
+    "modelRoles": [
+      {
+        "role": "reasoning",
+        "required": false,
+        "usedBy": [
+          "app"
+        ],
+        "help": "Used by workflow steps that write or decide (ai step with by role reasoning)."
+      },
+      {
+        "role": "utility",
+        "required": false,
+        "usedBy": [
+          "app"
+        ],
+        "help": "Used by workflow steps that classify or extract (ai step with by role utility)."
+      },
+      {
+        "role": "summarize",
+        "required": false,
+        "usedBy": [
+          "app"
+        ],
+        "help": "Used by workflow steps that summarise (ai step with by role summarize)."
+      },
+      {
+        "role": "dreaming",
+        "required": false,
+        "usedBy": [
+          "app"
+        ],
+        "help": "Used by workflow steps that need a long, free-form pass (ai step with by role dreaming)."
+      }
+    ]
   }
 }

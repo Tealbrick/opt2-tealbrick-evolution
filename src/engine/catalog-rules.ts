@@ -66,13 +66,23 @@ export interface CompanionEntry {
 
 const CRUD_ORDER: readonly CrudAction[] = ["read", "create", "update", "delete"];
 
-/** The `companions` block of the manifest, derived from the target apps: crud = the union of the listed ops' crud (M-CP-2). */
+/** The wildcard companion (M-CP-3): `tb.holds_pending`, read only, after the owner's consent. A held app step waits for the owner and the
+ *  engine reads which holds are still pending (the fallback when the bridge has no `app_hold_status`). */
+export const HOLDS_PENDING_COMPANION: CompanionEntry = {
+  product: "*",
+  operations: ["tb.holds_pending"],
+  crud: ["read"],
+  purpose: "Lets a workflow wait for the owner to decide a held call: it reads which holds are still pending. Read only.",
+};
+
+/** The `companions` block of the manifest, derived from the target apps: crud = the union of the listed ops' crud (M-CP-2), then the wildcard. */
 export function companionBlock(apps: TargetCatalog): CompanionEntry[] {
-  return COMPANION_PRODUCTS.flatMap((p) => {
+  const entries = COMPANION_PRODUCTS.flatMap((p) => {
     const app = apps[p];
     if (!app) return [];
     const ops = companionOps(app);
     const crud = CRUD_ORDER.filter((c) => ops.some((o) => o.crud.includes(c)));
     return [{ product: p, operations: ops.map((o) => o.id), crud: [...crud], purpose: PURPOSE[p] as string }];
   });
+  return [...entries, HOLDS_PENDING_COMPANION];
 }

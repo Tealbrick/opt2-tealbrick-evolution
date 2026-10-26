@@ -133,6 +133,8 @@ export interface ScheduleRow {
   cursorAt: string | null;
   temporalState: "pending" | "synced" | "missing" | "error";
   temporalError: string | null;
+  /** F6: why the schedule no longer fits the active version (it is paused until the owner edits it); null = fine */
+  staleReason: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -153,6 +155,7 @@ function toSchedule(r: Record<string, unknown>): ScheduleRow {
     cursorAt: iso(num(r.cursor_at)),
     temporalState: r.temporal_state as ScheduleRow["temporalState"],
     temporalError: str(r.temporal_error),
+    staleReason: str(r.stale_reason),
     createdAt: iso(Number(r.created_at)) as string,
     updatedAt: iso(Number(r.updated_at)) as string,
   };
@@ -170,7 +173,7 @@ export function listSchedules(db: Db, workflowId?: string): ScheduleRow[] {
   return rows.map(toSchedule);
 }
 
-export function insertSchedule(db: Db, s: Omit<ScheduleRow, "revision" | "cursor" | "cursorAt" | "temporalState" | "temporalError" | "createdAt" | "updatedAt">, now: number): ScheduleRow {
+export function insertSchedule(db: Db, s: Omit<ScheduleRow, "revision" | "cursor" | "cursorAt" | "temporalState" | "temporalError" | "staleReason" | "createdAt" | "updatedAt">, now: number): ScheduleRow {
   db.prepare(
     `INSERT INTO engine_schedules (id, workflow_id, version_pin, kind, spec, input, poll, overlap, paused, revision, created_at, updated_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
@@ -195,8 +198,13 @@ export function markScheduleDeleted(db: Db, id: string, now: number): void {
   db.prepare("UPDATE engine_schedules SET deleted_at = ?, updated_at = ? WHERE id = ?").run(now, now, id);
 }
 
-export function setCursor(db: Db, id: string, cursor: string, now: number): void {
-  db.prepare("UPDATE engine_schedules SET cursor = ?, cursor_at = ? WHERE id = ?").run(cursor.slice(0, 200), now, id);
+/** F7: the cursor of a poll is PENDING until the run it started completes (see finishRun). */
+export function setPendingCursor(db: Db, id: string, runId: string, cursor: string): void {
+  db.prepare("UPDATE engine_schedules SET pending_cursor = ?, pending_run_id = ? WHERE id = ?").run(cursor.slice(0, 200), runId, id);
+}
+
+export function setStale(db: Db, id: string, reason: string | null, now: number): void {
+  db.prepare("UPDATE engine_schedules SET stale_reason = ?, updated_at = ? WHERE id = ?").run(reason ? reason.slice(0, 300) : null, now, id);
 }
 
 // ───────────────────────────── run index ─────────────────────────────
@@ -341,6 +349,10 @@ export function finishRun(db: Db, f: { workflowId: string; runId: string; status
     `UPDATE engine_runs SET status = ?, ended_at = ?, error_code = ?, error_step = ?, skipped_reason = ?, output_bytes = ?, steps_done = ?, steps_failed = ?, held_waits = ?, held_wait_ms = ?, model_tokens = ?, updated_at = ?
       WHERE workflow_id = ? AND run_id = ? AND (status = 'running' OR source = 'reconcile')`,
   ).run(f.status, f.endedAt, f.errorCode ?? null, f.errorStep ?? null, f.skippedReason ?? null, f.outputBytes ?? null, Number(counts?.done ?? 0), Number(counts?.failed ?? 0), Number(counts?.holds ?? 0), Number(counts?.hold_ms ?? 0), Number(counts?.tokens ?? 0), now, f.workflowId, f.runId);
+  // F7: a poll's cursor moves only when the run it started completed
+  if (f.status === "completed") {
+    db.prepare("UPDATE engine_schedules SET cursor = pending_cursor, cursor_at = ?, pending_cursor = NULL, pending_run_id = NULL WHERE pending_run_id = ? AND id = (SELECT schedule_id FROM engine_runs WHERE workflow_id = ? AND run_id = ?)").run(now, f.runId, f.workflowId, f.runId);
+  }
 }
 
 export interface StepWrite {
