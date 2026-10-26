@@ -11,7 +11,7 @@ import { manifest } from "../../src/app.ts";
 import type { AgentStepOffer, ModelPort, ModelRequest, ModelResponse } from "../../src/engine/agent-port.ts";
 import type { WorkflowContract } from "../../src/engine/contract.ts";
 import { validateContract } from "../../src/engine/validate.ts";
-import { type Env, indexOf, startEnv } from "./harness.ts";
+import { type Env, indexOf, startEnv, waitFor } from "./harness.ts";
 
 const exampleB = JSON.parse(readFileSync(new URL("./fixtures/example-b.json", import.meta.url), "utf8")) as WorkflowContract;
 const AGENT = "agt_01M5BDHMN8ZQJPS4YQ4EWH8W85";
@@ -70,11 +70,7 @@ function fakes(draft: "refused" | "ok"): void {
   t.apps.on["inbox.inbox_status"] = () => ({ itemId: "itm_b", kind: "approval", status: ++polls < 2 ? "open" : "answered", seenByOwner: true, response: polls < 2 ? null : "approve", message: null, decidedAt: null, expiresAt: null });
 }
 async function completeAgent(): Promise<void> {
-  const until = Date.now() + 15_000;
-  while (offers.length === 0) {
-    if (Date.now() > until) assert.fail("the agent step was never offered");
-    await new Promise((r) => setTimeout(r, 25));
-  }
+  await waitFor("the agent step is offered", () => offers.length > 0);
   await t.client.activity.complete(Buffer.from((offers[0] as AgentStepOffer).taskToken, "base64"), { sentiment: "positive", notes: "good press", sources: ["https://news.example/acme"] });
 }
 

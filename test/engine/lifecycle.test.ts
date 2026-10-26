@@ -8,7 +8,7 @@ import { engineState, startEngine, startRun, stopEngine } from "../../src/engine
 import * as store from "../../src/engine/engine-store.ts";
 import { closeTemporal, getTemporal, temporalConfig } from "../../src/engine/temporal.ts";
 import { migratedDb } from "../helpers.ts";
-import { fakeApps, read, wf } from "./harness.ts";
+import { fakeApps, read, waitFor, wf } from "./harness.ts";
 
 async function freePort(): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -26,13 +26,6 @@ function memorySecrets(): { get(n: string): Promise<string | null>; put(n: strin
   return { get: async (n) => m.get(n) ?? null, put: async (n, v) => void m.set(n, v) };
 }
 const log = { debug() {}, info() {}, warn() {}, error() {} };
-async function waitFor(cond: () => boolean | Promise<boolean>, ms = 60_000): Promise<void> {
-  const until = Date.now() + ms;
-  while (!(await cond())) {
-    if (Date.now() > until) assert.fail("timed out");
-    await new Promise((r) => setTimeout(r, 100));
-  }
-}
 
 test("config: TEMPORAL_ADDRESS, namespace evolution and task queue evolution by default", () => {
   assert.deepEqual(temporalConfig({}), { address: null, namespace: "evolution", taskQueue: "evolution" });
@@ -65,7 +58,8 @@ test("a dead address: connected is false within a few seconds, the worker keeps 
     assert.ok(Date.now() - t0 < 6000, `probe took ${Date.now() - t0} ms`);
     const apps = fakeApps();
     await startEngine({ db: migratedDb(), callApp: apps.callApp, log: log as never, secrets: memorySecrets() });
-    await new Promise((r) => setTimeout(r, 500));
+    // a positive signal instead of a sleep: the worker has tried the dead address and recorded why it failed
+    await waitFor("the worker has tried the dead address (lastError is set)", () => engineState().lastError !== null);
     assert.equal(engineState().worker, "starting");
     const s0 = Date.now();
     await stopEngine();
@@ -90,11 +84,11 @@ test("a real server: the worker comes up, a run started with startRun completes 
     store.saveDefinition(db, c, Date.now());
     store.activate(db, c.id, 1, validateContract(c, { companions: null }).uses, Date.now());
     await startEngine({ db, callApp: apps.callApp, log: log as never, secrets: memorySecrets() });
-    await waitFor(() => engineState().worker === "running");
+    await waitFor("the worker reaches the state running", () => engineState().worker === "running");
     assert.equal((await getTemporal()).connected, true);
     const started = await startRun({ workflowId: "life-flow", runId: "run_life" });
     assert.equal(started.temporalWorkflowId, "evo:life-flow:run_life");
-    await waitFor(() => db.prepare("SELECT status FROM engine_runs WHERE run_id = 'run_life'").get()?.status === "completed");
+    await waitFor("the run run_life is completed in the index", () => db.prepare("SELECT status FROM engine_runs WHERE run_id = 'run_life'").get()?.status === "completed");
     assert.equal(apps.calls.length, 1);
     const s0 = Date.now();
     await stopEngine();

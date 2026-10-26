@@ -15,7 +15,7 @@ import { wireAgentSteps } from "../src/agentsteps/wire.ts";
 import { handlers } from "../src/app.ts";
 import * as directory from "../src/directory.ts";
 import { resetAgentPort } from "../src/engine/agent-port.ts";
-import { type Env, indexOf, startEnv, wf } from "./engine/harness.ts";
+import { type Env, indexOf, startEnv, waitFor, wf } from "./engine/harness.ts";
 import { call, ctxFor } from "./helpers.ts";
 
 const FREE: Caller = { type: "agent", id: "agt_01J0000000000000000000000A" as Caller["id"], name: "Agent A", mode: "free" };
@@ -52,16 +52,16 @@ function install(extra: Record<string, unknown> = {}, step: Record<string, unkno
   return id;
 }
 const op = <O>(id: string, input: unknown, who: Caller = FREE): Promise<O> => call<O>(handlers as never, id, input, ctxFor(t.db, who));
-const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /** What the agent runner does first: ask for steps until one is offered. */
 async function waitForOffer(who: Caller = FREE): Promise<string> {
-  for (let i = 0; i < 200; i++) {
+  let stepRunId = "";
+  await waitFor(`the engine offers the step to ${who.name} (steps_due lists it)`, async () => {
     const due = await op<K.StepsDueOutput>("steps_due", {}, who);
-    if (due.steps[0]) return due.steps[0].stepRunId;
-    await delay(25);
-  }
-  assert.fail("the engine never offered the step");
+    stepRunId = due.steps[0]?.stepRunId ?? "";
+    return stepRunId !== "";
+  });
+  return stepRunId;
 }
 async function expectRefusal(p: Promise<unknown>, code: string, status: number): Promise<TbError> {
   try {

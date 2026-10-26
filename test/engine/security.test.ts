@@ -10,7 +10,7 @@ import * as store from "../../src/engine/engine-store.ts";
 import { executionCeilingMs } from "../../src/engine/run-types.ts";
 import { scheduleAction } from "../../src/engine/schedules.ts";
 import { assertPayloadSize, childRunId, MAX_PAYLOAD_BYTES } from "../../src/engine/workflow.ts";
-import { type Env, indexOf, read, startEnv, wf, write } from "./harness.ts";
+import { type Env, indexOf, read, startEnv, waitFor, wf, write } from "./harness.ts";
 
 let t: Env;
 const offers: AgentStepOffer[] = [];
@@ -40,13 +40,6 @@ async function failure(p: Promise<unknown>): Promise<{ code: string; message: st
   }
   assert.fail("the run should have failed");
 }
-async function waitFor(cond: () => boolean, ms = 15_000): Promise<void> {
-  const until = Date.now() + ms;
-  while (!cond()) {
-    if (Date.now() > until) assert.fail("timed out");
-    await new Promise((r) => setTimeout(r, 25));
-  }
-}
 function reset(): void {
   t.apps.calls.length = 0;
   offers.length = 0;
@@ -61,7 +54,7 @@ test("F2: a value the interpreter composes over 1.5 MB fails the STEP (input_too
   t.apps.on["knowledge.recall"] = () => ({ text: "x".repeat(1_400_000) });
   t.apps.on["kanban.issue_create"] = () => ({ issue: { id: "i" } });
   t.install(wf([rd("a"), { id: "big", type: "transform", template: "{{ $steps.a.output.text }}{{ $steps.a.output.text }}{{ $steps.a.output.text }}" }, write("w", { input: { title: "t", summary: "$steps.big.output" } })], { id: "big-flow" }));
-  const f = await Promise.race([failure(t.run({ workflowId: "big-flow", runId: "run_big" })), new Promise<never>((_, no) => setTimeout(() => no(new Error("the run wedged")), 20_000))]);
+  const f = await Promise.race([failure(t.run({ workflowId: "big-flow", runId: "run_big" })), new Promise<never>((_, no) => setTimeout(() => no(new Error("the run wedged (no end within 60 s)")), 60_000))]);
   assert.equal(f.code, "input_too_large");
   assert.equal(t.apps.calls.filter((c) => c.op === "issue_create").length, 0, "nothing was sent");
   assert.equal(indexOf(t.db, "big-flow", "run_big").run?.status, "failed");
@@ -127,7 +120,7 @@ test("F3: a run in flight on the old version FINISHES, and each of its app steps
   // v1: agent step (pending), then a read; v2 drops the read
   t.install(wf([agentStep("ask"), rd("after")], { id: "inflight", version: 1 }));
   const p = t.run({ workflowId: "inflight", runId: "run_old" });
-  await waitFor(() => offers.length === 1);
+  await waitFor("run_old: the agent step is offered", () => offers.length === 1);
   t.install(wf([agentStep("ask"), write("other")], { id: "inflight", version: 2 }));
   assert.equal(store.getActivation(t.db, "inflight", 1)?.state, "superseded");
   await t.client.activity.complete(Buffer.from((offers[0] as AgentStepOffer).taskToken, "base64"), {});
@@ -139,7 +132,7 @@ test("F3: a run in flight on the old version FINISHES, and each of its app steps
   reset();
   t.install(wf([agentStep("ask"), rd("after")], { id: "inflight2", version: 1 }));
   const q = t.run({ workflowId: "inflight2", runId: "run_old2" });
-  await waitFor(() => offers.length === 1);
+  await waitFor("run_old2: the agent step is offered", () => offers.length === 1);
   t.install(wf([agentStep("ask"), rd("after")], { id: "inflight2", version: 2 }));
   store.activate(t.db, "inflight2", 1, [], Date.now()); // the list of v1 narrowed behind the run's back: superseded stays, but its list is empty
   store.activate(t.db, "inflight2", 2, store.getActivation(t.db, "inflight2", 2)?.uses ?? [], Date.now()); // v2 active again

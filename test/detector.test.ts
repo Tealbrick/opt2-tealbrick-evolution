@@ -8,6 +8,7 @@ import type * as K from "#kit";
 import { handlers } from "../src/app.ts";
 import { buildGroups, normalizeTitle, parseDoneIssues } from "../src/detector.ts";
 import { AGENT_A, AGENT_B, type CallApp, call, ctxFor, migratedDb, OWNER } from "./helpers.ts";
+import { waitFor } from "./poll.ts";
 
 const H = handlers as unknown as Parameters<typeof call>[0];
 
@@ -151,8 +152,8 @@ test("background refresh (C85): scans on a timer without an op call, never twice
   assert.deepEqual([status.trigger, status.kanban, status.issuesSeen, status.created, status.intervalMinutes], ["background", "ok", 3, 1, 15]);
 
   // the timer fires on its own (first delay 5 ms)
-  await new Promise((res) => setTimeout(res, 40));
-  assert.equal(calls, 2, "the scheduled first scan ran");
+  await waitFor("the scheduled first scan ran (the timer fired on its own)", () => calls >= 2);
+  assert.equal(calls, 2, "the scheduled first scan ran once");
   refresh.stop();
   assert.equal(await refresh.tick(), null, "stopped: nothing runs");
 

@@ -13,7 +13,7 @@ import type { AgentStepOffer } from "../../src/engine/agent-port.ts";
 import { createSealCodec, KEY_ID_FIELD, type KeyRing, keyIdOf, SEALED_ENCODING, SealError } from "../../src/engine/codec.ts";
 import { readStepIo } from "../../src/engine/history.ts";
 import { loadKeyRing, retireKey, rotateKey, SECRET_NAME } from "../../src/engine/keystore.ts";
-import { read, startEnv, wf } from "./harness.ts";
+import { read, startEnv, waitFor, wf, workflowTaskFailures } from "./harness.ts";
 
 const MARKER = "ZEBRA-MARKER-9137-QUOKKA";
 const ringOf = (...keys: Buffer[]): KeyRing => ({ current: keyIdOf(keys[0] as Buffer), keys: Object.fromEntries(keys.map((k) => [keyIdOf(k), k])) });
@@ -142,7 +142,8 @@ test("wire: a start with a PLAIN payload (a neighbour on the private network) is
     t.install(wf([read("a")], { id: "plain-flow" }));
     const plain = new Client({ connection: t.client.connection, namespace: t.client.options.namespace });
     const h = await plain.workflow.start("evolutionRun", { taskQueue: "evolution", workflowId: "evo:plain-flow:run_plain", args: [{ workflowId: "plain-flow", version: null, runId: "run_plain", trigger: { kind: "manual", input: {} } }] });
-    await new Promise((r) => setTimeout(r, 2500));
+    // a positive signal instead of a sleep: the worker took the task, could not open the plain payload and FAILED the workflow task
+    await waitFor("the worker refuses the plain start (a failed workflow task in the history)", async () => (await workflowTaskFailures(t.client, "evo:plain-flow:run_plain")) >= 1);
     assert.equal(t.apps.calls.length, 0, "no activity ran");
     assert.equal(t.db.prepare("SELECT count(*) AS c FROM engine_runs").get()?.c, 0);
     assert.equal((await h.describe()).status.name, "RUNNING", "the plaintext start never became a run");
@@ -160,12 +161,11 @@ test("wire: a FORGED completion of an agent step (a plain result from someone wh
     t.install(wf([{ id: "ask", type: "ai", by: { agent: "agt_01M5BDHMN8ZQJPS4YQ4EWH8W85" }, instruction: "x", outputSchema: { type: "object" }, timeoutSec: 600 }, { id: "make", type: "app", product: "kanban", op: "issue_create", input: { title: "{{ $steps.ask.output.title }}" } }], { id: "forge-flow" }));
     const pending = t.run({ workflowId: "forge-flow", runId: "run_forge" });
     pending.catch(() => undefined);
-    const until = Date.now() + 15_000;
-    while (offers.length === 0 && Date.now() < until) await new Promise((r) => setTimeout(r, 25));
-    assert.equal(offers.length, 1);
+    await waitFor("the agent step is offered", () => offers.length === 1);
     const plain = new Client({ connection: t.client.connection, namespace: t.client.options.namespace });
     await plain.activity.complete(Buffer.from((offers[0] as AgentStepOffer).taskToken, "base64"), { title: "FORGED OUTPUT" });
-    await new Promise((r) => setTimeout(r, 2500));
+    // a positive signal instead of a sleep: the worker got the forged result, could not open it and FAILED the workflow task
+    await waitFor("the worker refuses the forged completion (a failed workflow task in the history)", async () => (await workflowTaskFailures(t.client, "evo:forge-flow:run_forge")) >= 1);
     assert.equal(t.apps.calls.length, 0, "the forged output reached no app");
     assert.equal(t.db.prepare("SELECT status FROM engine_runs WHERE run_id = 'run_forge'").get()?.status, "running", "the run did not take the forged output");
     const d = await t.client.workflow.getHandle("evo:forge-flow:run_forge").describe();

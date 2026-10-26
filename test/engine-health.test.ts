@@ -9,6 +9,7 @@ import { test } from "node:test";
 import { defineApp, startApp } from "@opt2-tealbrick/miniapp-sdk";
 import { definition, manifest } from "../src/app.ts";
 import { BOOT_GRACE_MS, CACHE_MS, createEngineHealth, type HostPort, parseAddress, SUSTAINED_MS, TEMPORAL_UNREACHABLE, tcpProbe, timing, UNREACHABLE_ATTENTION } from "../src/engine/health.ts";
+import { waitFor } from "./poll.ts";
 
 /** the timing of the old tests: no wait before the attention shows */
 const NOW = { sustainedMs: 0, bootGraceMs: 0 };
@@ -139,7 +140,7 @@ test("sync attention() starts a refresh when the answer is stale", async () => {
     },
   });
   assert.equal(h.attention(), null);
-  await new Promise((r) => setTimeout(r, 10));
+  await waitFor("the first attention() call kicked off a probe and its answer (down) is cached", () => h.attention() !== null);
   assert.equal(probes, 1, "the first call kicked off a probe");
   assert.deepEqual(h.attention(), UNREACHABLE_ATTENTION);
   assert.equal(probes, 1, "fresh: no new probe");
@@ -147,22 +148,38 @@ test("sync attention() starts a refresh when the answer is stale", async () => {
 
 test("watch calls onChange when the owner-visible state flips (the attention shows or clears) and stops when told", async () => {
   let up = true;
-  const h = createEngineHealth({ ...NOW, address: () => "temporal:7233", cacheMs: 0, probe: async () => up });
+  let probes = 0;
+  const h = createEngineHealth({
+    ...NOW,
+    address: () => "temporal:7233",
+    cacheMs: 0,
+    probe: async () => {
+      probes++;
+      return up;
+    },
+  });
   const changes: number[] = [];
   const stop = h.watch(() => changes.push(Date.now()), 15);
-  await new Promise((r) => setTimeout(r, 60));
+  // wait for watch ticks (probes), not for wall-clock time: a loaded runner delays a timer, never the order of events
+  const ticks = (n: number, what: string) => {
+    const goal = probes + n;
+    return waitFor(what, () => probes >= goal);
+  };
+  await ticks(3, "three watch ticks with Temporal up");
   assert.equal(changes.length, 0, "unknown -> up shows nothing new");
   up = false;
-  await new Promise((r) => setTimeout(r, 60));
-  assert.equal(changes.length, 1, "up -> down: the attention shows");
+  await waitFor("up -> down: the attention shows (onChange called once)", () => changes.length >= 1);
+  await ticks(3, "three more watch ticks with Temporal down");
+  assert.equal(changes.length, 1, "up -> down: the attention shows, once");
   assert.deepEqual(h.attention(), UNREACHABLE_ATTENTION);
   up = true;
-  await new Promise((r) => setTimeout(r, 60));
-  assert.equal(changes.length, 2, "back up: it clears");
+  await waitFor("back up: the attention clears (onChange called again)", () => changes.length >= 2);
+  await ticks(3, "three more watch ticks with Temporal up again");
+  assert.equal(changes.length, 2, "back up: it clears, once");
   stop();
   const n = changes.length;
   up = false;
-  await new Promise((r) => setTimeout(r, 60));
+  await new Promise((r) => setTimeout(r, 60)); // an absence check: a slow runner can only make it pass sooner, never fail
   assert.equal(changes.length, n, "stopped");
 });
 

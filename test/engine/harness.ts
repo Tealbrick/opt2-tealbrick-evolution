@@ -140,7 +140,26 @@ export async function startEnv(opts: {
   };
 }
 
+
+export { type WaitOptions, waitFor } from "../poll.ts";
 export { currentCatalog, injectCatalog };
+
+/** How many times the worker FAILED a workflow task of this workflow (history is consistent, no visibility lag). */
+export async function workflowTaskFailures(client: Client, workflowId: string): Promise<number> {
+  const h = await client.workflow.getHandle(workflowId).fetchHistory();
+  return (h.events ?? []).filter((e) => e.workflowTaskFailedEventAttributes != null).length;
+}
+
+/** True when the Temporal schedule list (visibility, eventually consistent) shows the schedule. */
+export async function scheduleListed(client: Client, scheduleId: string): Promise<boolean> {
+  for await (const s of client.schedule.list()) if (s.scheduleId === scheduleId) return true;
+  return false;
+}
+/** True when the Temporal workflow list (visibility, eventually consistent) shows the workflow. */
+export async function workflowListed(client: Client, workflowId: string): Promise<boolean> {
+  for await (const w of client.workflow.list({ query: `WorkflowId = "${workflowId}"` })) if (w.workflowId === workflowId) return true;
+  return false;
+}
 
 /** a contract around some steps */
 export function wf(steps: unknown[], extra: Record<string, unknown> = {}): WorkflowContract {

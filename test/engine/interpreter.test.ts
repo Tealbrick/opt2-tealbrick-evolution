@@ -11,7 +11,7 @@ import type { AgentStepOffer } from "../../src/engine/agent-port.ts";
 import { bundledCatalog, injectCatalog } from "../../src/engine/catalog.ts";
 import * as store from "../../src/engine/engine-store.ts";
 import type { Json } from "../../src/engine/json.ts";
-import { type Env, indexOf, read, startEnv, wf, write } from "./harness.ts";
+import { type Env, indexOf, read, startEnv, waitFor, wf, write } from "./harness.ts";
 
 let t: Env;
 const offers: AgentStepOffer[] = [];
@@ -371,7 +371,7 @@ test("ai step with an agent card: the engine offers it through the port, complet
     outputs: { bullets: "$steps.ask.output.bullets" },
   });
   const pending = t.run({ workflowId: id, runId: "run_agent", trigger: { kind: "manual", input: { company: "Acme" } } });
-  await waitFor(() => offers.length === 1);
+  await waitFor("the engine offers the agent step through the port", () => offers.length === 1);
   const o = offers[0] as AgentStepOffer;
   assert.deepEqual([o.workflowId, o.version, o.runId, o.stepId, o.agentId, o.instruction, o.inputs, o.timeoutSec, o.heartbeatSec, o.attempt], [id, 1, "run_agent", "ask", "agt_01M5BDHMN8ZQJPS4YQ4EWH8W85", "Research Acme", { company: "Acme" }, 900, 0, 1]);
   assert.deepEqual(o.outputSchema, SUMMARY);
@@ -387,7 +387,7 @@ test("ai step with an agent card: the engine offers it through the port, complet
   // an invalid answer is refused by the engine (output_invalid), not handed on
   offers.length = 0;
   const bad = t.run({ workflowId: id, runId: "run_agent_bad", trigger: { kind: "manual", input: { company: "Acme" } } });
-  await waitFor(() => offers.length === 1);
+  await waitFor("the engine offers the second agent step through the port", () => offers.length === 1);
   await t.client.activity.complete(Buffer.from((offers[0] as AgentStepOffer).taskToken, "base64"), { bullets: "not a list" });
   const f = await failure(bad);
   assert.equal(f.code, "output_invalid");
@@ -494,11 +494,4 @@ test("a step whose output is bigger than the engine keeps fails with output_too_
   assert.equal(f.code, "output_too_large");
 });
 
-async function waitFor(cond: () => boolean, ms = 15_000): Promise<void> {
-  const until = Date.now() + ms;
-  while (!cond()) {
-    if (Date.now() > until) assert.fail("timed out");
-    await new Promise((r) => setTimeout(r, 25));
-  }
-}
 void ({} as Json);

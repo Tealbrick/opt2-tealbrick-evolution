@@ -132,11 +132,19 @@ export async function reconcile(db: Db, client: Client, opts: { now?: number; bo
       out.errors++;
     }
   }
-  // a Temporal schedule of ours that no row owns would keep starting runs: delete it
+  // a Temporal schedule of ours that no row owns would keep starting runs: delete it.
+  // Temporal's LIST calls (schedule.list, workflow.list above) are served from visibility, which is eventually consistent: a
+  // schedule or run created a moment ago may not be listed yet. A pass that does not see an orphan or a run therefore misses it
+  // ONCE and picks it up on the next pass (10 min later). That is by design and harmless: an orphan schedule only runs a workflow
+  // the owner already deleted, and the owner ops (describe / getHandle) are consistent and never depend on the list. Nothing
+  // here may assume the list is complete.
+  // The other direction is guarded: a schedule_set that inserts its row and creates the schedule while this loop runs must not
+  // lose its schedule, so the row is looked up again (the database is consistent) right before every delete.
   try {
     const owned = new Set(store.listSchedules(db).map((x) => `evo-sched:${x.id}`));
     for await (const sch of client.schedule.list()) {
       if (!sch.scheduleId.startsWith("evo-sched:") || owned.has(sch.scheduleId)) continue;
+      if (store.getSchedule(db, sch.scheduleId.slice("evo-sched:".length))) continue; // the row appeared after `owned` was read
       await client.schedule.getHandle(sch.scheduleId).delete();
       out.schedulesOrphaned++;
     }

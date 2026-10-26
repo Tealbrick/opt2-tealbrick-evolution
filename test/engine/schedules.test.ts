@@ -12,7 +12,7 @@ import { reconcile } from "../../src/engine/reconcile.ts";
 import { everyMs, scheduleAction, scheduleIdOf, syncAndRecord, toScheduleSpec } from "../../src/engine/schedules.ts";
 import { setTemporalClientForTests } from "../../src/engine/temporal.ts";
 import { call, ctxFor, OWNER } from "../helpers.ts";
-import { type Env, indexOf, read, startEnv, wf } from "./harness.ts";
+import { type Env, indexOf, read, scheduleListed, startEnv, waitFor, wf, workflowListed } from "./harness.ts";
 
 let t: Env;
 const H = engineHandlers(manifest as never) as unknown as Parameters<typeof call>[0];
@@ -42,13 +42,6 @@ function install(extra: Record<string, unknown> = {}, steps: unknown[] = [read("
   const id = `sched-flow-${++n}`;
   t.install(wf(steps, { id, ...extra }));
   return id;
-}
-async function waitFor(cond: () => boolean | Promise<boolean>, ms = 90_000): Promise<void> {
-  const until = Date.now() + ms;
-  while (!(await cond())) {
-    if (Date.now() > until) assert.fail("timed out");
-    await new Promise((r) => setTimeout(r, 100));
-  }
 }
 
 test("mapping: cron or interval, always with the IANA time zone; overlap SKIP and the one-hour catch-up window in the policy", () => {
@@ -117,7 +110,7 @@ test("pause and resume, run now, delete; the list shows the live state", { timeo
   t.apps.calls.length = 0;
   const run = await op<{ triggered: boolean }>("schedule_run_now", { id: s.id });
   assert.equal(run.triggered, true);
-  await waitFor(() => (indexOf(t.db, id, "x").run ?? t.db.prepare("SELECT status FROM engine_runs WHERE workflow_id = ? AND status = 'completed'").get(id)) !== undefined);
+  await waitFor("the run of the schedule is completed in the index", () => t.db.prepare("SELECT status FROM engine_runs WHERE workflow_id = ? AND status = 'completed'").get(id) !== undefined);
   const row = t.db.prepare("SELECT * FROM engine_runs WHERE workflow_id = ?").get(id) as Record<string, unknown>;
   assert.equal(row.status, "completed");
   assert.equal(row.schedule_id, s.id);
@@ -126,10 +119,13 @@ test("pause and resume, run now, delete; the list shows the live state", { timeo
   assert.match(String(row.run_id), new RegExp(`^${s.id}-`));
   assert.match(t.apps.calls[0]?.key ?? "", new RegExp(`^wfrun:${id}:${s.id}-`));
 
-  const list = await op<{ schedules: Sched[]; temporalConnected: boolean }>("schedules_list", { workflowId: id });
-  assert.equal(list.temporalConnected, true);
-  assert.equal(list.schedules[0]?.live?.state, "ok");
-  assert.ok((list.schedules[0]?.live as unknown as { lastRunAt: string } | null)?.lastRunAt, "the run is in the schedule's recent actions");
+  // the schedule records its action a moment after the run it started has ended: poll the owner list until it shows it
+  await waitFor("schedules_list shows the live state ok and the run in the schedule's recent actions (lastRunAt)", async () => {
+    const list = await op<{ schedules: Sched[]; temporalConnected: boolean }>("schedules_list", { workflowId: id });
+    assert.equal(list.temporalConnected, true);
+    assert.equal(list.schedules[0]?.live?.state, "ok");
+    assert.ok((list.schedules[0]?.live as unknown as { lastRunAt: string } | null)?.lastRunAt, "the run is in the schedule's recent actions");
+  });
 
   await assert.rejects(op("schedule_delete", { id: s.id, revision: s.revision }), (e: unknown) => e instanceof TbError && e.code === "revision_conflict");
   const del = await op<{ deleted: boolean }>("schedule_delete", { id: s.id, revision: r.revision });
@@ -147,13 +143,13 @@ test("a poll schedule is built from the contract's poll trigger: the run stops e
   assert.equal(s.poll?.cursorPath, "/cursor");
   t.apps.on["knowledge.recall"] = () => ({ cursor: "c1" });
   await op("schedule_run_now", { id: s.id });
-  await waitFor(() => (t.db.prepare("SELECT count(*) AS c FROM engine_runs WHERE workflow_id = ?").get(id)?.c as number) === 1);
+  await waitFor("the first poll run is in the index", () => (t.db.prepare("SELECT count(*) AS c FROM engine_runs WHERE workflow_id = ?").get(id)?.c as number) === 1);
   // the schedule's overlap policy is SKIP: the second trigger must wait until the first run has CLOSED, or Temporal drops it
-  await waitFor(async () => (await t.client.schedule.getHandle(scheduleIdOf(s.id)).describe()).info.runningActions.length === 0);
+  await waitFor("the first poll run has closed (no running action on the schedule)", async () => (await t.client.schedule.getHandle(scheduleIdOf(s.id)).describe()).info.runningActions.length === 0);
   const before = t.apps.calls.filter((c) => c.op === "recall" && (c.input as { query: string }).query === "inbox").length;
   await op("schedule_run_now", { id: s.id });
-  await waitFor(() => t.apps.calls.filter((c) => c.op === "recall" && (c.input as { query: string }).query === "inbox").length > before);
-  await waitFor(async () => (await t.client.schedule.getHandle(scheduleIdOf(s.id)).describe()).info.runningActions.length === 0);
+  await waitFor("the second poll ran (the recall call arrived)", () => t.apps.calls.filter((c) => c.op === "recall" && (c.input as { query: string }).query === "inbox").length > before);
+  await waitFor("the second poll run has closed (no running action on the schedule)", async () => (await t.client.schedule.getHandle(scheduleIdOf(s.id)).describe()).info.runningActions.length === 0);
   assert.equal(t.db.prepare("SELECT count(*) AS c FROM engine_runs WHERE workflow_id = ?").get(id)?.c, 1, "the second poll saw the same cursor: no run");
   assert.equal(store.getSchedule(t.db, s.id)?.cursor, "c1");
   t.apps.on["knowledge.recall"] = () => ({});
@@ -214,11 +210,14 @@ test("reconcile: Temporal wins. It closes runs the index still shows running, ad
   // 5. an orphan Temporal schedule
   await t.client.schedule.create({ scheduleId: "evo-sched:sch_orphan", spec: { intervals: [{ every: 3_600_000 }] }, action: { type: "startWorkflow", workflowType: "evolutionRun", taskQueue: "evolution", args: [] }, state: { paused: true } });
   t.apps.on["knowledge.recall"] = () => ({});
-  // schedule listing is eventually consistent (visibility): a pass cannot see a schedule before the list does; it sees it on the next pass
-  await waitFor(async () => {
-    for await (const x of t.client.schedule.list()) if (x.scheduleId === "evo-sched:sch_orphan") return true;
-    return false;
-  });
+  // Visibility (schedule.list, workflow.list) is eventually consistent. reconcile() reads those lists, so a pass cannot see an
+  // orphan or a run before the list shows it; it sees it on the next pass (every 10 min). The test therefore waits until the
+  // lists show what it created and THEN asserts the pass deletes and adds it: honest about the list, no sleep. The "missed once,
+  // caught on the next pass" behaviour has its own deterministic test below.
+  await waitFor("the Temporal schedule list shows the orphan schedule", () => scheduleListed(t.client, "evo-sched:sch_orphan"));
+  await waitFor("the Temporal workflow list shows run_rec2 (the run the index lacks)", () => workflowListed(t.client, `evo:${id}:run_rec2`));
+  // run_skip was started last: visibility writes are queued in order, so every older workflow is listed too, and the second pass below cannot find a late one
+  await waitFor("the Temporal workflow list shows run_skip (the poll that changed nothing, which must stay out of the index)", () => workflowListed(t.client, `evo:${pid}:run_skip`));
 
   const r = await reconcile(t.db, t.client, { boot: true });
   assert.ok(r.closed >= 1 && r.inserted >= 1 && r.lost === 1 && r.schedulesOrphaned >= 1, JSON.stringify(r));
@@ -233,6 +232,47 @@ test("reconcile: Temporal wins. It closes runs the index still shows running, ad
   // a second pass changes nothing
   const again = await reconcile(t.db, t.client);
   assert.deepEqual([again.closed, again.inserted, again.lost, again.schedulesOrphaned], [0, 0, 0, 0]);
+});
+
+/** A client whose schedule LIST is served by `listing` (the real getHandle / create / describe stay consistent, as in Temporal). */
+function withScheduleList(client: Env["client"], listing: () => AsyncIterable<{ scheduleId: string }>): Env["client"] {
+  const schedule = new Proxy(client.schedule, {
+    get(target, prop) {
+      if (prop === "list") return listing;
+      const v = Reflect.get(target, prop, target);
+      return typeof v === "function" ? v.bind(target) : v;
+    },
+  });
+  return Object.create(client, { schedule: { value: schedule } }) as Env["client"];
+}
+const ORPHAN_ACTION = { type: "startWorkflow" as const, workflowType: "evolutionRun", taskQueue: "evolution", args: [] };
+
+test("reconcile with a schedule list that lags (visibility): the orphan is missed ONCE without an error and deleted on the next pass", { timeout: 180_000 }, async () => {
+  await t.client.schedule.create({ scheduleId: "evo-sched:sch_late", spec: { intervals: [{ every: 3_600_000 }] }, action: ORPHAN_ACTION, state: { paused: true } });
+  const lagging = withScheduleList(t.client, async function* () {}); // the list does not show the new schedule yet
+  const first = await reconcile(t.db, lagging);
+  assert.equal(first.schedulesOrphaned, 0, "a list that does not show the orphan cannot delete it");
+  assert.equal(first.errors, 0, "and that is not an error");
+  assert.equal((await t.client.schedule.getHandle("evo-sched:sch_late").describe()).state.paused, true, "the orphan is still there");
+  await waitFor("the Temporal schedule list shows the orphan schedule", () => scheduleListed(t.client, "evo-sched:sch_late"));
+  const second = await reconcile(t.db, t.client);
+  assert.equal(second.schedulesOrphaned, 1, "the next pass sees it and deletes it");
+  await assert.rejects(t.client.schedule.getHandle("evo-sched:sch_late").describe(), /not found|NotFound/i);
+});
+
+test("reconcile never deletes a schedule whose row appeared while the pass was listing (schedule_set racing the pass)", { timeout: 180_000 }, async () => {
+  const id = install();
+  await t.client.schedule.create({ scheduleId: "evo-sched:sch_race", spec: { intervals: [{ every: 3_600_000 }] }, action: ORPHAN_ACTION, state: { paused: true } });
+  const racing = withScheduleList(t.client, async function* () {
+    // schedule_set inserts its row after the pass read the owned ids and before the list returns the new schedule
+    t.db.prepare("INSERT INTO engine_schedules (id, workflow_id, kind, spec, input, poll, paused, revision, cursor, created_at, updated_at) VALUES ('sch_race', ?, 'schedule', '{\"cron\":\"0 3 * * *\",\"timezone\":\"UTC\"}', '{}', NULL, 1, 1, NULL, 1, 1)").run(id);
+    yield { scheduleId: "evo-sched:sch_race" };
+  });
+  const r = await reconcile(t.db, racing);
+  assert.equal(r.schedulesOrphaned, 0, "the row exists: not an orphan");
+  assert.equal((await t.client.schedule.getHandle("evo-sched:sch_race").describe()).state.paused, true, "the schedule survived the pass");
+  await t.client.schedule.getHandle("evo-sched:sch_race").delete(); // own clean-up; the row stays out of the way of later passes
+  t.db.prepare("DELETE FROM engine_schedules WHERE id = 'sch_race'").run();
 });
 
 test("reconcile records the failure code of a run that failed in Temporal but never reached finishRun", { timeout: 180_000 }, async () => {
@@ -258,7 +298,7 @@ test("F3: a schedule may pin the ACTIVE version only; a replaced version starts 
   await syncAndRecord(t.db, t.client, store.getSchedule(t.db, stale.id) as store.ScheduleRow, Date.now());
   await op("schedule_run_now", { id: stale.id });
   let wid = "";
-  await waitFor(async () => {
+  await waitFor("the workflow list shows the run started by the stale schedule", async () => {
     for await (const w of t.client.workflow.list({ query: `WorkflowId STARTS_WITH "evo:${id}:${stale.id}"` })) wid = w.workflowId;
     return wid !== "";
   });

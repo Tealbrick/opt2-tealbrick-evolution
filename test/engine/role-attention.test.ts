@@ -7,6 +7,7 @@ import * as store from "../../src/engine/engine-store.ts";
 import { createRoleAttention, MODEL_ROLE_OPTIONAL, usedRoles } from "../../src/engine/role-attention.ts";
 import { validateContract } from "../../src/engine/validate.ts";
 import { migratedDb } from "../helpers.ts";
+import { waitFor } from "../poll.ts";
 import { wf } from "./harness.ts";
 
 const ai = (id: string, by: unknown) => ({ id, type: "ai", by, instruction: "x", outputSchema: { type: "object" } });
@@ -123,7 +124,7 @@ test("the answer is synchronous from the cache (the SDK reads attention() with a
     ttlMs: 60_000,
   });
   assert.equal(a.attention(), null, "nothing known yet");
-  await new Promise((r) => setTimeout(r, 20));
+  await waitFor("the first attention() call started a refresh and its answer is cached", () => a.attention() !== null);
   assert.equal(asked, 1, "the first call started a refresh");
   assert.equal(a.attention()?.code, MODEL_ROLE_OPTIONAL);
   assert.equal(asked, 1, "fresh: no new question");

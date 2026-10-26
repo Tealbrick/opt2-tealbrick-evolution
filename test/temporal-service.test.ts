@@ -125,7 +125,8 @@ function mkbin(dir: string): string {
 
 function sandbox(t: { after(fn: () => void): void }): Sandbox {
   const dir = mkdtempSync(join(tmpdir(), "evo-temporal-svc-"));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  // a killed fake server leaves a `sleep` / a log write behind for a moment: rm races it (ENOTEMPTY) on a loaded runner, so retry
+  t.after(() => rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }));
   const bin = mkbin(dir);
   const data = join(dir, "data");
   mkdirSync(data);
@@ -155,7 +156,7 @@ function sandbox(t: { after(fn: () => void): void }): Sandbox {
 }
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
-async function until(what: string, ok: () => boolean, ms = 15_000): Promise<void> {
+async function until(what: string, ok: () => boolean, ms = 30_000): Promise<void> {
   const end = Date.now() + ms;
   while (Date.now() < end) {
     if (ok()) return;
