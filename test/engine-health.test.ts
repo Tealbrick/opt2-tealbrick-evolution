@@ -8,7 +8,10 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { defineApp, startApp } from "@opt2-tealbrick/miniapp-sdk";
 import { definition, manifest } from "../src/app.ts";
-import { CACHE_MS, createEngineHealth, type HostPort, parseAddress, TEMPORAL_UNREACHABLE, tcpProbe, UNREACHABLE_ATTENTION } from "../src/engine/health.ts";
+import { BOOT_GRACE_MS, CACHE_MS, createEngineHealth, type HostPort, parseAddress, SUSTAINED_MS, TEMPORAL_UNREACHABLE, tcpProbe, timing, UNREACHABLE_ATTENTION } from "../src/engine/health.ts";
+
+/** the timing of the old tests: no wait before the attention shows */
+const NOW = { sustainedMs: 0, bootGraceMs: 0 };
 
 function listen(): Promise<{ server: Server; port: number }> {
   return new Promise((resolve) => {
@@ -70,7 +73,7 @@ test("quiet on good: reachable, not configured, and no answer yet give no attent
 
 test("fire on bad: unreachable gives temporal_unreachable, and clears when it comes back", async () => {
   let address = `127.0.0.1:${await closedPort()}`;
-  const h = createEngineHealth({ address: () => address, cacheMs: 0 });
+  const h = createEngineHealth({ address: () => address, cacheMs: 0, ...NOW });
   await h.refresh();
   const a = h.attention();
   assert.deepEqual(a, UNREACHABLE_ATTENTION);
@@ -94,6 +97,7 @@ test("the answer is cached for 10 s, one probe at a time, and a hanging probe co
   let probes = 0;
   let answer = true;
   const h = createEngineHealth({
+    ...NOW,
     address: () => "temporal:7233",
     now: () => clock,
     probe: async () => {
@@ -114,12 +118,12 @@ test("the answer is cached for 10 s, one probe at a time, and a hanging probe co
   assert.equal(probes, 2, "10 s passed: probed again");
   assert.deepEqual(h.attention(), UNREACHABLE_ATTENTION);
 
-  const hang = createEngineHealth({ address: () => "temporal:7233", cacheMs: 0, probeTimeoutMs: 20, probe: () => new Promise<boolean>(() => {}) });
+  const hang = createEngineHealth({ ...NOW, address: () => "temporal:7233", cacheMs: 0, probeTimeoutMs: 20, probe: () => new Promise<boolean>(() => {}) });
   const t0 = Date.now();
   await hang.refresh();
   assert.ok(Date.now() - t0 < 1000, "bounded below the SDK's 1 s attention timeout");
   assert.deepEqual(hang.attention(), UNREACHABLE_ATTENTION);
-  const throwing = createEngineHealth({ address: () => "temporal:7233", cacheMs: 0, probe: async () => Promise.reject(new Error("boom")) });
+  const throwing = createEngineHealth({ ...NOW, address: () => "temporal:7233", cacheMs: 0, probe: async () => Promise.reject(new Error("boom")) });
   await throwing.refresh();
   assert.deepEqual(throwing.attention(), UNREACHABLE_ATTENTION, "a throwing probe is down, never an exception");
 });
@@ -127,6 +131,7 @@ test("the answer is cached for 10 s, one probe at a time, and a hanging probe co
 test("sync attention() starts a refresh when the answer is stale", async () => {
   let probes = 0;
   const h = createEngineHealth({
+    ...NOW,
     address: () => "temporal:7233",
     probe: async (_hp: HostPort) => {
       probes++;
@@ -140,26 +145,94 @@ test("sync attention() starts a refresh when the answer is stale", async () => {
   assert.equal(probes, 1, "fresh: no new probe");
 });
 
-test("watch calls onChange when the engine flips and stops when told", async () => {
+test("watch calls onChange when the owner-visible state flips (the attention shows or clears) and stops when told", async () => {
   let up = true;
-  const h = createEngineHealth({ address: () => "temporal:7233", cacheMs: 0, probe: async () => up });
+  const h = createEngineHealth({ ...NOW, address: () => "temporal:7233", cacheMs: 0, probe: async () => up });
   const changes: number[] = [];
   const stop = h.watch(() => changes.push(Date.now()), 15);
   await new Promise((r) => setTimeout(r, 60));
-  assert.equal(changes.length, 1, "unknown -> up is one change");
+  assert.equal(changes.length, 0, "unknown -> up shows nothing new");
   up = false;
   await new Promise((r) => setTimeout(r, 60));
-  assert.equal(changes.length, 2, "up -> down");
+  assert.equal(changes.length, 1, "up -> down: the attention shows");
   assert.deepEqual(h.attention(), UNREACHABLE_ATTENTION);
+  up = true;
+  await new Promise((r) => setTimeout(r, 60));
+  assert.equal(changes.length, 2, "back up: it clears");
   stop();
   const n = changes.length;
-  up = true;
+  up = false;
   await new Promise((r) => setTimeout(r, 60));
   assert.equal(changes.length, n, "stopped");
 });
 
+test("gate-safe: an early failure (Temporal still starting) gives NO attention; a failure that lasts 90 s does; the boot grace of 120 s counts from onStart", async () => {
+  assert.equal(SUSTAINED_MS, 90_000);
+  assert.equal(BOOT_GRACE_MS, 120_000);
+  let clock = 1_000_000;
+  let up = false;
+  let probes = 0;
+  const h = createEngineHealth({
+    address: () => "temporal:7233",
+    now: () => clock,
+    cacheMs: 0,
+    probe: async () => {
+      probes++;
+      return up;
+    },
+  });
+  const at = async (ms: number) => {
+    clock = 1_000_000 + ms;
+    await h.refresh(); // joins the background refresh that attention() started on the previous call ...
+    await h.refresh(); // ... then probes with the current answer
+    return h.attention();
+  };
+  h.markBoot(); // onStart at t = 0
+  assert.equal(await at(1_000), null, "the first failed probe at boot: no attention");
+  assert.equal(await at(30_000), null, "30 s of failure");
+  assert.equal(await at(89_000), null, "89 s: not yet 90 s of failure");
+  assert.equal(await at(100_000), null, "failing for 99 s, but the app booted 100 s ago: boot grace (120 s)");
+  assert.equal(await at(119_000), null, "still in the boot grace");
+  assert.deepEqual(await at(121_000), UNREACHABLE_ATTENTION, "failed continuously for 120 s and past the boot grace: now it shows");
+  up = true;
+  assert.equal(await at(131_000), null, "one good probe clears it");
+  up = false;
+  assert.equal(await at(141_000), null, "a NEW failure starts the 90 s over (a single failed probe after a good one is nothing)");
+  assert.equal(await at(200_000), null, "59 s of the new failure");
+  assert.deepEqual(await at(232_000), UNREACHABLE_ATTENTION, "91 s of the new failure");
+  assert.ok(probes >= 8);
+});
+
+test("gate-safe: flapping never shows (down 80 s, up, down 80 s ...), a failure of 95 s in a row after the grace does", async () => {
+  let clock = 5_000_000;
+  let up = false;
+  const h = createEngineHealth({ address: () => "temporal:7233", now: () => clock, cacheMs: 0, probe: async () => up });
+  const step = async (ms: number, answer: boolean) => {
+    clock += ms;
+    up = answer;
+    await h.refresh();
+    await h.refresh();
+    return h.attention();
+  };
+  h.markBoot();
+  clock += 200_000; // far past the grace
+  for (let i = 0; i < 4; i++) {
+    assert.equal(await step(10_000, false), null);
+    assert.equal(await step(70_000, false), null, "80 s down");
+    assert.equal(await step(5_000, true), null);
+  }
+  assert.equal(await step(1_000, false), null);
+  assert.deepEqual(await step(95_000, false), UNREACHABLE_ATTENTION, "95 s in a row");
+});
+
+test("gate-safe: the shared instance uses the defaults (90 s / 120 s); only the app test switches them off", () => {
+  assert.deepEqual({ ...timing }, { sustainedMs: 90_000, bootGraceMs: 120_000 });
+});
+
 test("the app reports the engine through attention() and never through /tb/v1/health", async (t) => {
   const prior = process.env.TEMPORAL_ADDRESS;
+  const priorTiming = { ...timing };
+  Object.assign(timing, NOW); // this test checks the route, not the waiting
   const dead = await closedPort();
   process.env.TEMPORAL_ADDRESS = `127.0.0.1:${dead}`;
   const dir = mkdtempSync(join(tmpdir(), `${manifest.id}-engine-health-`));
@@ -168,6 +241,7 @@ test("the app reports the engine through attention() and never through /tb/v1/he
   const local = { ...manifest, runtime: { ...manifest.runtime, port: free } };
   const running = await startApp(defineApp({ ...definition, manifest: local }), { TB_DATA_DIR: dir, TB_STANDALONE: "1", TB_LOG_LEVEL: "error", TB_DATA_EPHEMERAL: "1" });
   t.after(() => {
+    Object.assign(timing, priorTiming);
     if (prior === undefined) delete process.env.TEMPORAL_ADDRESS;
     else process.env.TEMPORAL_ADDRESS = prior;
     rmSync(dir, { recursive: true, force: true });

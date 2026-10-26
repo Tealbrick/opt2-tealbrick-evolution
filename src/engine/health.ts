@@ -12,6 +12,16 @@ export const CACHE_MS = 10_000;
 /** the SDK reads `attention()` with a 1 s timeout; the probe stays below it */
 export const PROBE_TIMEOUT_MS = 700;
 export const DEFAULT_PORT = 7233;
+/**
+ * Core's update gate needs readiness `ok` to stay `ok` after an update, and Core starts companions without waiting for their
+ * health: Temporal may still be starting when the app boots. So `temporal_unreachable` is raised only after the probe has failed
+ * CONTINUOUSLY for this long, and never before the boot grace (counted from onStart) has passed.
+ */
+export const SUSTAINED_MS = 90_000;
+export const BOOT_GRACE_MS = 120_000;
+
+/** Timing of the shared instance (tests change it; production keeps the defaults). */
+export const timing = { sustainedMs: SUSTAINED_MS, bootGraceMs: BOOT_GRACE_MS };
 
 export const UNREACHABLE_ATTENTION: Attention = {
   code: TEMPORAL_UNREACHABLE,
@@ -67,6 +77,10 @@ export interface EngineHealthOptions {
   now?: () => number;
   cacheMs?: number;
   probeTimeoutMs?: number;
+  /** the probe must have failed continuously this long before attention is raised (default SUSTAINED_MS) */
+  sustainedMs?: number;
+  /** no attention until this long after boot (default BOOT_GRACE_MS) */
+  bootGraceMs?: number;
 }
 
 export interface EngineHealth {
@@ -74,9 +88,12 @@ export interface EngineHealth {
   refresh(): Promise<void>;
   /**
    * The last known state, synchronously: null when TEMPORAL_ADDRESS is not set (no engine configured), when no probe has
-   * answered yet (no false alarm at boot), or when the engine answered. A stale answer starts a refresh in the background.
+   * answered yet (no false alarm at boot), when the engine answered, when the failure is younger than 90 s (a companion that is
+   * still starting) or the app booted less than 120 s ago. A stale answer starts a refresh in the background.
    */
   attention(): Attention | null;
+  /** The app has just started (onStart): the boot grace counts from now. */
+  markBoot(): void;
   /** Probes every `intervalMs` and calls `onChange` when the state flips. Returns the stop function. */
   watch(onChange: () => void, intervalMs?: number): () => void;
 }
@@ -90,6 +107,12 @@ export function createEngineHealth(opts: EngineHealthOptions = {}): EngineHealth
   let up: boolean | null = null;
   let checkedAt = Number.NEGATIVE_INFINITY;
   let inflight: Promise<void> | null = null;
+  /** when the current run of failed probes began (null while the engine answers) */
+  let downSince: number | null = null;
+  let bootAt = now();
+  const sustainedMs = (): number => opts.sustainedMs ?? timing.sustainedMs;
+  const bootGraceMs = (): number => opts.bootGraceMs ?? timing.bootGraceMs;
+  const raised = (): boolean => up === false && downSince !== null && now() - downSince >= sustainedMs() && now() - bootAt >= bootGraceMs();
 
   const refresh = (): Promise<void> => {
     const hp = parseAddress(address());
@@ -107,6 +130,8 @@ export function createEngineHealth(opts: EngineHealthOptions = {}): EngineHealth
         ]);
         up = answer;
         checkedAt = now();
+        if (answer) downSince = null;
+        else downSince ??= checkedAt;
       } finally {
         clearTimeout(timer);
         inflight = null;
@@ -120,14 +145,20 @@ export function createEngineHealth(opts: EngineHealthOptions = {}): EngineHealth
     attention() {
       if (!parseAddress(address())) return null;
       if (now() - checkedAt >= cacheMs) void refresh();
-      return up === false ? UNREACHABLE_ATTENTION : null;
+      return raised() ? UNREACHABLE_ATTENTION : null;
+    },
+    markBoot() {
+      bootAt = now();
     },
     watch(onChange, intervalMs = cacheMs) {
-      let last = up;
+      bootAt = now(); // watch starts in onStart: the boot grace counts from here
+      // the owner-visible state flips with TIME too (90 s of failure, 120 s of grace), not only when a probe answers differently
+      let last = raised();
       const tick = () => {
         void refresh().then(() => {
-          if (up !== last) {
-            last = up;
+          const r = raised();
+          if (r !== last) {
+            last = r;
             onChange();
           }
         });
