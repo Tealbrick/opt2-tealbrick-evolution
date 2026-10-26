@@ -22,28 +22,29 @@ export const STEPS_SERVE_CONFIG = {
 
 export const RUN_STATUS: Record<EngineRunStatus, { status: Status; label: string }> = {
   running: { status: "busy", label: "running" },
-  waiting: { status: "needs-you", label: "waiting" },
   completed: { status: "live", label: "completed" },
   failed: { status: "needs-you", label: "failed" },
   cancelled: { status: "idle", label: "cancelled" },
   timed_out: { status: "needs-you", label: "timed out" },
+  terminated: { status: "idle", label: "stopped" },
+  skipped: { status: "idle", label: "skipped" },
 };
+// the statuses the engine index stores for a step (WP2); an unknown one is shown as its own name
 const STEP_STATUS: Record<EngineStepStatus, { status: Status; label: string }> = {
-  pending: { status: "idle", label: "not started" },
   running: { status: "busy", label: "running" },
-  sleeping: { status: "busy", label: "waiting (timer)" },
   completed: { status: "live", label: "completed" },
   failed: { status: "needs-you", label: "failed" },
   skipped: { status: "idle", label: "skipped" },
   waiting_hold: { status: "needs-you", label: "waiting for your approval" },
-  waiting_approval: { status: "needs-you", label: "waiting for your answer" },
+  waiting_owner: { status: "needs-you", label: "waiting for your answer" },
   waiting_agent: { status: "busy", label: "waiting for an agent" },
 };
+const stepStatus = (s: string): { status: Status; label: string } => (s in STEP_STATUS ? STEP_STATUS[s as EngineStepStatus] : { status: "idle", label: s.replaceAll("_", " ") });
 type Filter = "all" | "active" | "attention" | "done";
 const FILTERS: { id: Filter; label: string; has: (s: EngineRunStatus) => boolean }[] = [
   { id: "all", label: "All", has: () => true },
-  { id: "active", label: "Running", has: (s) => s === "running" || s === "waiting" },
-  { id: "attention", label: "Needs attention", has: (s) => s === "failed" || s === "timed_out" || s === "waiting" },
+  { id: "active", label: "Running", has: (s) => s === "running" },
+  { id: "attention", label: "Needs attention", has: (s) => s === "failed" || s === "timed_out" },
   { id: "done", label: "Completed", has: (s) => s === "completed" },
 ];
 
@@ -52,7 +53,11 @@ export function Runs({ agents, openId, holdHref }: { agents: UseAgents["agents"]
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<Filter>("all");
   const [open, setOpen] = useState<string | null>(openId ?? null);
+  const [titles, setTitles] = useState<Map<string, string>>(new Map());
   const load = useCallback(async () => {
+    engine("workflow_contracts_list", {})
+      .then((r) => setTitles(new Map([...r.contracts].sort((a, b) => a.version - b.version).map((c) => [c.workflowId, c.title]))))
+      .catch(() => {}); // the id is shown instead of a title
     try {
       setRuns((await engine("engine_runs_list", { limit: 100 })).runs);
       setError(null);
@@ -69,6 +74,7 @@ export function Runs({ agents, openId, holdHref }: { agents: UseAgents["agents"]
   const accepts = FILTERS.find((f) => f.id === filter)?.has ?? (() => true);
   const shown = (runs ?? []).filter((r) => accepts(r.status));
   const current = open ?? shown[0]?.runId ?? null;
+  const currentRun = (runs ?? []).find((r) => r.runId === current);
   return (
     <section className="app-page" aria-label="Runs">
       <div className="page-head">
@@ -111,7 +117,7 @@ export function Runs({ agents, openId, holdHref }: { agents: UseAgents["agents"]
               {shown.map((r) => (
                 <button key={r.runId} type="button" className="pane-item" aria-current={current === r.runId} onClick={() => setOpen(r.runId)}>
                   <span className="tb-ink">
-                    {r.workflowTitle} <span className="tb-soft">v{r.version}</span>
+                    {titles.get(r.workflowId) ?? r.workflowId} <span className="tb-soft">{r.version ? `v${r.version}` : ""}</span>
                     <br />
                     <span className="tb-soft">{stamp(r.startedAt)}</span>
                   </span>
@@ -119,7 +125,7 @@ export function Runs({ agents, openId, holdHref }: { agents: UseAgents["agents"]
                 </button>
               ))}
             </nav>
-            {current ? <RunDetail key={current} runId={current} agents={agents} holdHref={holdHref} /> : <p className="tb-soft">Choose a run.</p>}
+            {current ? <RunDetail key={current} runId={current} title={currentRun ? titles.get(currentRun.workflowId) : undefined} agents={agents} holdHref={holdHref} /> : <p className="tb-soft">Choose a run.</p>}
           </div>
         </>
       )}
@@ -139,8 +145,8 @@ export function Runs({ agents, openId, holdHref }: { agents: UseAgents["agents"]
 
 const nameOf = (agents: UseAgents["agents"], id: string | null): string => (id ? (agents.find((a) => a.id === id)?.name ?? id) : "an agent");
 
-export function RunDetail({ runId, agents, holdHref }: { runId: string; agents: UseAgents["agents"]; holdHref: (holdId: string) => string }) {
-  const [data, setData] = useState<{ run: EngineRun; steps: EngineRunStep[] } | null>(null);
+export function RunDetail({ runId, title, agents, holdHref }: { runId: string; title?: string; agents: UseAgents["agents"]; holdHref: (holdId: string) => string }) {
+  const [data, setData] = useState<{ run: EngineRun; steps: EngineRunStep[]; outputs: Record<string, unknown> | null } | null>(null);
   const [agentSteps, setAgentSteps] = useState<AgentStep[]>([]);
   const [agentError, setAgentError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -161,7 +167,7 @@ export function RunDetail({ runId, agents, holdHref }: { runId: string; agents: 
   useEffect(() => {
     void load();
   }, [load]);
-  const live = data?.run.status === "running" || data?.run.status === "waiting";
+  const live = data?.run.status === "running";
   useEffect(() => {
     if (!live) return;
     const t = setInterval(() => void load(), 15_000);
@@ -185,23 +191,25 @@ export function RunDetail({ runId, agents, holdHref }: { runId: string; agents: 
         Loading the run.
       </p>
     );
-  const { run, steps } = data;
+  const { run, steps, outputs } = data;
   return (
     <article className="tb-card detail" aria-label={`Run ${run.runId}`}>
       <div className="detail-head">
-        <h2>{run.workflowTitle}</h2>
+        <h2>{title ?? run.workflowId}</h2>
         <Tag status={RUN_STATUS[run.status].status}>{RUN_STATUS[run.status].label}</Tag>
       </div>
       <p className="tb-hint">
-        Version {run.version} · started by {run.trigger} {stamp(run.startedAt)}
-        {run.endedAt ? ` · ended ${stamp(run.endedAt)} (${spanText(run.startedAt, run.endedAt)})` : ` · running for ${spanText(run.startedAt, null)}`} · {run.stepsDone}
-        {run.stepsTotal ? ` of ${run.stepsTotal}` : ""} steps done{run.modelTokens ? ` · ${run.modelTokens} model tokens` : ""}
+        {run.version ? `Version ${run.version} · ` : ""}started by {run.triggerKind} {stamp(run.startedAt)}
+        {run.endedAt ? ` · ended ${stamp(run.endedAt)} (${spanText(run.startedAt, run.endedAt)})` : ` · running for ${spanText(run.startedAt, null)}`} · {run.stepsDone} steps done
+        {run.stepsFailed ? `, ${run.stepsFailed} failed` : ""}
+        {run.modelTokens ? ` · ${run.modelTokens} model tokens` : ""}
       </p>
-      {run.error ? (
+      {run.errorCode ? (
         <Notice tone="needs-you" role="alert">
-          {run.error}
+          {`The run stopped${run.errorStep ? ` at step ${run.errorStep}` : ""}: ${run.errorCode.replaceAll("_", " ")}.`}
         </Notice>
       ) : null}
+      {run.skippedReason ? <p className="tb-hint">{`Skipped: ${run.skippedReason.replaceAll("_", " ")}.`}</p> : null}
       {agentError ? (
         <Notice tone="needs-you" role="alert">
           {agentError}
@@ -212,15 +220,15 @@ export function RunDetail({ runId, agents, holdHref }: { runId: string; agents: 
       ) : (
         <ol className="timeline" aria-label="Step timeline">
           {steps.map((s, i) => {
-            const st = STEP_STATUS[s.status];
+            const st = stepStatus(s.status);
             const agent = s.stepRunId ? agentSteps.find((a) => a.stepRunId === s.stepRunId) : undefined;
             return (
-              // biome-ignore lint/suspicious/noArrayIndexKey: loop iterations repeat a step id, so the position is the identity
-              <li key={`${s.stepId}-${i}`}>
+              <li key={s.stepKey || `${s.stepId}-${i}`}>
                 <div className="timeline-head">
-                  <b>{s.title ?? s.stepId}</b>
+                  <b>{s.loopPath ? `${s.stepId} (loop ${s.loopPath})` : s.stepId}</b>
                   <Tag>{s.kind}</Tag>
                   <Tag status={st.status}>{st.label}</Tag>
+                  {s.product && s.op ? <span className="tb-soft">{`${s.product}.${s.op}`}</span> : null}
                   {s.attempt > 1 ? <span className="tb-soft">attempt {s.attempt}</span> : null}
                   {s.startedAt ? (
                     <span className="tb-soft">
@@ -240,18 +248,19 @@ export function RunDetail({ runId, agents, holdHref }: { runId: string; agents: 
                     <AgentHistory agents={agents} step={agent} fallbackAgent={s.agentId} />
                   </div>
                 ) : null}
-                {s.error ? <p className="tb-hint">{s.error}</p> : null}
-                {s.input !== undefined || s.output !== undefined ? (
-                  <details className="history">
-                    <summary>Input and output (owner only)</summary>
-                    <pre className="view">{JSON.stringify({ input: s.input, output: s.output }, null, 2)}</pre>
-                  </details>
-                ) : null}
+                {s.errorCode ? <p className="tb-hint">{s.errorCode.replaceAll("_", " ")}</p> : null}
+                {s.holdOutcome ? <p className="tb-hint">{`Approval: ${s.holdOutcome.replaceAll("_", " ")}.`}</p> : null}
               </li>
             );
           })}
         </ol>
       )}
+      {outputs ? (
+        <details className="history">
+          <summary>Result of the run (owner only)</summary>
+          <pre className="view">{JSON.stringify(outputs, null, 2)}</pre>
+        </details>
+      ) : null}
       {steps.some((s) => s.kind === "ai" && s.agentId) ? <p className="tb-hint">{AGENT_STEP_LABEL}</p> : null}
     </article>
   );

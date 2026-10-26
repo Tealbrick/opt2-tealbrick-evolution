@@ -131,7 +131,8 @@ function logEvent(db: Db, row: Pick<StepRow, "stepRunId" | "attempt" | "agentId"
 export function expiryOf(r: Pick<StepRow, "status" | "deadlineAt" | "heartbeatAt" | "heartbeatSec">, now: number): { by: "deadline" | "heartbeat"; detail: string } | null {
   if (!OPEN_STATUSES.has(r.status)) return null;
   if (now > r.deadlineAt) return { by: "deadline", detail: "No result before the step deadline." };
-  if (r.status === "claimed" && r.heartbeatAt !== null && now > r.heartbeatAt + HEARTBEAT_MISSES * r.heartbeatSec * 1000)
+  // heartbeatSec 0 = the step asked for no heartbeat (the contract's default): only the deadline applies
+  if (r.status === "claimed" && r.heartbeatSec > 0 && r.heartbeatAt !== null && now > r.heartbeatAt + HEARTBEAT_MISSES * r.heartbeatSec * 1000)
     return { by: "heartbeat", detail: `No heartbeat for ${HEARTBEAT_MISSES} x ${r.heartbeatSec} s.` };
   return null;
 }
@@ -171,7 +172,8 @@ function checkOffer(db: Db, o: AgentStepOffer): void {
   if (!STEP_ID.test(o.stepRunId)) bad("stepRunId must be 1 to 128 letters, digits, and _ . : - .", "/stepRunId");
   if (!Number.isInteger(o.version) || o.version < 1) bad("version must be a positive integer.", "/version");
   if (!Number.isInteger(o.attempt) || o.attempt < 1) bad("attempt must be a positive integer.", "/attempt");
-  if (!Number.isInteger(o.heartbeatSec) || o.heartbeatSec < 1 || o.heartbeatSec > 3600) bad("heartbeatSec must be 1 to 3600.", "/heartbeatSec");
+  // 0 = no heartbeat is asked (the engine sets no heartbeatTimeout; only the deadline applies)
+  if (!Number.isInteger(o.heartbeatSec) || o.heartbeatSec < 0 || o.heartbeatSec > 3600) bad("heartbeatSec must be 0 to 3600 (0 = no heartbeat is asked).", "/heartbeatSec");
   if (!Number.isInteger(o.timeoutSec) || o.timeoutSec < o.heartbeatSec || o.timeoutSec > 7 * 86_400) bad("timeoutSec must be at least heartbeatSec and at most 7 days.", "/timeoutSec");
   if (typeof o.instruction !== "string" || o.instruction.length === 0 || o.instruction.length > MAX_INSTRUCTION_CHARS) bad(`instruction must have 1 to ${MAX_INSTRUCTION_CHARS} characters.`, "/instruction");
   if (typeof o.taskToken !== "string" || !/^[A-Za-z0-9+/]+={0,2}$/.test(o.taskToken)) bad("taskToken must be base64.", "/taskToken");
@@ -244,11 +246,14 @@ export function dueSteps(db: Db, caller: CallerLike, now: number = Date.now()): 
       .prepare("SELECT * FROM agent_step_runs WHERE agent_id = ? AND target_mode = ? AND status = 'offered' ORDER BY offered_at, step_run_id LIMIT ?")
       .all(caller.id, mode, MAX_DUE)
       .map(toRow)
-      .map((r) => ({ stepRunId: r.stepRunId, workflowTitle: titleOf(db, r.workflowId), deadline: iso(r.deadlineAt) }));
+      .map((r) => ({ stepRunId: r.stepRunId, workflowTitle: titleOf(db, r.workflowId, r.version), deadline: iso(r.deadlineAt) }));
   });
 }
 
-function titleOf(db: Db, workflowId: string): string {
+/** The title of the workflow: an engine contract version first (WP2's `engine_definitions`), then the 0.3.x store, then the id. */
+function titleOf(db: Db, workflowId: string, version: number): string {
+  const e = db.prepare("SELECT title FROM engine_definitions WHERE workflow_id = ? AND version = ?").get(workflowId, version);
+  if (e) return String((e as { title: unknown }).title);
   try {
     return store.getWorkflow(db, workflowId).title;
   } catch {
@@ -298,7 +303,7 @@ export function claim(db: Db, caller: CallerLike, stepRunId: string, now: number
       row: claimed,
       step: {
         stepRunId,
-        workflowTitle: titleOf(db, row.workflowId),
+        workflowTitle: titleOf(db, row.workflowId, row.version),
         attempt: row.attempt,
         instruction: row.instruction,
         inputs: JSON.parse(row.inputsJson ?? "{}") as Record<string, unknown>,
@@ -350,6 +355,7 @@ export function beat(db: Db, stepRunId: string, now: number = Date.now()): StepR
 }
 
 export function heartbeatBy(r: StepRow): string {
+  if (r.heartbeatSec === 0) return iso(r.deadlineAt);
   return iso(Math.min(r.deadlineAt, (r.heartbeatAt ?? r.offeredAt) + HEARTBEAT_MISSES * r.heartbeatSec * 1000));
 }
 
@@ -407,7 +413,7 @@ export function viewOf(db: Db, r: StepRow): StepView {
   return {
     stepRunId: r.stepRunId,
     workflowId: r.workflowId,
-    workflowTitle: titleOf(db, r.workflowId),
+    workflowTitle: titleOf(db, r.workflowId, r.version),
     version: r.version,
     runId: r.runId,
     stepId: r.stepId,

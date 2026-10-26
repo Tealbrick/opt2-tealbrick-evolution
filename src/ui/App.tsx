@@ -40,7 +40,6 @@ export function App() {
   const holds = useHoldList();
   const [openDraft, setOpenDraft] = useState<string | null>(null);
   const [openWorkflow, setOpenWorkflow] = useState<string | null>(null);
-  const [openRun, setOpenRun] = useState<string | null>(null);
   const [toReview, setToReview] = useState(0);
   const [notice, setNotice] = useState<string | null>(null);
   const [portal] = useState(portalHref);
@@ -78,14 +77,11 @@ export function App() {
           <Schedules
             agents={directory.agents}
             agentsLoading={directory.loading}
-            onOpenRun={(runId) => {
-              setOpenRun(runId);
-              nav.go("runs");
-            }}
+            onOpenRuns={() => nav.go("runs")}
           />
         );
       case "runs":
-        return <Runs agents={directory.agents} openId={openRun} holdHref={(holdId) => `${nav.href("holds")}/${holdId}`} />;
+        return <Runs agents={directory.agents} holdHref={(holdId) => `${nav.href("holds")}/${holdId}`} />;
       case "cycles":
         return <Cycles />;
       case "holds":

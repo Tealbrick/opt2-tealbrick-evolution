@@ -1,34 +1,14 @@
 // Agent steps (C367 WP3, ENGINE-BUILD §5): shared types.
 //
-// TEMP: `AgentStepOffer` and `AgentStepPort` are copied from the fixed interface of ENGINE-WP-COMMON.md. WP2 defines them
-// in `src/engine/agent-port.ts`; when WP2's PR lands, delete the two declarations below and re-export them from there
-// (`export type { AgentStepOffer, AgentStepPort } from "../engine/agent-port.ts"`). Nothing else changes.
-export interface AgentStepOffer {
-  stepRunId: string;
-  workflowId: string;
-  version: number;
-  runId: string;
-  stepId: string;
-  agentId: string;
-  instruction: string;
-  inputs: Record<string, unknown>;
-  outputSchema: object;
-  timeoutSec: number;
-  heartbeatSec: number;
-  attempt: number;
-  /** base64 of the Temporal activity task token */
-  taskToken: string;
-}
-export interface AgentStepPort {
-  offer(o: AgentStepOffer): Promise<void>;
-  cancel(stepRunId: string): Promise<void>;
-}
+// The seam types are the engine's: `AgentStepOffer` and `AgentStepPort` are defined in src/engine/agent-port.ts (WP2, fixed
+// interface). This runtime implements the port (`createAgentStepPort` in ./port.ts).
+export type { AgentStepOffer, AgentStepPort } from "../engine/agent-port.ts";
 
 export type StepStatus = "offered" | "claimed" | "completed" | "failed" | "timed_out" | "cancelled";
 export const OPEN_STATUSES: ReadonlySet<StepStatus> = new Set<StepStatus>(["offered", "claimed"]);
 export type TargetMode = "bound" | "free";
 
-/** Temporal times an async activity out after this many missed heartbeats (`heartbeatTimeout` = 3 x heartbeatSec). */
+/** Temporal times an async activity out after this many missed heartbeats (`heartbeatTimeout` = 3 x heartbeatSec). A step with heartbeatSec 0 has no heartbeat clock. */
 export const HEARTBEAT_MISSES = 3;
 
 /** The one sentence every claim carries (ENGINE-BUILD §0 canonical shape: an agent step produces CONTENT ONLY). */

@@ -221,6 +221,23 @@ test("a heartbeat keeps the step alive; three missed heartbeats time it out and 
   assert.match(ev.at(-1)?.detail ?? "", /No heartbeat for 3 x 60 s/);
 });
 
+test("heartbeatSec 0 (the contract's default, WP2): the offer is accepted, there is no heartbeat clock, only the deadline ends the step", async () => {
+  const r = rig();
+  const o = await r.offer({ heartbeatSec: 0 }); // timeoutSec 900
+  const claim = await r.run<K.StepClaimOutput>("step_claim", { stepRunId: o.stepRunId });
+  assert.equal(claim.step?.heartbeatSec, 0);
+  // quiet: 600 s without a beat is fine (a 60 s heartbeat step would be dead after 180 s)
+  r.clock.t += 600_000;
+  const hb = await r.run<K.StepHeartbeatOutput>("step_heartbeat", { stepRunId: o.stepRunId });
+  assert.equal(hb.status, "claimed");
+  assert.equal(hb.heartbeatBy, hb.deadline, "no heartbeat window: the deadline is the only limit");
+  // fire on bad: past the deadline the step is gone
+  r.clock.t = T0 + 900_001;
+  await assert.rejects(r.run("step_heartbeat", { stepRunId: o.stepRunId }), refused("step_timed_out", 409));
+  assert.match(steps.eventsOf(r.db, o.stepRunId).at(-1)?.detail ?? "", /No result before the step deadline/);
+  await assert.rejects(r.run("step_report", { stepRunId: o.stepRunId, status: "completed", output: GOOD_OUTPUT }), refused("step_timed_out", 409));
+});
+
 test("the deadline times out an offered step that nobody claimed, and a claimed one that beats on time", async () => {
   const r = rig();
   const idle = await r.offer();
@@ -309,7 +326,7 @@ test("the offer is checked at the engine: shape, size, schema, identity, attempt
   const r = rig();
   await assert.rejects(r.offer({ outputSchema: { type: "array" } }), (e) => (e as { details?: { pointer?: string } }).details?.pointer === "/outputSchema/type");
   await assert.rejects(r.offer({ outputSchema: { type: "object", properties: { a: { type: "no-such-type" } } } }), refused("validation_failed", 422));
-  await assert.rejects(r.offer({ heartbeatSec: 0 }), refused("validation_failed", 422));
+  await assert.rejects(r.offer({ heartbeatSec: -1 }), refused("validation_failed", 422));
   await assert.rejects(r.offer({ heartbeatSec: 120, timeoutSec: 60 }), refused("validation_failed", 422));
   await assert.rejects(r.offer({ stepRunId: "has space" }), refused("validation_failed", 422));
   await assert.rejects(r.offer({ taskToken: "not base64!" }), refused("validation_failed", 422));

@@ -4,7 +4,8 @@
 import type { UseAgents } from "@opt2-tealbrick/miniapp-sdk/client";
 import { Button, Field, NativeSelect, Select, Tag, Textarea, TextInput } from "@opt2-tealbrick/ui";
 import { useEffect, useRef, useState } from "react";
-import { type AiStep, type ApprovalStep, type AppStep, allSteps, STAGES, STEP_KINDS, type Step, type StepKind, type TimerStep, type TransformStep } from "./engine-contract.ts";
+import type { Json, JsonObject } from "../engine/json.ts";
+import { type AiStep, type ApprovalStep, type AppStep, allSteps, STAGES, STEP_KINDS, type Step, type StepKind, type TimerStep, type TransformStep, type WorkflowStep } from "./engine-contract.ts";
 
 // ── shared controls ──
 
@@ -44,6 +45,13 @@ export function JsonField({ label, hint, value, onChange, rows = 5 }: { label: s
       />
     </Field>
   );
+}
+
+/** A map of name → Json (ai inputs, pick, merge): rows of refs while every value is a string, else the JSON text (nothing is lost). */
+export function JsonRefMap({ label, hint, value, onChange, nameLabel = "Name", refLabel = "Ref" }: { label: string; hint?: string; value: Record<string, Json> | undefined; onChange: (v: Record<string, Json>) => void; nameLabel?: string; refLabel?: string }) {
+  const onlyRefs = Object.values(value ?? {}).every((v) => typeof v === "string");
+  if (onlyRefs) return <RefMap label={label} hint={hint} value={value as Record<string, string> | undefined} onChange={onChange} nameLabel={nameLabel} refLabel={refLabel} />;
+  return <JsonField label={label} hint={hint} value={value} onChange={(v) => onChange((v ?? {}) as Record<string, Json>)} rows={5} />;
 }
 
 /** name → ref rows (ai inputs, pick, merge, outputs). */
@@ -111,6 +119,8 @@ export function newStep(kind: StepKind, taken: ReadonlySet<string>): Step {
       return { id, type: "loop", forEach: "$input.items", max: 50, steps: [] };
     case "parallel":
       return { id, type: "parallel", branches: { a: [], b: [] } };
+    case "workflow":
+      return { id, type: "workflow", workflow: "" };
   }
 }
 
@@ -177,7 +187,7 @@ export function StepList({ steps, onChange, taken, agents, label = "Steps" }: { 
 function StepCommon({ step, onChange }: { step: Step; onChange: (s: Step) => void }) {
   return (
     <div className="three">
-      <Field label={`Id of ${step.id}`} hint="Lower case letters, digits, underscore.">
+      <Field label={`Id of ${step.id}`} hint="Lower case letters, digits, underscore, hyphen.">
         <TextInput value={step.id} onChange={(e) => onChange({ ...step, id: e.target.value })} />
       </Field>
       <Field label={`Stage of ${step.id}`} hint="Where it sits in the shape.">
@@ -185,7 +195,7 @@ function StepCommon({ step, onChange }: { step: Step; onChange: (s: Step) => voi
           value={step.stage ?? ""}
           onChange={(e) => {
             const { stage: _drop, ...rest } = step;
-            onChange((e.target.value ? { ...rest, stage: e.target.value } : rest) as Step);
+            onChange((e.target.value ? { ...rest, stage: e.target.value as (typeof STAGES)[number] } : rest) as Step);
           }}
           options={[{ value: "", label: "(by kind)" }, ...STAGES.map((s) => ({ value: s, label: s }))]}
         />
@@ -209,10 +219,12 @@ function StepFields({ step, onChange, taken, agents }: { step: Step; onChange: (
       return <ApprovalFields step={step} onChange={onChange} />;
     case "timer":
       return <TimerFields step={step} onChange={onChange} />;
+    case "workflow":
+      return <WorkflowFields step={step} onChange={onChange} />;
     case "condition":
       return (
         <div className="tb-stack">
-          <JsonField label={`Condition of ${step.id}`} hint='A small expression, for example {"==": ["$steps.x.output.ok", true]}. No code.' value={step.if} onChange={(v) => onChange({ ...step, if: v })} rows={3} />
+          <JsonField label={`Condition of ${step.id}`} hint='A small expression, for example {"==": ["$steps.x.output.ok", true]}. No code.' value={step.if} onChange={(v) => onChange({ ...step, if: (v ?? null) as Json })} rows={3} />
           <StepList steps={step.then ?? []} onChange={(then) => onChange({ ...step, then })} taken={taken} agents={agents} label={`${step.id} then`} />
           <StepList steps={step.else ?? []} onChange={(els) => onChange({ ...step, else: els })} taken={taken} agents={agents} label={`${step.id} else`} />
         </div>
@@ -285,9 +297,10 @@ function AppFields({ step, onChange }: { step: AppStep; onChange: (s: Step) => v
           />
         </Field>
       </div>
-      <JsonField label={`Input of ${step.id}`} hint="Checked against the op's input schema of the installed app. Refs: $input.x, $steps.id.output.x, {{ ref }}." value={step.input ?? {}} onChange={(v) => onChange({ ...step, input: (v ?? {}) as Record<string, unknown> })} />
+      <JsonField label={`Input of ${step.id}`} hint="Checked against the op's input schema of the installed app. Refs: $input.x, $steps.id.output.x, {{ ref }}." value={step.input ?? {}} onChange={(v) => onChange({ ...step, input: (v ?? {}) as JsonObject })} />
+      <JsonField label={`Output schema of ${step.id}`} hint="Only for an op whose answer the app does not describe (Connect tools). Optional." value={step.outputSchema} onChange={(v) => onChange({ ...step, outputSchema: v as AppStep["outputSchema"] })} rows={4} />
       <div className="two">
-        <NumberField label={`Retries of ${step.id}`} hint="0 to 10." value={step.retry?.max} onChange={(max) => onChange({ ...step, retry: { ...step.retry, max } })} />
+        <NumberField label={`Attempts of ${step.id}`} hint="1 to 10. 1 = no retry. An op without idempotency is never retried." value={step.retry?.max} onChange={(max) => onChange({ ...step, retry: { ...step.retry, max } })} />
         <NumberField label={`Timeout (s) of ${step.id}`} value={step.timeoutSec} onChange={(timeoutSec) => onChange({ ...step, timeoutSec })} />
       </div>
     </div>
@@ -335,61 +348,111 @@ function AiFields({ step, onChange, agents }: { step: AiStep; onChange: (s: Step
       <Field label={`Instruction of ${step.id}`} hint="Say what content to produce. Never ask it to act: the engine runs every action itself.">
         <Textarea rows={4} value={step.instruction ?? ""} onChange={(e) => onChange({ ...step, instruction: e.target.value })} />
       </Field>
-      <RefMap label={`Inputs of ${step.id}`} hint="Name → ref. The step gets exactly these." value={step.inputs} onChange={(inputs) => onChange({ ...step, inputs })} nameLabel="Input" />
-      <JsonField label={`Output schema of ${step.id}`} hint='Required. A JSON Schema with "type": "object". The output is checked against it.' value={step.outputSchema} onChange={(v) => onChange({ ...step, outputSchema: (v ?? {}) as Record<string, unknown> })} rows={8} />
+      <JsonRefMap label={`Inputs of ${step.id}`} hint="Name → ref. The step gets exactly these." value={step.inputs} onChange={(inputs) => onChange({ ...step, inputs })} nameLabel="Input" />
+      <JsonField label={`Output schema of ${step.id}`} hint='Required. A JSON Schema with "type": "object". The output is checked against it.' value={step.outputSchema} onChange={(v) => onChange({ ...step, outputSchema: (v ?? {}) as AiStep["outputSchema"] })} rows={8} />
       <div className="two">
-        <NumberField label={`Timeout (s) of ${step.id}`} value={step.timeoutSec} onChange={(timeoutSec) => onChange({ ...step, timeoutSec })} />
-        <NumberField label={`Retries of ${step.id}`} value={step.retry?.max} onChange={(max) => onChange({ ...step, retry: { max } })} />
+        <NumberField label={`Timeout (s) of ${step.id}`} hint="10 to 86400. For an agent step this is how long the agent has." value={step.timeoutSec} onChange={(timeoutSec) => onChange({ ...step, timeoutSec })} />
+        <NumberField label={`Attempts of ${step.id}`} hint="1 to 10. An agent step is offered again on each new attempt." value={step.retry?.max} onChange={(max) => onChange({ ...step, retry: { ...step.retry, max } })} />
+      </div>
+      <div className="two">
+        {agentMode ? <NumberField label={`Heartbeat (s) of ${step.id}`} hint="0 to 600. 0 = the agent sends none; only the timeout applies." value={step.heartbeatSec} onChange={(heartbeatSec) => onChange({ ...step, heartbeatSec })} /> : null}
+        <Field label={`On failure of ${step.id}`}>
+          <NativeSelect
+            value={step.onFail ?? "stop"}
+            onChange={(e) => onChange({ ...step, onFail: e.target.value as AiStep["onFail"] })}
+            options={[
+              { value: "stop", label: "stop the run" },
+              { value: "continue", label: "continue" },
+              { value: "ask", label: "ask me" },
+            ]}
+          />
+        </Field>
       </div>
     </div>
   );
 }
 
-const TRANSFORM_OPS = ["pick", "merge", "map", "filter", "template", "normalise", "dedupe"] as const;
+// the operations of src/engine/transform.ts (WP2)
+const TRANSFORM_OPS = ["pick", "rename", "merge", "concat", "template", "map", "filter", "dedupe", "sort", "normalise"] as const;
 type TransformOp = (typeof TRANSFORM_OPS)[number];
+const NORMALISE_OPS = ["trim", "lowercase", "uppercase", "collapse_spaces", "date", "phone"] as const;
+type NormaliseOpName = (typeof NORMALISE_OPS)[number];
 
 function TransformFields({ step, onChange }: { step: TransformStep; onChange: (s: Step) => void }) {
   const op: TransformOp = TRANSFORM_OPS.find((k) => step[k] !== undefined) ?? "pick";
-  const base = { id: step.id, type: "transform" as const, ...(step.stage ? { stage: step.stage } : {}), ...(step.title ? { title: step.title } : {}) };
+  const base = { id: step.id, type: "transform" as const, ...(step.stage ? { stage: step.stage } : {}), ...(step.title ? { title: step.title } : {}), ...(step.outputSchema ? { outputSchema: step.outputSchema } : {}) };
   const start = (k: TransformOp): TransformStep => {
     switch (k) {
       case "pick":
         return { ...base, pick: {} };
+      case "rename":
+        return { ...base, rename: { from: "$input.item", map: {} } };
       case "merge":
         return { ...base, merge: {} };
+      case "concat":
+        return { ...base, concat: { items: ["$input.a", "$input.b"], separator: "\n" } };
       case "map":
         return { ...base, map: { forEach: "$input.items", template: {} } };
       case "filter":
-        return { ...base, filter: { forEach: "$input.items", expr: { "==": ["$item.ok", true] } } };
+        return { ...base, filter: { from: "$input.items", where: { "==": ["$item.ok", true] } } };
       case "template":
         return { ...base, template: "" };
-      case "normalise":
-        return { ...base, normalise: { path: "$input.value", ops: ["trim"] } };
       case "dedupe":
-        return { ...base, dedupe: { forEach: "$input.items", key: "id" } };
+        return { ...base, dedupe: { from: "$input.items", by: "id" } };
+      case "sort":
+        return { ...base, sort: { from: "$input.items", by: "id", order: "asc" } };
+      case "normalise":
+        return { ...base, normalise: { from: "$input.value", ops: ["trim"] } };
     }
+  };
+  const put = <K extends TransformOp>(k: K, v: NonNullable<TransformStep[K]>) => onChange({ ...step, [k]: v } as TransformStep);
+  const from = (k: "filter" | "dedupe" | "sort" | "normalise" | "rename", label: string) => {
+    const cur = step[k] as { from: string } | undefined;
+    return (
+      <Field label={label}>
+        <TextInput className="mono" value={cur?.from ?? ""} onChange={(e) => put(k, { ...(cur as object), from: e.target.value } as never)} />
+      </Field>
+    );
   };
   return (
     <div className="tb-stack">
       <Field label={`Operation of ${step.id}`} hint="No AI and no I/O: deterministic shaping of data.">
         <NativeSelect value={op} onChange={(e) => onChange(start(e.target.value as TransformOp))} options={TRANSFORM_OPS.map((k) => ({ value: k, label: k }))} />
       </Field>
-      {op === "pick" ? <RefMap label={`Pick in ${step.id}`} value={step.pick} onChange={(pick) => onChange({ ...step, pick })} nameLabel="Field" /> : null}
-      {op === "merge" ? <RefMap label={`Merge in ${step.id}`} value={step.merge} onChange={(merge) => onChange({ ...step, merge })} nameLabel="Field" /> : null}
+      {op === "pick" ? <JsonRefMap label={`Pick in ${step.id}`} value={step.pick} onChange={(pick) => put("pick", pick)} nameLabel="Field" /> : null}
+      {op === "merge" ? (
+        Array.isArray(step.merge) ? (
+          <JsonField label={`Merge in ${step.id}`} hint="A list of refs; later ones win." value={step.merge} onChange={(v) => put("merge", (Array.isArray(v) ? v : []) as Json[])} rows={3} />
+        ) : (
+          <JsonRefMap label={`Merge in ${step.id}`} value={step.merge} onChange={(merge) => put("merge", merge)} nameLabel="Field" />
+        )
+      ) : null}
+      {op === "rename" && step.rename ? (
+        <>
+          {from("rename", `Rename the object at (${step.id})`)}
+          <RefMap label={`Names in ${step.id}`} hint="Old name → new name." value={step.rename.map} onChange={(map) => put("rename", { ...(step.rename as NonNullable<TransformStep["rename"]>), map })} nameLabel="Field" refLabel="New name" />
+        </>
+      ) : null}
+      {op === "concat" && step.concat ? (
+        <>
+          <JsonField label={`Items of ${step.id}`} hint="A list of refs or text to join." value={step.concat.items} onChange={(v) => put("concat", { ...(step.concat as NonNullable<TransformStep["concat"]>), items: (Array.isArray(v) ? v : []) as Json[] })} rows={4} />
+          <Field label={`Separator of ${step.id}`}>
+            <TextInput value={step.concat.separator ?? ""} onChange={(e) => put("concat", { ...(step.concat as NonNullable<TransformStep["concat"]>), separator: e.target.value })} />
+          </Field>
+        </>
+      ) : null}
       {op === "map" && step.map ? (
         <>
           <Field label={`For each in ${step.id}`}>
-            <TextInput className="mono" value={step.map.forEach ?? ""} onChange={(e) => onChange({ ...step, map: { ...(step.map as NonNullable<TransformStep["map"]>), forEach: e.target.value } })} />
+            <TextInput className="mono" value={step.map.forEach ?? ""} onChange={(e) => put("map", { ...(step.map as NonNullable<TransformStep["map"]>), forEach: e.target.value })} />
           </Field>
-          <JsonField label={`Template of ${step.id}`} hint="What each item becomes. Use {{ $item.field }}." value={step.map.template} onChange={(template) => onChange({ ...step, map: { ...(step.map as NonNullable<TransformStep["map"]>), template } })} />
+          <JsonField label={`Template of ${step.id}`} hint="What each item becomes. Use {{ $item.field }}." value={step.map.template} onChange={(template) => put("map", { ...(step.map as NonNullable<TransformStep["map"]>), template: (template ?? null) as Json })} />
         </>
       ) : null}
       {op === "filter" && step.filter ? (
         <>
-          <Field label={`For each in ${step.id}`}>
-            <TextInput className="mono" value={step.filter.forEach ?? ""} onChange={(e) => onChange({ ...step, filter: { ...(step.filter as NonNullable<TransformStep["filter"]>), forEach: e.target.value } })} />
-          </Field>
-          <JsonField label={`Keep when (${step.id})`} value={step.filter.expr} onChange={(expr) => onChange({ ...step, filter: { ...(step.filter as NonNullable<TransformStep["filter"]>), expr } })} rows={3} />
+          {from("filter", `List to filter (${step.id})`)}
+          <JsonField label={`Keep when (${step.id})`} hint="A small expression on $item." value={step.filter.where} onChange={(where) => put("filter", { ...(step.filter as NonNullable<TransformStep["filter"]>), where: (where ?? null) as Json })} rows={3} />
         </>
       ) : null}
       {op === "template" ? (
@@ -397,37 +460,61 @@ function TransformFields({ step, onChange }: { step: TransformStep; onChange: (s
           <Textarea rows={4} value={step.template ?? ""} onChange={(e) => onChange({ ...step, template: e.target.value })} />
         </Field>
       ) : null}
-      {op === "normalise" && step.normalise ? (
+      {op === "dedupe" && step.dedupe ? (
         <div className="two">
-          <Field label={`Path of ${step.id}`}>
-            <TextInput className="mono" value={step.normalise.path ?? ""} onChange={(e) => onChange({ ...step, normalise: { ...(step.normalise as NonNullable<TransformStep["normalise"]>), path: e.target.value } })} />
+          {from("dedupe", `List to dedupe (${step.id})`)}
+          <Field label={`Key of ${step.id}`} hint="Optional field that decides what is a duplicate.">
+            <TextInput value={step.dedupe.by ?? ""} onChange={(e) => put("dedupe", { ...(step.dedupe as NonNullable<TransformStep["dedupe"]>), by: e.target.value || undefined })} />
           </Field>
-          <Field label={`Operations of ${step.id}`} hint="trim, lowercase, dates, phone (comma separated).">
-            <TextInput
-              value={(step.normalise.ops ?? []).join(", ")}
-              onChange={(e) =>
-                onChange({
-                  ...step,
-                  normalise: {
-                    ...(step.normalise as NonNullable<TransformStep["normalise"]>),
-                    ops: e.target.value
-                      .split(",")
-                      .map((x) => x.trim())
-                      .filter(Boolean),
-                  },
-                })
-              }
+        </div>
+      ) : null}
+      {op === "sort" && step.sort ? (
+        <div className="three">
+          {from("sort", `List to sort (${step.id})`)}
+          <Field label={`Sort by (${step.id})`}>
+            <TextInput value={step.sort.by ?? ""} onChange={(e) => put("sort", { ...(step.sort as NonNullable<TransformStep["sort"]>), by: e.target.value || undefined })} />
+          </Field>
+          <Field label={`Order of ${step.id}`}>
+            <NativeSelect
+              value={step.sort.order ?? "asc"}
+              onChange={(e) => put("sort", { ...(step.sort as NonNullable<TransformStep["sort"]>), order: e.target.value as "asc" | "desc" })}
+              options={[
+                { value: "asc", label: "ascending" },
+                { value: "desc", label: "descending" },
+              ]}
             />
           </Field>
         </div>
       ) : null}
-      {op === "dedupe" && step.dedupe ? (
-        <div className="two">
-          <Field label={`For each in ${step.id}`}>
-            <TextInput className="mono" value={step.dedupe.forEach ?? ""} onChange={(e) => onChange({ ...step, dedupe: { ...(step.dedupe as NonNullable<TransformStep["dedupe"]>), forEach: e.target.value } })} />
+      {op === "normalise" && step.normalise ? (
+        <div className="three">
+          {from("normalise", `Value to normalise (${step.id})`)}
+          <Field label={`Fields of ${step.id}`} hint="Optional: only these fields of an object (comma separated).">
+            <TextInput
+              value={(step.normalise.fields ?? []).join(", ")}
+              onChange={(e) => {
+                const fields = e.target.value
+                  .split(",")
+                  .map((x) => x.trim())
+                  .filter(Boolean);
+                const { fields: _f, ...rest } = step.normalise as NonNullable<TransformStep["normalise"]>;
+                put("normalise", fields.length ? { ...rest, fields } : rest);
+              }}
+            />
           </Field>
-          <Field label={`Key of ${step.id}`}>
-            <TextInput value={step.dedupe.key ?? ""} onChange={(e) => onChange({ ...step, dedupe: { ...(step.dedupe as NonNullable<TransformStep["dedupe"]>), key: e.target.value } })} />
+          <Field label={`Operations of ${step.id}`} hint={`${NORMALISE_OPS.join(", ")} (comma separated).`}>
+            <TextInput
+              value={(step.normalise.ops ?? []).join(", ")}
+              onChange={(e) =>
+                put("normalise", {
+                  ...(step.normalise as NonNullable<TransformStep["normalise"]>),
+                  ops: e.target.value
+                    .split(",")
+                    .map((x) => x.trim())
+                    .filter((x): x is NormaliseOpName => (NORMALISE_OPS as readonly string[]).includes(x)),
+                })
+              }
+            />
           </Field>
         </div>
       ) : null}
@@ -483,6 +570,31 @@ function TimerFields({ step, onChange }: { step: TimerStep; onChange: (s: Step) 
       ) : (
         <NumberField label={`Seconds of ${step.id}`} value={step.seconds} onChange={(seconds) => onChange({ ...rest, seconds })} />
       )}
+    </div>
+  );
+}
+
+function WorkflowFields({ step, onChange }: { step: WorkflowStep; onChange: (s: Step) => void }) {
+  return (
+    <div className="tb-stack">
+      <div className="three">
+        <Field label={`Workflow of ${step.id}`} hint="The id of a saved workflow. It runs as one step (at most 3 levels deep).">
+          <TextInput value={step.workflow ?? ""} onChange={(e) => onChange({ ...step, workflow: e.target.value })} />
+        </Field>
+        <NumberField label={`Version of ${step.id}`} hint="Optional. Empty = the active version." value={step.version} onChange={(version) => onChange({ ...step, version })} />
+        <Field label={`On failure of ${step.id}`}>
+          <NativeSelect
+            value={step.onFail ?? "stop"}
+            onChange={(e) => onChange({ ...step, onFail: e.target.value as WorkflowStep["onFail"] })}
+            options={[
+              { value: "stop", label: "stop the run" },
+              { value: "continue", label: "continue" },
+              { value: "ask", label: "ask me" },
+            ]}
+          />
+        </Field>
+      </div>
+      <JsonField label={`Input of ${step.id}`} hint="What the saved workflow gets. Refs work here too." value={step.input ?? {}} onChange={(v) => onChange({ ...step, input: (v ?? {}) as JsonObject })} rows={4} />
     </div>
   );
 }

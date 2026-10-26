@@ -1,103 +1,19 @@
-// TEMP (C367 WP3): a local copy of the workflow contract types and `validateContract()` for the owner UI.
-// WP2 owns the real ones in `src/engine/contract.ts` (ENGINE-WP-COMMON: `WorkflowContract`, `Step`, `validateContract()`).
-// When WP2's PR lands, replace the body of this file with
-//     export type { Stage, Step, StepKind, Trigger, WorkflowContract } from "../engine/contract.ts";
-//     export { validateContract } from "../engine/contract.ts";
-// (the real module must stay browser-safe: no node: imports) and keep the helpers below the marker. Nothing else changes.
-// The checks here are the local, pure ones of ENGINE-BUILD §2 (shape, ids, refs, bounds). The checks that need the
-// installed apps (an op's input schema, its audience, idempotency) are the server's: `workflow_contract_validate`.
+// The workflow contract in the browser (C367 M1). The TYPES and the limits are WP2's (src/engine/contract.ts and
+// contract-schema.ts); nothing is copied. WP2's `validateContract()` is NOT imported here: it needs the installed apps'
+// catalog and `@opt2-tealbrick/manifest` (node:crypto), and scripts/build-ui.ts refuses a Node built-in in the browser
+// bundle. The server runs it (`workflow_contract_validate`, "Check with the engine"). `liveCheck()` below is the fast,
+// pure check of shape, ids, refs and bounds that the editor shows while you type; it uses WP2's limits and patterns.
+import type { AiStep, ApprovalStep, AppStep, ConditionStep, LoopStep, ParallelStep, Stage, Step, StepType, TimerStep, TransformStep, Trigger, WorkflowContract, WorkflowStep } from "../engine/contract.ts";
+import { STAGES as ENGINE_STAGES, LIMITS, STEP_TYPES } from "../engine/contract-schema.ts";
 
-export type StepKind = "app" | "ai" | "transform" | "approval" | "timer" | "condition" | "loop" | "parallel";
-export const STEP_KINDS: readonly StepKind[] = ["app", "ai", "transform", "approval", "timer", "condition", "loop", "parallel"];
-/** The canonical shape (ENGINE-BUILD): event → process → enrichment → concat → intelligence → result action. */
-export const STAGES = ["event", "process", "enrichment", "concat", "intelligence", "result"] as const;
-export type Stage = (typeof STAGES)[number];
-
-interface StepBase {
-  id: string;
-  stage?: Stage;
-  title?: string;
-}
-export interface AppStep extends StepBase {
-  type: "app";
-  product: string;
-  op: string;
-  input: Record<string, unknown>;
-  retry?: { max?: number; backoffSec?: number };
-  timeoutSec?: number;
-  onFail?: "stop" | "continue" | "ask";
-}
-export interface AiStep extends StepBase {
-  type: "ai";
-  by: { role: string } | { agent: string };
-  instruction: string;
-  inputs: Record<string, string>;
-  outputSchema: Record<string, unknown>;
-  timeoutSec?: number;
-  retry?: { max?: number };
-  maxTokens?: number;
-  temperature?: number;
-}
-export interface TransformStep extends StepBase {
-  type: "transform";
-  pick?: Record<string, string>;
-  merge?: Record<string, string>;
-  map?: { forEach: string; template: unknown };
-  filter?: { forEach: string; expr: unknown };
-  template?: string;
-  normalise?: { path: string; ops: string[] };
-  dedupe?: { forEach: string; key: string };
-}
-export interface ApprovalStep extends StepBase {
-  type: "approval";
-  title: string;
-  context?: string;
-  responses?: string[];
-  timeoutSec?: number;
-  onDeny?: "stop" | "continue";
-}
-export interface TimerStep extends StepBase {
-  type: "timer";
-  seconds?: number;
-  until?: string;
-}
-export interface ConditionStep extends StepBase {
-  type: "condition";
-  if: unknown;
-  then: Step[];
-  else?: Step[];
-}
-export interface LoopStep extends StepBase {
-  type: "loop";
-  forEach: string;
-  max: number;
-  steps: Step[];
-}
-export interface ParallelStep extends StepBase {
-  type: "parallel";
-  branches: Record<string, Step[]>;
-}
-export type Step = AppStep | AiStep | TransformStep | ApprovalStep | TimerStep | ConditionStep | LoopStep | ParallelStep;
-
-export type Trigger =
-  | { kind: "schedule"; cron?: string; every?: string; timezone: string }
-  | { kind: "manual"; inputs?: Record<string, unknown> }
-  | { kind: "poll"; product: string; op: string; input: Record<string, unknown>; cursorPath: string; every: string }
-  | { kind: "event"; product: string; type: string; filter?: Record<string, unknown> };
-
-export interface WorkflowContract {
-  format: "tealbrick.workflow/1";
-  id: string;
-  version: number;
-  title: string;
-  summary?: string;
-  inputs?: Record<string, unknown>;
-  triggers: Trigger[];
-  steps: Step[];
-  outputs?: Record<string, string>;
-  metrics?: string[];
-  limits?: { maxSteps?: number; maxRunMinutes?: number; maxModelTokens?: number };
-}
+export type { AiStep, ApprovalStep, AppStep, ConditionStep, LoopStep, ParallelStep, Stage, Step, TimerStep, TransformStep, Trigger, WorkflowContract, WorkflowStep };
+export type StepKind = StepType;
+export const STEP_KINDS: readonly StepKind[] = STEP_TYPES;
+/** The labels a step can carry (WP2). */
+export const STAGES: readonly Stage[] = ENGINE_STAGES;
+/** The canonical shape (ENGINE-BUILD): event (the trigger) → process → enrichment → concat → intelligence → result action. */
+export const LANES = ["event", ...ENGINE_STAGES] as const;
+export type Lane = (typeof LANES)[number];
 
 export interface Issue {
   /** JSON pointer into the contract, "" = the contract itself */
@@ -110,15 +26,16 @@ export interface Validation {
   warnings: Issue[];
 }
 
-export const MAX_STEPS = 200;
-export const MAX_PARALLEL = 8;
-export const MAX_LOOP = 200;
-const ID = /^[a-z][a-z0-9_]{0,39}$/;
-const WORKFLOW_ID = /^[a-z][a-z0-9-]{0,63}$/;
+export const MAX_STEPS = LIMITS.maxSteps;
+export const MAX_PARALLEL = LIMITS.maxParallel;
+export const MAX_LOOP = LIMITS.maxLoop;
+// the patterns of contract-schema.ts
+const ID = /^[a-z][a-z0-9_-]{0,31}$/;
+const WORKFLOW_ID = /^[a-z][a-z0-9-]{2,39}$/;
 const PRODUCT = /^[a-z][a-z0-9-]{0,39}$/;
 const OP = /^[a-z][a-z0-9_]{0,39}$/;
-const AGENT = /^agt_[0-9A-Za-z]{10,40}$/;
-const EVERY = /^[1-9][0-9]*[smhd]$/;
+const AGENT = /^agt_[0-9A-Za-z]{1,60}$/;
+const EVERY = /^[1-9][0-9]{0,3}[mhd]$/;
 const CRON5 = /^\S+(\s+\S+){4}$/;
 
 export function validTimeZone(tz: string): boolean {
@@ -134,7 +51,7 @@ const isObj = (v: unknown): v is Record<string, unknown> => v !== null && typeof
 
 /** Every `$steps.<id>` mentioned in a value (strings, nested in objects and arrays). */
 export function stepRefs(v: unknown, into: string[] = []): string[] {
-  if (typeof v === "string") for (const m of v.matchAll(/\$steps\.([a-z][a-z0-9_]*)/g)) into.push(m[1] as string);
+  if (typeof v === "string") for (const m of v.matchAll(/\$steps\.([a-z][a-z0-9_-]*)/g)) into.push(m[1] as string);
   else if (Array.isArray(v)) for (const x of v) stepRefs(x, into);
   else if (isObj(v)) for (const x of Object.values(v)) stepRefs(x, into);
   return into;
@@ -181,14 +98,15 @@ export function allSteps(steps: readonly Step[], pointer = "/steps"): { step: St
   return out;
 }
 
-export function validateContract(c: unknown): Validation {
+/** The quick check of the editor (shape, ids, refs, bounds). Not WP2's `validateContract()`: that one runs on the server. */
+export function liveCheck(c: unknown): Validation {
   const errors: Issue[] = [];
   const warnings: Issue[] = [];
   const err = (pointer: string, message: string) => errors.push({ pointer, message });
   const warn = (pointer: string, message: string) => warnings.push({ pointer, message });
   if (!isObj(c)) return { ok: false, errors: [{ pointer: "", message: "The contract must be a JSON object." }], warnings };
   if (c.format !== "tealbrick.workflow/1") err("/format", 'format must be "tealbrick.workflow/1".');
-  if (typeof c.id !== "string" || !WORKFLOW_ID.test(c.id)) err("/id", "id must be lower case letters, digits and hyphens, starting with a letter (at most 64).");
+  if (typeof c.id !== "string" || !WORKFLOW_ID.test(c.id)) err("/id", "id must be 3 to 40 characters: lower case letters, digits and hyphens, starting with a letter.");
   if (!Number.isInteger(c.version) || (c.version as number) < 1) err("/version", "version must be a whole number from 1.");
   if (typeof c.title !== "string" || !c.title.trim()) err("/title", "title is required.");
   const inputs = isObj(c.inputs) ? c.inputs : null;
@@ -209,7 +127,7 @@ export function validateContract(c: unknown): Validation {
         const hasEvery = typeof t.every === "string" && t.every !== "";
         if (hasCron === hasEvery) err(p, "A schedule trigger has a cron or an every, not both and not neither.");
         if (hasCron && !CRON5.test((t.cron as string).trim())) err(`${p}/cron`, "cron needs 5 fields: minute hour day month weekday.");
-        if (hasEvery && !EVERY.test(t.every as string)) err(`${p}/every`, 'every looks like "15m", "6h" or "1d".');
+        if (hasEvery && !EVERY.test(t.every as string)) err(`${p}/every`, 'every looks like "15m", "6h" or "1d" (minutes, hours or days).');
         if (typeof t.timezone !== "string" || !validTimeZone(t.timezone)) err(`${p}/timezone`, 'timezone must be an IANA name such as "Asia/Bangkok" or "UTC".');
       } else if (t.kind === "poll") {
         if (typeof t.product !== "string" || !PRODUCT.test(t.product)) err(`${p}/product`, "product is required.");
@@ -248,7 +166,7 @@ export function validateContract(c: unknown): Validation {
       }
       const s = raw as Record<string, unknown>;
       count++;
-      if (typeof s.id !== "string" || !ID.test(s.id)) err(`${p}/id`, "id must be lower case letters, digits and underscores, starting with a letter (at most 40).");
+      if (typeof s.id !== "string" || !ID.test(s.id)) err(`${p}/id`, "id must be lower case letters, digits, underscores and hyphens, starting with a letter (at most 32).");
       else if (all.has(s.id)) err(`${p}/id`, `The id "${s.id}" is used twice.`);
       else all.add(s.id);
       if (s.stage !== undefined && !(STAGES as readonly unknown[]).includes(s.stage)) err(`${p}/stage`, `stage must be one of ${STAGES.join(", ")}.`);
@@ -259,7 +177,7 @@ export function validateContract(c: unknown): Validation {
           if (!isObj(s.input)) err(`${p}/input`, "input must be an object.");
           else refCheck(s.input, `${p}/input`, visible, ctx);
           if (s.onFail !== undefined && !["stop", "continue", "ask"].includes(s.onFail as string)) err(`${p}/onFail`, "onFail must be stop, continue or ask.");
-          if (isObj(s.retry) && s.retry.max !== undefined && (!Number.isInteger(s.retry.max) || (s.retry.max as number) < 0 || (s.retry.max as number) > 10)) err(`${p}/retry/max`, "retry.max must be 0 to 10.");
+          if (isObj(s.retry) && s.retry.max !== undefined && (!Number.isInteger(s.retry.max) || (s.retry.max as number) < 1 || (s.retry.max as number) > 10)) err(`${p}/retry/max`, "retry.max (attempts in total) must be 1 to 10.");
           if (s.timeoutSec !== undefined && (!Number.isInteger(s.timeoutSec) || (s.timeoutSec as number) < 1 || (s.timeoutSec as number) > 86_400)) err(`${p}/timeoutSec`, "timeoutSec must be 1 to 86400.");
           break;
         }
@@ -275,14 +193,15 @@ export function validateContract(c: unknown): Validation {
           else refCheck(s.inputs, `${p}/inputs`, visible, ctx);
           if (!isObj(s.outputSchema)) err(`${p}/outputSchema`, "outputSchema is required: an ai step produces typed content.");
           else if (s.outputSchema.type !== "object") err(`${p}/outputSchema/type`, 'outputSchema must have "type": "object".');
+          if (s.timeoutSec !== undefined && (!Number.isInteger(s.timeoutSec) || (s.timeoutSec as number) < 10 || (s.timeoutSec as number) > 86_400)) err(`${p}/timeoutSec`, "timeoutSec of an ai step must be 10 to 86400.");
+          if (s.heartbeatSec !== undefined && (!Number.isInteger(s.heartbeatSec) || (s.heartbeatSec as number) < 0 || (s.heartbeatSec as number) > 600)) err(`${p}/heartbeatSec`, "heartbeatSec must be 0 to 600.");
           if (role && s.maxTokens !== undefined && (!Number.isInteger(s.maxTokens) || (s.maxTokens as number) < 1 || (s.maxTokens as number) > 4000)) err(`${p}/maxTokens`, "maxTokens must be 1 to 4000.");
-          if (role && s.temperature !== undefined && s.temperature !== 0) warn(`${p}/temperature`, "A model role step runs at temperature 0; this value is ignored.");
           if (agent) warn(`${p}/by`, "An agent step runs with the agent's own access. It must return content only; the engine runs every action itself.");
           break;
         }
         case "transform": {
-          const ops = ["pick", "merge", "map", "filter", "template", "normalise", "dedupe"].filter((k) => s[k] !== undefined);
-          if (ops.length !== 1) err(p, `A transform step has exactly one operation (pick, merge, map, filter, template, normalise or dedupe); this one has ${ops.length}.`);
+          const ops = ["pick", "rename", "merge", "concat", "template", "map", "filter", "dedupe", "sort", "normalise"].filter((k) => s[k] !== undefined);
+          if (ops.length !== 1) err(p, `A transform step has exactly one operation (pick, rename, merge, concat, template, map, filter, dedupe, sort or normalise); this one has ${ops.length}.`);
           const itemCtx = { ...ctx, item: true };
           for (const k of ops) refCheck(s[k], `${p}/${k}`, visible, k === "map" || k === "filter" || k === "dedupe" ? itemCtx : ctx);
           if ((s.pick !== undefined && !isObj(s.pick)) || (s.merge !== undefined && !isObj(s.merge))) err(p, "pick and merge map a name to a ref.");
@@ -300,7 +219,7 @@ export function validateContract(c: unknown): Validation {
           const hasSeconds = s.seconds !== undefined;
           const hasUntil = s.until !== undefined;
           if (hasSeconds === hasUntil) err(p, "A timer waits for seconds or until a ref, not both and not neither.");
-          if (hasSeconds && (typeof s.seconds !== "number" || s.seconds <= 0)) err(`${p}/seconds`, "seconds must be a number above 0.");
+          if (hasSeconds && (!Number.isInteger(s.seconds) || (s.seconds as number) < 1)) err(`${p}/seconds`, "seconds must be a whole number from 1.");
           if (hasUntil) refCheck(s.until, `${p}/until`, visible, ctx);
           break;
         }
@@ -331,6 +250,13 @@ export function validateContract(c: unknown): Validation {
           }
           break;
         }
+        case "workflow": {
+          if (typeof s.workflow !== "string" || !WORKFLOW_ID.test(s.workflow)) err(`${p}/workflow`, "workflow is the id of a saved workflow.");
+          if (s.version !== undefined && (!Number.isInteger(s.version) || (s.version as number) < 1)) err(`${p}/version`, "version must be a whole number from 1.");
+          if (s.input !== undefined && !isObj(s.input)) err(`${p}/input`, "input must be an object.");
+          else refCheck(s.input, `${p}/input`, visible, ctx);
+          break;
+        }
         default:
           err(`${p}/type`, `type must be one of ${STEP_KINDS.join(", ")}.`);
       }
@@ -352,11 +278,11 @@ export function validateContract(c: unknown): Validation {
         else for (const id of stepRefs(v)) if (!all.has(id)) err(`/outputs/${k}`, `$steps.${id} refers to a step that does not exist.`);
       }
   }
-  if (c.metrics !== undefined && (!Array.isArray(c.metrics) || c.metrics.length > 20 || c.metrics.some((m: unknown) => typeof m !== "string" || !/^[a-z][a-z0-9_]{1,40}$/.test(m)))) err("/metrics", "metrics: at most 20 names (lower case letters, digits, underscore).");
+  if (c.metrics !== undefined && (!Array.isArray(c.metrics) || c.metrics.length > 20 || c.metrics.some((m: unknown) => typeof m !== "string" || !/^[a-z][a-z0-9_]{0,39}$/.test(m)))) err("/metrics", "metrics: at most 20 names (lower case letters, digits, underscore).");
   return { ok: errors.length === 0, errors, warnings };
 }
 
-// ── helpers of the owner UI (not part of WP2's module; keep when swapping the body above) ──
+// ── helpers of the owner UI ──
 
 /** Where a step sits in the canonical shape when it has no `stage` label: by its kind. Flow-control kinds have no lane. */
 export function defaultStage(s: Step): Stage | null {

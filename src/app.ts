@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 import { type AppDefinition, type Caller, type Db, defineApp, type HandlerSpec, type OpContext, type SdkAppDefinition, type SdkOpContext, TbError } from "@opt2-tealbrick/miniapp-sdk";
 import type * as K from "#kit";
 import { OP, type OpId } from "#kit";
-import { agentStepHandlers, defaultCompletion } from "./agentsteps/index.ts";
+import { agentStepHandlers, defaultCompletion, wireAgentSteps } from "./agentsteps/index.ts";
 import * as cycles from "./cycles.ts";
 import { DEFAULT_MIN_REPEATS, KANBAN } from "./detector.ts";
 import * as directory from "./directory.ts";
@@ -453,6 +453,9 @@ export const definition: SdkAppDefinition = {
   // C85: the Kanban scan runs without an op call (app-initiated companion call with Evolution's own grant).
   async onStart(ctx) {
     detectorRefresh.start({ db: ctx.db, callApp: ctx.callApp.bind(ctx), log: ctx.log });
+    // C367: agent steps. The engine's `ai` activity offers a step through the port (stored in agent_step_runs); step_report
+    // completes the Temporal activity with the client of the engine (503 engine_unavailable while Temporal is down).
+    wireAgentSteps(ctx.db);
     // C367: the Temporal worker + reconcile job (off while TEMPORAL_ADDRESS is not set)
     startEngine({ db: ctx.db, callApp: ctx.callApp.bind(ctx), log: ctx.log });
     // C367 WP1: tell the status push when the workflow engine goes down or comes back (never in /tb/v1/health).

@@ -4,21 +4,24 @@
 import { Button, Dialog, EmptyState, Field, NativeSelect, Notice, Tag, TextInput } from "@opt2-tealbrick/ui";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { type EngineSchedule, engine } from "./engine-ops.ts";
-import { errorText, everyText, type Out, person, TIME_ZONES, zoned } from "./ops.ts";
+import { errorText, TIME_ZONES, zoned } from "./ops.ts";
 
-type Workflow = Out<"workflows_list">["workflows"][number];
+/** A saved workflow the schedule can run: one entry per workflow id, titled by its newest version (`workflow_contracts_list`). */
+type Workflow = { id: string; title: string };
+// the unit letters of `every` ("15m", "6h", "1d")
 const UNITS = [
-  { value: "60", label: "minutes" },
-  { value: "3600", label: "hours" },
-  { value: "86400", label: "days" },
+  { value: "m", label: "minutes" },
+  { value: "h", label: "hours" },
+  { value: "d", label: "days" },
 ] as const;
+const EVERY = /^[1-9][0-9]{0,3}[mhd]$/;
 const CRON5 = /^\S+(\s+\S+){4}$/;
 
-export function EngineSchedules({ onOpenRun }: { onOpenRun?: (runId: string) => void }) {
+export function EngineSchedules({ onOpenRuns }: { onOpenRuns?: () => void }) {
   const [rows, setRows] = useState<EngineSchedule[] | null>(null);
   const [workflows, setWorkflows] = useState<Workflow[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<{ text: string; runId: string | null } | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [editing, setEditing] = useState<EngineSchedule | "new" | null>(null);
   const busy = useRef(new Set<string>()); // C8: one call at a time per schedule, even for two clicks before React re-renders
   const [working, setWorking] = useState<string | null>(null);
@@ -32,11 +35,16 @@ export function EngineSchedules({ onOpenRun }: { onOpenRun?: (runId: string) => 
   }, []);
   useEffect(() => {
     void load();
-    person("workflows_list", {})
-      .then((r) => setWorkflows(r.workflows))
+    engine("workflow_contracts_list", {})
+      .then((r) => {
+        const seen = new Map<string, string>();
+        for (const c of [...r.contracts].sort((a, b) => b.version - a.version)) if (!seen.has(c.workflowId)) seen.set(c.workflowId, c.title);
+        setWorkflows([...seen].map(([id, title]) => ({ id, title })));
+      })
       .catch(() => {});
   }, [load]);
 
+  const titleOf = (workflowId: string) => workflows.find((w) => w.id === workflowId)?.title ?? workflowId;
   const act = async (id: string, fn: () => Promise<void>) => {
     if (busy.current.has(id)) return;
     busy.current.add(id);
@@ -77,10 +85,10 @@ export function EngineSchedules({ onOpenRun }: { onOpenRun?: (runId: string) => 
       {notice ? (
         <Notice tone="live" role="status">
           <span className="tb-row">
-            <span>{notice.text}</span>
-            {notice.runId && onOpenRun ? (
-              <Button size="sm" onClick={() => onOpenRun(notice.runId as string)}>
-                Open run
+            <span>{notice}</span>
+            {onOpenRuns ? (
+              <Button size="sm" onClick={onOpenRuns}>
+                See runs
               </Button>
             ) : null}
             <Button size="sm" onClick={() => setNotice(null)}>
@@ -103,7 +111,7 @@ export function EngineSchedules({ onOpenRun }: { onOpenRun?: (runId: string) => 
             <article key={s.id} className="tb-card">
               <div className="card-head">
                 <h3>
-                  {s.workflowTitle} <Tag status={s.paused ? "idle" : "live"}>{s.paused ? "paused" : "active"}</Tag>
+                  {titleOf(s.workflowId)} <Tag status={s.paused ? "idle" : "live"}>{s.paused ? "paused" : "active"}</Tag>
                 </h3>
                 <div className="tb-ctas">
                   <Button
@@ -112,7 +120,8 @@ export function EngineSchedules({ onOpenRun }: { onOpenRun?: (runId: string) => 
                     onClick={() =>
                       void act(s.id, async () => {
                         const r = await engine("schedule_run_now", { id: s.id });
-                        setNotice({ text: `Started run ${r.runId}.`, runId: r.runId });
+                        // the engine starts the run through the Temporal Schedule, so there is no run id to show yet
+                        setNotice(r.triggered ? "Run started." : "The engine did not start a run. Try again in a moment.");
                       })
                     }
                   >
@@ -130,12 +139,14 @@ export function EngineSchedules({ onOpenRun }: { onOpenRun?: (runId: string) => 
                 </div>
               </div>
               <p className="tb-hint">
-                {s.cron ? `cron ${s.cron}` : `every ${everyText(s.everySec ?? 0)}`} · {s.timezone} · {s.version ? `pinned v${s.version}` : "active version"} · {s.overlap === "skip" ? "skips a run that would overlap" : "keeps one waiting run"}
+                {s.kind === "poll" ? "polls " : ""}
+                {s.cron ? `cron ${s.cron}` : `every ${everyText(s.every)}`} · {s.timezone} · {s.versionPin ? `pinned v${s.versionPin}` : "active version"} · {s.overlap === "skip" ? "skips a run that would overlap" : "keeps one waiting run"}
               </p>
               <p className="tb-hint">
-                {s.paused ? "Paused." : s.nextRunAt ? `Next run ${zoned(s.nextRunAt, s.timezone)} (${s.timezone}).` : "No next run."}
-                {s.lastRunAt ? ` Last run ${zoned(s.lastRunAt, s.timezone)}${s.lastRunStatus ? `, ${s.lastRunStatus.replace("_", " ")}` : ""}.` : ""}
+                {s.paused ? "Paused." : s.live?.nextRunAt ? `Next run ${zoned(s.live.nextRunAt, s.timezone)} (${s.timezone}).` : "No next run."}
+                {s.live?.lastRunAt ? ` Last run ${zoned(s.live.lastRunAt, s.timezone)}.` : ""}
               </p>
+              {syncNote(s) ? <p className="tb-hint">{syncNote(s)}</p> : null}
             </article>
           ))}
         </div>
@@ -155,17 +166,32 @@ export function EngineSchedules({ onOpenRun }: { onOpenRun?: (runId: string) => 
   );
 }
 
-/** Seconds → [value, unit seconds] in the largest unit that divides it. */
-export function splitEvery(sec: number): [string, string] {
-  for (const u of [86_400, 3_600, 60]) if (sec % u === 0) return [String(sec / u), String(u)];
-  return [String(Math.max(1, Math.round(sec / 60))), "60"];
+/** "15m" → ["15", "m"]; anything else starts at 15 minutes. */
+export function splitEvery(every: string | null): [string, string] {
+  const m = every ? /^([1-9][0-9]{0,3})([mhd])$/.exec(every) : null;
+  return m ? [m[1] as string, m[2] as string] : ["15", "m"];
+}
+
+/** "15m" → "15 min" */
+export function everyText(every: string | null): string {
+  const [n, u] = splitEvery(every);
+  return u === "d" ? (n === "1" ? "1 day" : `${n} days`) : u === "h" ? `${n} h` : `${n} min`;
+}
+
+/** What the owner should know when Temporal does not yet match the saved schedule (it is created again when it can be). */
+function syncNote(s: EngineSchedule): string | null {
+  if (s.temporalState === "pending") return "Saved. The engine creates it as soon as Temporal answers.";
+  if (s.temporalState === "error") return `The engine could not apply this schedule.${s.temporalError ? ` ${s.temporalError}` : ""}`;
+  if (s.live?.state === "missing") return "Temporal does not know this schedule. The engine will create it again.";
+  if (s.live?.state === "unreachable") return "Temporal cannot be reached, so the next run time is not known now.";
+  return null;
 }
 
 function ScheduleDialog({ schedule: s, workflows, onClose, onSaved }: { schedule: EngineSchedule | null; workflows: Workflow[]; onClose: () => void; onSaved: () => Promise<void> }) {
-  const [every0, unit0] = splitEvery(s?.everySec ?? 900);
+  const [every0, unit0] = splitEvery(s?.every ?? null);
   const [form, setForm] = useState({
     workflowId: s?.workflowId ?? "",
-    pin: s?.version ? String(s.version) : "",
+    pin: s?.versionPin ? String(s.versionPin) : "",
     mode: s ? (s.cron ? "cron" : "every") : "cron",
     cron: s?.cron ?? "0 8 * * *",
     every: every0,
@@ -175,14 +201,14 @@ function ScheduleDialog({ schedule: s, workflows, onClose, onSaved }: { schedule
   });
   const [error, setError] = useState<string | null>(null);
   const [working, setWorking] = useState(false);
-  const everySec = Number(form.every) * Number(form.unit);
+  const everyValue = `${Number(form.every)}${form.unit}`;
   const problem =
     !form.workflowId
       ? "Choose a workflow."
       : form.mode === "cron" && !CRON5.test(form.cron.trim())
         ? "A cron has 5 fields: minute hour day month weekday."
-        : form.mode === "every" && !(Number.isInteger(everySec) && everySec >= 60)
-          ? "An interval is a whole number of minutes, at least 1."
+        : form.mode === "every" && !EVERY.test(everyValue)
+          ? "An interval is a whole number from 1 to 9999 of minutes, hours or days."
           : form.pin.trim() !== "" && !(Number.isInteger(Number(form.pin)) && Number(form.pin) >= 1)
             ? "A pinned version is a whole number from 1."
             : null;
@@ -192,8 +218,8 @@ function ScheduleDialog({ schedule: s, workflows, onClose, onSaved }: { schedule
       await engine("schedule_set", {
         ...(s ? { id: s.id, revision: s.revision } : {}),
         workflowId: form.workflowId,
-        version: form.pin.trim() === "" ? null : Number(form.pin),
-        ...(form.mode === "cron" ? { cron: form.cron.trim().replace(/\s+/g, " ") } : { everySec }),
+        versionPin: form.pin.trim() === "" ? null : Number(form.pin),
+        ...(form.mode === "cron" ? { cron: form.cron.trim().replace(/\s+/g, " ") } : { every: everyValue }),
         timezone: form.timezone,
         overlap: form.overlap,
       });
@@ -207,7 +233,7 @@ function ScheduleDialog({ schedule: s, workflows, onClose, onSaved }: { schedule
     <Dialog
       open
       kicker="Engine schedule"
-      title={s ? `Edit ${s.workflowTitle}` : "New engine schedule"}
+      title={s ? `Edit ${workflows.find((w) => w.id === s.workflowId)?.title ?? s.workflowId}` : "New engine schedule"}
       onClose={onClose}
       busy={working}
       footer={

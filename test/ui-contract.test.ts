@@ -1,30 +1,31 @@
-// The owner UI's contract helpers (src/ui/engine-contract.ts, TEMP copy of WP2's validateContract): quiet on the two
+// The owner UI's contract helpers (src/ui/engine-contract.ts: the editor's live check; WP2's validateContract runs on the server): quiet on the two
 // example workflows of ENGINE-BUILD §12, loud on every rule they break; the lanes of the canonical shape.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { appOps, placeSteps, STAGES, type Step, validateContract, type WorkflowContract } from "../src/ui/engine-contract.ts";
+import { validateContract } from "../src/engine/validate.ts";
+import { appOps, LANES, liveCheck, placeSteps, STAGES, type Step, type WorkflowContract } from "../src/ui/engine-contract.ts";
 import { DAILY_EMAIL_SUMMARY, INBOUND_EMAIL_ADVISOR } from "../src/ui/engine-samples.ts";
 
 const clone = (): WorkflowContract => structuredClone(DAILY_EMAIL_SUMMARY);
-const errorsOf = (c: unknown) => validateContract(c).errors;
+const errorsOf = (c: unknown) => liveCheck(c).errors;
 const has = (c: unknown, pointer: string, text: RegExp) => errorsOf(c).some((e) => e.pointer === pointer && text.test(e.message));
 
 test("quiet: both example workflows of ENGINE-BUILD §12 are valid", () => {
   for (const c of [DAILY_EMAIL_SUMMARY, INBOUND_EMAIL_ADVISOR]) {
-    const v = validateContract(c);
+    const v = liveCheck(c);
     assert.deepEqual(v.errors, [], c.id);
     assert.equal(v.ok, true);
   }
   // the notes are honest: events need P2, an agent step acts with its own access
-  const notes = validateContract(INBOUND_EMAIL_ADVISOR).warnings.map((w) => w.message).join(" | ");
+  const notes = liveCheck(INBOUND_EMAIL_ADVISOR).warnings.map((w) => w.message).join(" | ");
   assert.match(notes, /P2/);
   assert.match(notes, /own access/);
-  assert.deepEqual(validateContract(DAILY_EMAIL_SUMMARY).warnings, [], "the model-role workflow has nothing to note");
+  assert.deepEqual(liveCheck(DAILY_EMAIL_SUMMARY).warnings, [], "the model-role workflow has nothing to note");
 });
 
 test("fire: not an object, wrong format, bad ids, no title, no trigger", () => {
-  assert.equal(validateContract(null).ok, false);
-  assert.equal(validateContract([]).ok, false);
+  assert.equal(liveCheck(null).ok, false);
+  assert.equal(liveCheck([]).ok, false);
   const c = { ...clone(), format: "x", id: "Bad Id", version: 0, title: " ", triggers: [] };
   for (const p of ["/format", "/id", "/version", "/title", "/triggers"]) assert.ok(errorsOf(c).some((e) => e.pointer === p), p);
 });
@@ -151,8 +152,9 @@ test("the lanes: a label wins, a container's label goes to its children, the kin
   assert.equal(stage("gate")?.stage, null, "a condition without a label is flow control");
   assert.equal(stage("review")?.stage, null, "so is an approval");
   assert.deepEqual(stage("crm")?.within, ["gate › then", "enrich › customer"]);
-  // the canonical order is the order of STAGES
-  assert.deepEqual([...STAGES], ["event", "process", "enrichment", "concat", "intelligence", "result"]);
+  // the canonical order is the order of LANES (the event lane is the trigger; the labels of a step are WP2's STAGES)
+  assert.deepEqual([...LANES], ["event", "process", "enrichment", "concat", "intelligence", "result"]);
+  assert.deepEqual([...STAGES], ["process", "enrichment", "concat", "intelligence", "result"]);
 });
 
 test("appOps lists each op once, a dynamic tool by its name, the poll trigger first", () => {
@@ -165,4 +167,60 @@ test("appOps lists each op once, a dynamic tool by its name, the poll trigger fi
   assert.ok(b.includes("knowledge.recall:null|step notes"));
   assert.equal(new Set(b).size, b.length);
   assert.deepEqual(appOps({ steps: [], triggers: [] }), []);
+});
+
+// ── the quick check is bound to WP2's validator (the real one runs on the server) ──
+
+test("quiet: the editor's examples are accepted by WP2's validateContract, so Save and Activate work on them", () => {
+  for (const c of [DAILY_EMAIL_SUMMARY, INBOUND_EMAIL_ADVISOR]) {
+    const v = validateContract(c, { companions: null });
+    assert.deepEqual(v.errors, [], c.id);
+  }
+});
+
+test("fire: what the quick check refuses, WP2's validator refuses too (ids, transform ops, retry, timer, workflow step, stage labels)", () => {
+  const mutate = (f: (c: WorkflowContract) => void): WorkflowContract => {
+    const c = clone();
+    f(c);
+    return c;
+  };
+  const cases: Record<string, WorkflowContract> = {
+    "a workflow id of two characters": mutate((c) => {
+      c.id = "ab";
+    }),
+    "a step id with an upper-case letter": mutate((c) => {
+      (c.steps[1] as Step).id = "Slim";
+    }),
+    "a transform with two operations": mutate((c) => {
+      (c.steps[3] as { pick?: object }).pick = {};
+    }),
+    "retry.max of 0": mutate((c) => {
+      (c.steps[0] as { retry?: object }).retry = { max: 0 };
+    }),
+    "a timer of 0 seconds": mutate((c) => {
+      c.steps.push({ id: "wait", type: "timer", seconds: 0 });
+    }),
+    "an unknown stage label": mutate((c) => {
+      (c.steps[0] as { stage?: string }).stage = "event";
+    }),
+    "an agent id that is not an agent id": mutate((c) => {
+      (c.steps[2] as { by: object }).by = { agent: "not-an-agent" };
+    }),
+    "a workflow step without a workflow": mutate((c) => {
+      c.steps.push({ id: "sub", type: "workflow" } as unknown as Step);
+    }),
+  };
+  for (const [what, c] of Object.entries(cases)) {
+    assert.equal(liveCheck(c).ok, false, `quick check: ${what}`);
+    assert.equal(validateContract(c, { companions: null }).ok, false, `WP2: ${what}`);
+  }
+});
+
+test("quiet: the new engine shapes pass the quick check (a workflow step, the WP2 transform operations, a hyphen in an id)", () => {
+  const c = clone();
+  c.steps.push({ id: "child", type: "workflow", workflow: "inbound-email-advisor", input: {} });
+  c.steps.push({ id: "sorted", type: "transform", sort: { from: "$steps.slim.output", by: "from", order: "asc" } });
+  c.steps.push({ id: "clean", type: "transform", normalise: { from: "$steps.slim.output", fields: ["from"], ops: ["trim", "lowercase"] } });
+  c.steps.push({ id: "a-b", type: "transform", template: "x" });
+  assert.deepEqual(liveCheck(c).errors, []);
 });

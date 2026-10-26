@@ -1,7 +1,7 @@
 // The engine pages of the owner UI (C367 WP3): workflow editor, canonical-shape view, activation review, engine schedules,
 // runs with the agent-step history, and engine runs next to legacy runs in Cycles. The pages are compiled with the build
 // tsconfig into dist/ui-test-engine (a folder of its own, so this file can run beside test/ui-holds.test.ts) and rendered in
-// happy-dom against the real SDK client and a stub server. WP2's ops are stubbed by name (src/ui/engine-ops.ts is TEMP).
+// happy-dom against the real SDK client and a stub server. The stub answers with the shapes of WP2's ops (the generated kit types in src/ui/engine-ops.ts).
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
@@ -161,7 +161,8 @@ after(() => win.close());
 
 const reset = () => {
   stub.calls = [];
-  stub.handlers = {};
+  // the editor lists the saved contract versions as it opens
+  stub.handlers = { workflow_contracts_list: () => ({ contracts: [] }) };
   stub.fail = {};
   win.sessionStorage.clear();
 };
@@ -175,7 +176,7 @@ const USAGE = [
   { product: "connect", op: "gmail_fetch_emails", crud: ["read"], effect: "read", scope: "account sales", held: false },
   { product: "connect", op: "gmail_create_email_draft", crud: ["create"], effect: "write", scope: "account sales", held: true },
 ];
-const validateOk = () => ({ ok: true, errors: [], warnings: [], usage: USAGE, activeVersion: null });
+const validateOk = () => ({ ok: true, errors: [], warnings: [], uses: [], stepTypes: {}, usage: USAGE, activeVersion: null });
 
 // ───────────────────────────────────────────────────────────────────────────
 describe("Workflow editor", () => {
@@ -310,7 +311,7 @@ describe("Workflow editor", () => {
     await setValue(control(m.host, "Summary"), "changed");
     assert.doesNotMatch(text(m.host), /accepted by the engine/);
     // the engine says no
-    stub.handlers.workflow_contract_validate = () => ({ ok: false, errors: [{ pointer: "/steps/0/input", message: "arguments.query is not allowed by gmail_fetch_emails" }], warnings: [], usage: [], activeVersion: null });
+    stub.handlers.workflow_contract_validate = () => ({ ok: false, errors: [{ severity: "error", code: "input_invalid", path: "/steps/0/input", pointer: "/steps/0/input", message: "arguments.query is not allowed by gmail_fetch_emails" }], warnings: [], uses: [], stepTypes: {}, usage: [], activeVersion: null });
     await click(button(m.host, "Check with the engine"));
     assert.match(text(m.host), /refused by the engine/);
     assert.match(text(m.host), /arguments\.query is not allowed/);
@@ -332,6 +333,77 @@ describe("Workflow editor", () => {
     await click(button(m.host, "Check with the engine"));
     assert.match(alerts(m.host)[0] ?? "", /signed out/);
     assert.doesNotMatch(alerts(m.host)[0] ?? "", /raw upstream/, "a signed-out session is the shared sentence");
+    await m.unmount();
+  });
+});
+
+describe("Workflow editor: save, list, open", () => {
+  const VERSIONS = [
+    { workflowId: "daily-email-summary", version: 2, title: "Summarize my daily emails", createdAt: "2026-10-26T04:00:00.000Z", state: "active" },
+    { workflowId: "daily-email-summary", version: 1, title: "Summarize my daily emails", createdAt: "2026-10-25T04:00:00.000Z", state: "superseded" },
+  ];
+
+  it("quiet: Save sends the contract to workflow_contract_save and says the version is stored and not yet running; the list reloads", async () => {
+    reset();
+    let saved = false;
+    stub.handlers.workflow_contracts_list = () => ({ contracts: saved ? VERSIONS : [] });
+    stub.handlers.workflow_contract_save = (i) => {
+      saved = true;
+      return { workflowId: (i.contract as { id: string }).id, version: 2, digest: "sha256:abc", created: true, warnings: [] };
+    };
+    const m = await mount(h(editor.Editor, { agents: AGENTS }));
+    await click(button(m.host, "Load example"));
+    await click(button(m.host, "Save version"));
+    const [sent] = callsOf("workflow_contract_save");
+    assert.equal((sent?.contract as { id: string } | undefined)?.id, "daily-email-summary");
+    assert.match(text(m.host), /Saved as version 2 of daily-email-summary\. A saved version never changes\. Activate it on the Activation page to run it\./);
+    assert.equal(callsOf("workflow_promote").length + callsOf("draft_create").length, 0, "there is no engine draft and no promote");
+    assert.match(text(m.host.querySelector('[aria-label="Saved versions"]')), /version 2.*active.*version 1.*superseded/);
+    assert.deepEqual(alerts(m.host), []);
+    await m.unmount();
+  });
+
+  it("the same content saved again says nothing changed", async () => {
+    reset();
+    stub.handlers.workflow_contract_save = () => ({ workflowId: "daily-email-summary", version: 1, digest: "sha256:abc", created: false, warnings: [] });
+    const m = await mount(h(editor.Editor, { agents: AGENTS }));
+    await click(button(m.host, "Load example"));
+    await click(button(m.host, "Save version"));
+    assert.match(text(m.host), /was saved before with exactly this content\. Nothing changed\./);
+    await m.unmount();
+  });
+
+  it("Open loads a saved version through workflow_contract_get into the editor", async () => {
+    reset();
+    stub.handlers.workflow_contracts_list = () => ({ contracts: VERSIONS });
+    stub.handlers.workflow_contract_get = (i) => ({ workflowId: i.workflowId, version: i.version, title: "Opened one", digest: "sha256:abc", createdAt: "2026-10-26T04:00:00.000Z", contract: { ...DAILY_EMAIL_SUMMARY, title: "Opened one", version: i.version }, activation: null });
+    const m = await mount(h(editor.Editor, { agents: AGENTS }));
+    await click(button(m.host, "Open daily-email-summary version 1"));
+    assert.deepEqual(callsOf("workflow_contract_get"), [{ workflowId: "daily-email-summary", version: 1 }]);
+    assert.equal(control<HTMLInputElement>(m.host, "Title").value, "Opened one");
+    assert.match(text(m.host), /Opened version 1 of daily-email-summary\. To change it, raise the contract version/);
+    await m.unmount();
+  });
+
+  it("fire: a refused save (the version exists with other content) is a plain alert and the page keeps the work; a broken contract cannot be saved", async () => {
+    reset();
+    stub.fail.workflow_contract_save = { status: 409, code: "version_exists" };
+    const m = await mount(h(editor.Editor, { agents: AGENTS }));
+    await click(button(m.host, "Load example"));
+    await click(button(m.host, "Save version"));
+    assert.match(alerts(m.host)[0] ?? "", /Not saved\./);
+    assert.doesNotMatch(text(m.host), /Saved as version/);
+    assert.equal(control<HTMLInputElement>(m.host, "Title").value, "Summarize my daily emails");
+    await setValue(control(m.host, "Title"), "");
+    assert.ok(button(m.host, "Save version").disabled, "the live check has a problem");
+    await m.unmount();
+  });
+
+  it("fire: a failed list of saved versions says so", async () => {
+    reset();
+    stub.fail.workflow_contracts_list = { status: 500, code: "internal_error" };
+    const m = await mount(h(editor.Editor, { agents: AGENTS }));
+    assert.match(alerts(m.host)[0] ?? "", /Saved versions could not be loaded/);
     await m.unmount();
   });
 });
@@ -358,19 +430,33 @@ describe("Canonical-shape view", () => {
 
 // ───────────────────────────────────────────────────────────────────────────
 describe("Activation review", () => {
-  const WF = "wfl_01HZX3K8Q2V4N6P8R0S2T4V6W8";
+  const WF = "daily-email-summary";
   const setup = (review: () => unknown = validateOk) => {
     reset();
-    stub.handlers.workflows_list = () => ({ workflows: [{ id: WF, title: "Daily email summary", activeVersion: 2 }] });
-    stub.handlers.workflow_versions = () => ({ workflow: { id: WF, title: "Daily email summary", activeVersion: 2 }, versions: [{ version: 1 }, { version: 2 }], pipelines: [] });
+    stub.handlers.workflow_contracts_list = () => ({
+      contracts: [
+        { workflowId: WF, version: 2, title: "Daily email summary", createdAt: "2026-10-26T04:00:00.000Z", state: null },
+        { workflowId: WF, version: 1, title: "Daily email summary", createdAt: "2026-10-25T04:00:00.000Z", state: "superseded" },
+      ],
+    });
     stub.handlers.workflow_contract_validate = review;
-    stub.handlers.workflow_activate = (i) => ({ workflowId: i.workflowId, activeVersion: i.version, activatedAt: "2026-10-26T05:00:00.000Z" });
-    stub.handlers.workflow_deactivate = (i) => ({ workflowId: i.workflowId, deactivatedAt: "2026-10-26T05:00:00.000Z" });
+    stub.handlers.workflow_activate = (i) => ({ workflowId: i.workflowId, version: i.version, activeVersion: i.version, previousVersion: i.version === 2 ? 1 : null, activatedAt: "2026-10-26T05:00:00.000Z", ops: [], usage: USAGE, crud: {}, scopes: [], warnings: [], notice: "The bridge limits Evolving Workflows as a whole." });
+    stub.handlers.workflow_deactivate = (i) => ({ workflowId: i.workflowId, deactivatedVersions: [1], schedulesPaused: 1 });
   };
   const pick = async (host: Element) => {
     await choose(control<HTMLSelectElement>(host, "Workflow"), WF);
     await flush();
   };
+
+  it("the version list says which versions are active or superseded (the engine's state)", async () => {
+    setup();
+    const m = await mount(h(activation.Activation, {}));
+    await pick(m.host);
+    const options = [...control<HTMLSelectElement>(m.host, "Version").querySelectorAll("option")].map((o) => o.textContent);
+    assert.deepEqual(options, ["version 2", "version 1 (superseded)"]);
+    assert.equal(callsOf("workflows_list").length + callsOf("workflow_versions").length, 0, "the engine's own list, not the 0.3.x store");
+    await m.unmount();
+  });
 
   it("quiet: choosing a workflow reviews its newest version: ops, access, scopes, the honest label; Activate sends workflow and version", async () => {
     setup();
@@ -386,7 +472,7 @@ describe("Activation review", () => {
     assert.deepEqual(alerts(m.host), []);
     await click(button(m.host, "Activate version 2"));
     assert.deepEqual(callsOf("workflow_activate"), [{ workflowId: WF, version: 2 }]);
-    assert.match(text(m.host), /Version 2 is active/);
+    assert.match(text(m.host), /Version 2 is active\. Version 1 no longer starts new runs\./);
     await m.unmount();
   });
 
@@ -402,12 +488,12 @@ describe("Activation review", () => {
     assert.ok(button(m.host, "Activate version 1").disabled, "already active");
     await click(button(m.host, "Deactivate"));
     assert.deepEqual(callsOf("workflow_deactivate"), [{ workflowId: WF }]);
-    assert.match(text(m.host), /deactivated/);
+    assert.match(text(m.host), /deactivated.*1 schedule is paused/);
     await m.unmount();
   });
 
   it("fire: a version the engine refuses lists the problems and cannot be activated", async () => {
-    setup(() => ({ ok: false, errors: [{ pointer: "/steps/0/input", message: "connect.tools is not open to agents" }], warnings: [], usage: [], activeVersion: null }));
+    setup(() => ({ ok: false, errors: [{ severity: "error", code: "op_not_agent", path: "/steps/0/input", pointer: "/steps/0/input", message: "connect.tools is not open to agents" }], warnings: [], uses: [], stepTypes: {}, usage: [], activeVersion: null }));
     const m = await mount(h(activation.Activation, {}));
     await pick(m.host);
     assert.match(text(m.host), /connect\.tools is not open to agents/);
@@ -420,7 +506,6 @@ describe("Activation review", () => {
     setup();
     const m = await mount(h(activation.Activation, {}));
     await pick(m.host);
-    stub.handlers.workflow_activate = () => ({});
     stub.fail.workflow_activate = { status: 409, code: "conflict" };
     await click(button(m.host, "Activate version 2"));
     assert.equal(alerts(m.host).length, 1);
@@ -436,27 +521,33 @@ describe("Activation review", () => {
 
 // ───────────────────────────────────────────────────────────────────────────
 describe("Engine schedules", () => {
-  const WF = "wfl_01HZX3K8Q2V4N6P8R0S2T4V6W8";
+  const WF = "daily-email-summary";
   const sched = (extra: Record<string, unknown> = {}) => ({
     id: "sch_1",
     workflowId: WF,
-    workflowTitle: "Daily email summary",
-    version: null,
+    versionPin: null,
+    kind: "schedule",
     cron: "0 8 * * *",
-    everySec: null,
+    every: null,
     timezone: "Asia/Bangkok",
+    input: {},
+    poll: null,
     overlap: "skip",
     paused: false,
-    nextRunAt: "2026-10-27T01:00:00.000Z",
-    lastRunAt: "2026-10-26T01:00:00.000Z",
-    lastRunStatus: "completed",
     revision: 3,
+    cursor: null,
+    cursorAt: null,
+    temporalState: "synced",
+    temporalError: null,
+    createdAt: "2026-10-20T01:00:00.000Z",
+    updatedAt: "2026-10-25T01:00:00.000Z",
+    live: { state: "ok", paused: false, nextRunAt: "2026-10-27T01:00:00.000Z", lastRunAt: "2026-10-26T01:00:00.000Z", lastRunWorkflowId: "evo:daily-email-summary:sch_1-20261026T010000Z", runningCount: 0, timezone: "Asia/Bangkok", note: null },
     ...extra,
   });
   const setup = (rows: Record<string, unknown>[]) => {
     reset();
-    stub.handlers.schedules_list = () => ({ schedules: rows });
-    stub.handlers.workflows_list = () => ({ workflows: [{ id: WF, title: "Daily email summary", activeVersion: 2 }] });
+    stub.handlers.schedules_list = () => ({ schedules: rows, temporalConnected: true });
+    stub.handlers.workflow_contracts_list = () => ({ contracts: [{ workflowId: WF, version: 2, title: "Daily email summary", createdAt: "2026-10-26T04:00:00.000Z", state: "active" }] });
   };
 
   it("quiet: a schedule shows its cron, its time zone, and the next run in that zone", async () => {
@@ -466,13 +557,13 @@ describe("Engine schedules", () => {
     assert.match(card, /Daily email summary active/);
     assert.match(card, /cron 0 8 \* \* \* · Asia\/Bangkok · active version · skips a run that would overlap/);
     assert.match(card, /Next run 27 Oct 2026, 08:00 \(Asia\/Bangkok\)\./, "01:00 UTC is 08:00 in Bangkok");
-    assert.match(card, /Last run 26 Oct 2026, 08:00.*completed/);
+    assert.match(card, /Last run 26 Oct 2026, 08:00\./);
     assert.deepEqual(alerts(m.host), []);
     await m.unmount();
   });
 
   it("an interval schedule says how often; a paused one says so and offers Resume", async () => {
-    setup([sched({ cron: null, everySec: 900, timezone: "UTC", paused: true, nextRunAt: null, version: 4 })]);
+    setup([sched({ cron: null, every: "15m", timezone: "UTC", paused: true, versionPin: 4, live: null })]);
     const m = await mount(h(schedules.EngineSchedules, {}));
     const card = text(m.host.querySelector("article"));
     assert.match(card, /every 15 min · UTC · pinned v4/);
@@ -481,21 +572,19 @@ describe("Engine schedules", () => {
     await m.unmount();
   });
 
-  it("Run now starts a run and offers to open it; Pause and Delete send the revision", async () => {
+  it("Run now says the run started (the engine gives no run id); Pause and Delete send the revision", async () => {
     setup([sched()]);
-    stub.handlers.schedule_run_now = () => ({ runId: "evo:daily:run_9" });
+    stub.handlers.schedule_run_now = () => ({ id: "sch_1", triggered: true });
     stub.handlers.schedule_pause = () => sched({ paused: true, revision: 4 });
     stub.handlers.schedule_delete = () => ({ id: "sch_1", deleted: true });
-    let opened = "";
-    const m = await mount(h(schedules.EngineSchedules, { onOpenRun: (id: string) => {
-          opened = id;
-        },
-      }));
+    let seeRuns = 0;
+    const m = await mount(h(schedules.EngineSchedules, { onOpenRuns: () => seeRuns++ }));
     await click(button(m.host, "Run now"));
     assert.deepEqual(callsOf("schedule_run_now"), [{ id: "sch_1" }]);
-    assert.match(text(m.host), /Started run evo:daily:run_9/);
-    await click(button(m.host, "Open run"));
-    assert.equal(opened, "evo:daily:run_9");
+    assert.match(text(m.host), /Run started\./);
+    assert.doesNotMatch(text(m.host), /evo:|run_/, "no run id is shown");
+    await click(button(m.host, "See runs"));
+    assert.equal(seeRuns, 1);
     await click(button(m.host, "Pause"));
     assert.deepEqual(callsOf("schedule_pause"), [{ id: "sch_1", revision: 3, paused: true }]);
     await click(button(m.host, "Delete"));
@@ -511,10 +600,10 @@ describe("Engine schedules", () => {
     await click(button(m.host, "Edit"));
     await choose(control<HTMLSelectElement>(document.body, "Repeat"), "every");
     await setValue(control(document.body, "Every"), "2");
-    await choose(control<HTMLSelectElement>(document.body, "Unit"), "3600");
+    await choose(control<HTMLSelectElement>(document.body, "Unit"), "h");
     await choose(control<HTMLSelectElement>(document.body, "Time zone"), "Europe/Berlin");
     await click(button(document.body, "Save"));
-    assert.deepEqual(callsOf("schedule_set"), [{ id: "sch_1", revision: 3, workflowId: WF, version: null, everySec: 7200, timezone: "Europe/Berlin", overlap: "skip" }]);
+    assert.deepEqual(callsOf("schedule_set"), [{ id: "sch_1", revision: 3, workflowId: WF, versionPin: null, every: "2h", timezone: "Europe/Berlin", overlap: "skip" }]);
     await m.unmount();
   });
 
@@ -533,7 +622,19 @@ describe("Engine schedules", () => {
     await choose(control<HTMLSelectElement>(document.body, "Time zone"), "Asia/Tokyo");
     await choose(control<HTMLSelectElement>(document.body, "If a run is still going"), "buffer_one");
     await click(button(document.body, "Create schedule"));
-    assert.deepEqual(callsOf("schedule_set"), [{ workflowId: WF, version: null, cron: "0 9 * * 1-5", timezone: "Asia/Tokyo", overlap: "buffer_one" }]);
+    assert.deepEqual(callsOf("schedule_set"), [{ workflowId: WF, versionPin: null, cron: "0 9 * * 1-5", timezone: "Asia/Tokyo", overlap: "buffer_one" }]);
+    await m.unmount();
+  });
+
+  it("a schedule that Temporal does not have yet, or cannot be reached for, says so; a run that did not start says so", async () => {
+    setup([sched({ temporalState: "pending", live: null }), sched({ id: "sch_2", live: { state: "unreachable", paused: null, nextRunAt: null, lastRunAt: null, lastRunWorkflowId: null, runningCount: 0, timezone: null, note: null } })]);
+    stub.handlers.schedule_run_now = () => ({ id: "sch_1", triggered: false });
+    const m = await mount(h(schedules.EngineSchedules, {}));
+    const cards = [...m.host.querySelectorAll("article")].map((a) => text(a));
+    assert.match(cards[0] ?? "", /Saved\. The engine creates it as soon as Temporal answers\./);
+    assert.match(cards[1] ?? "", /Temporal cannot be reached/);
+    await click(button(m.host, "Run now"));
+    assert.match(text(m.host), /did not start a run/);
     await m.unmount();
   });
 
@@ -556,12 +657,12 @@ describe("Engine schedules", () => {
     stub.fail.schedules_list = undefined;
     await click(button(m.host, "Try again"));
     assert.deepEqual(alerts(m.host), []);
-    stub.handlers.schedule_run_now = () => ({ runId: "x" });
+    stub.handlers.schedule_run_now = () => ({ id: "sch_1", triggered: true });
     stub.fail.schedule_run_now = { status: 503, code: "engine_unavailable" };
     await click(button(m.host, "Run now"));
     assert.equal(alerts(m.host).length, 1);
     assert.match(alerts(m.host)[0] ?? "", /engine_unavailable/, "the app's own sentence");
-    assert.doesNotMatch(text(m.host), /Started run/);
+    assert.doesNotMatch(text(m.host), /Run started/);
     assert.equal(m.host.querySelectorAll("article").length, 1);
     await m.unmount();
   });
@@ -571,40 +672,59 @@ describe("Engine schedules", () => {
 describe("Runs and run detail", () => {
   const HOLD = "hld_01HZX3K8Q2V4N6P8R0S2T4V6W8";
   const run = (id: string, status: string, extra: Record<string, unknown> = {}) => ({
+    workflowId: "inbound-email-advisor",
     runId: id,
-    workflowId: "wfl_1",
-    workflowTitle: "Inbound email advisor",
     version: 2,
-    status,
-    trigger: "poll",
     scheduleId: null,
+    temporalWorkflowId: `evo:inbound-email-advisor:${id}`,
+    temporalRunId: "tr_1",
+    triggerKind: "poll",
+    status,
     startedAt: "2026-10-26T05:00:00.000Z",
-    endedAt: status === "running" || status === "waiting" ? null : "2026-10-26T05:03:20.000Z",
+    endedAt: status === "running" ? null : "2026-10-26T05:03:20.000Z",
+    durationMs: status === "running" ? null : 200_000,
+    errorCode: null,
+    errorStep: null,
+    skippedReason: null,
     stepsDone: 3,
-    stepsTotal: 7,
-    waiting: null,
-    error: null,
+    stepsFailed: 0,
+    heldWaits: 0,
+    heldWaitMs: 0,
     modelTokens: 1200,
+    outputBytes: null,
+    source: "activity",
     ...extra,
   });
   const step = (stepId: string, kind: string, status: string, extra: Record<string, unknown> = {}) => ({
+    stepKey: `${stepId}`,
     stepId,
-    title: null,
+    loopPath: null,
     kind,
-    stage: null,
+    product: null,
+    op: null,
     status,
+    attempts: 1,
     attempt: 1,
+    stage: null,
     startedAt: "2026-10-26T05:00:10.000Z",
     endedAt: "2026-10-26T05:00:40.000Z",
+    durationMs: 30_000,
     holdId: null,
+    holdStartedAt: null,
+    holdEndedAt: null,
+    holdOutcome: null,
+    inBytes: null,
+    outBytes: null,
+    tokensIn: null,
+    tokensOut: null,
+    errorCode: null,
     stepRunId: null,
     agentId: null,
-    error: null,
     ...extra,
   });
   const agentStep = (events: Record<string, unknown>[], extra: Record<string, unknown> = {}) => ({
     stepRunId: "asr_1",
-    workflowId: "wfl_1",
+    workflowId: "inbound-email-advisor",
     workflowTitle: "Inbound email advisor",
     version: 2,
     runId: "r_wait",
@@ -635,17 +755,19 @@ describe("Runs and run detail", () => {
   ];
   const setup = () => {
     reset();
-    stub.handlers.engine_runs_list = () => ({ runs: [run("r_wait", "waiting", { startedAt: "2026-10-26T06:00:00.000Z" }), run("r_ok", "completed"), run("r_bad", "failed", { error: "connect.tools refused the call" })] });
+    stub.handlers.workflow_contracts_list = () => ({ contracts: [{ workflowId: "inbound-email-advisor", version: 2, title: "Inbound email advisor", createdAt: "2026-10-26T04:00:00.000Z", state: "active" }] });
+    stub.handlers.engine_runs_list = () => ({ runs: [run("r_wait", "running", { startedAt: "2026-10-26T06:00:00.000Z" }), run("r_ok", "completed"), run("r_bad", "failed", { errorCode: "not_in_workflow", errorStep: "fetch", stepsFailed: 1 })] });
     stub.handlers.engine_run_get = (i) => ({
-      run: i.runId === "r_wait" ? run("r_wait", "waiting", { startedAt: "2026-10-26T06:00:00.000Z" }) : run(String(i.runId), "completed"),
+      run: i.runId === "r_wait" ? run("r_wait", "running", { startedAt: "2026-10-26T06:00:00.000Z" }) : run(String(i.runId), "completed"),
       steps: [
         step("parse", "transform", "completed"),
-        step("crm", "app", "waiting_hold", { holdId: HOLD, endedAt: null }),
-        step("sentiment", "ai", "waiting_agent", { stepRunId: "asr_1", agentId: POLLY.id, attempt: 2, endedAt: null }),
-        step("write", "ai", "pending", { startedAt: null, endedAt: null }),
-        step("fetch", "app", "failed", { error: "not_in_workflow: connect.tools" }),
-        step("body", "transform", "completed", { input: { a: 1 }, output: { b: 2 } }),
+        step("crm", "app", "waiting_hold", { holdId: HOLD, endedAt: null, product: "connect", op: "tools" }),
+        step("sentiment", "ai", "waiting_agent", { stepRunId: "asr_1", agentId: POLLY.id, attempt: 2, attempts: 2, endedAt: null }),
+        step("review", "approval", "waiting_owner", { startedAt: null, endedAt: null }),
+        step("fetch", "app", "failed", { errorCode: "not_in_workflow" }),
+        step("body", "transform", "completed", { loopPath: "2", outBytes: 40 }),
       ],
+      outputs: i.runId === "r_ok" ? { draftId: "d_1" } : null,
     });
     stub.handlers.agent_steps_list = () => ({ steps: [agentStep(EVENTS)] });
   };
@@ -656,7 +778,7 @@ describe("Runs and run detail", () => {
     const m = await mountRuns();
     const items = [...m.host.querySelectorAll(".pane-item")].map((b) => text(b));
     assert.equal(items.length, 3);
-    assert.match(items[0] ?? "", /Inbound email advisor v2.*waiting/);
+    assert.match(items[0] ?? "", /Inbound email advisor v2.*running/);
     assert.match(items[1] ?? "", /completed/);
     assert.match(items[2] ?? "", /failed/);
     assert.deepEqual(callsOf("engine_run_get"), [{ runId: "r_wait" }], "the first run is open");
@@ -664,8 +786,9 @@ describe("Runs and run detail", () => {
     const lines = [...m.host.querySelectorAll(".timeline > li")].map((li) => text(li));
     assert.equal(lines.length, 6);
     assert.match(lines[0] ?? "", /parse transform completed.*took 30 s/);
-    assert.match(lines[3] ?? "", /write ai not started/);
-    assert.match(lines[4] ?? "", /fetch app failed.*not_in_workflow: connect\.tools/);
+    assert.match(lines[3] ?? "", /review approval waiting for your answer/);
+    assert.match(lines[4] ?? "", /fetch app failed.*not in workflow/);
+    assert.match(lines[5] ?? "", /body \(loop 2\) transform completed/);
     assert.deepEqual(alerts(m.host), []);
     await m.unmount();
   });
@@ -674,7 +797,7 @@ describe("Runs and run detail", () => {
     setup();
     const m = await mountRuns();
     const crm = text([...m.host.querySelectorAll(".timeline > li")][1] ?? null);
-    assert.match(crm, /waiting for your approval/);
+    assert.match(crm, /waiting for your approval connect\.tools/);
     assert.equal([...m.host.querySelectorAll(".timeline a")].find((a) => /approval/.test(a.textContent ?? ""))?.getAttribute("href"), `./holds/${HOLD}`);
     const wait = m.host.querySelector('.agent-wait[data-step="sentiment"]');
     assert.ok(wait);
@@ -700,14 +823,25 @@ describe("Runs and run detail", () => {
     await m.unmount();
   });
 
-  it("owner-only input and output show where the engine gives them, and only there", async () => {
+  it("the result of a completed run is owner-only and shows only when the engine gives it; step bodies are not shown (the index keeps sizes)", async () => {
     setup();
-    const m = await mountRuns();
-    const details = [...m.host.querySelectorAll(".timeline details")];
-    assert.equal(details.length, 1);
-    assert.match(text(details[0] ?? null), /Input and output \(owner only\)/);
-    assert.match(details[0]?.querySelector("pre")?.textContent ?? "", /"a": 1/);
+    let m = await mountRuns("r_ok");
+    const result = [...m.host.querySelectorAll("details")].find((d) => /Result of the run \(owner only\)/.test(d.textContent ?? ""));
+    assert.ok(result);
+    assert.match(result.querySelector("pre")?.textContent ?? "", /"draftId": "d_1"/);
+    assert.equal(m.host.querySelectorAll(".timeline details").length, 0, "no input or output bodies on a step");
     await m.unmount();
+    m = await mountRuns("r_wait");
+    assert.ok(![...m.host.querySelectorAll("details")].some((d) => /Result of the run/.test(d.textContent ?? "")), "a running run has no result");
+    await m.unmount();
+  });
+
+  it("a failed run says where and why in plain words", async () => {
+    setup();
+    stub.handlers.engine_run_get = () => ({ run: run("r_bad", "failed", { errorCode: "not_in_workflow", errorStep: "fetch", stepsFailed: 1 }), steps: [], outputs: null });
+    const failed = await mountRuns("r_bad");
+    assert.match(alerts(failed.host).join(" "), /The run stopped at step fetch: not in workflow\./);
+    await failed.unmount();
   });
 
   it("another run opens on a click; the filter chips narrow the list", async () => {
@@ -716,11 +850,11 @@ describe("Runs and run detail", () => {
     await click([...m.host.querySelectorAll(".pane-item")][1] as Element);
     assert.deepEqual(callsOf("engine_run_get").at(-1), { runId: "r_ok" });
     await click(button(m.host, "Needs attention"));
-    assert.deepEqual([...m.host.querySelectorAll(".pane-item")].map((b) => /waiting|failed/.test(text(b))), [true, true]);
+    assert.deepEqual([...m.host.querySelectorAll(".pane-item")].map((b) => /failed/.test(text(b))), [true]);
     await click(button(m.host, "Completed"));
     assert.equal(m.host.querySelectorAll(".pane-item").length, 1);
     await click(button(m.host, "Running"));
-    assert.equal(m.host.querySelectorAll(".pane-item").length, 1, "the waiting run counts as active");
+    assert.equal(m.host.querySelectorAll(".pane-item").length, 1);
     await m.unmount();
   });
 
@@ -768,11 +902,10 @@ describe("Cycles: engine runs next to legacy runs", () => {
   const er = (workflowId: string, version: number, status: string, startedAt: string, modelTokens: number | null = null) => ({
     runId: `${workflowId}-${startedAt}`,
     workflowId,
-    workflowTitle: workflowId === "wfl_a" ? "Alpha" : "Beta",
     version,
     status,
     startedAt,
-    modelTokens,
+    modelTokens: modelTokens ?? 0,
   });
 
   it("sideBySide puts both kinds of run on one row per version, counts them, keeps the newest ten and sorts by workflow then newest version", () => {
@@ -788,8 +921,8 @@ describe("Cycles: engine runs next to legacy runs", () => {
     );
     assert.deepEqual(
       rows.map((r) => `${r.workflowTitle} v${r.version}`),
-      ["Alpha v3", "Alpha v2", "Alpha v1", "Beta v1"],
-      "Gamma has no runs of either kind: no row",
+      ["Alpha v3", "Alpha v2", "Alpha v1", "wfl_b v1"],
+      "Gamma has no runs of either kind: no row; a workflow without a cycle shows its id",
     );
     const a2 = rows[1];
     assert.deepEqual([a2?.legacy, a2?.engine.total, a2?.engine.completed, a2?.engine.failed, a2?.engine.open, a2?.engine.tokens], [{ total: 4, completed: 3 }, 3, 1, 1, 1, 100]);

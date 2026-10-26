@@ -18,11 +18,12 @@ export interface Side {
 
 const key = (workflowId: string, version: number) => `${workflowId}@${version}`;
 const FAILED = new Set<EngineRunStatus>(["failed", "timed_out"]);
-const OPEN = new Set<EngineRunStatus>(["running", "waiting"]);
+const OPEN = new Set<EngineRunStatus>(["running"]);
 
 /** Engine runs and legacy cycle counts per workflow version, newest workflow version first. Pure: the page and the tests use it. */
 export function sideBySide(runs: readonly EngineRun[], cycles: readonly Cycle[]): Side[] {
   const rows = new Map<string, Side>();
+  const titles = new Map(cycles.map((c) => [c.workflowId, c.workflowTitle]));
   const row = (workflowId: string, workflowTitle: string, version: number): Side => {
     const k = key(workflowId, version);
     let r = rows.get(k);
@@ -39,7 +40,8 @@ export function sideBySide(runs: readonly EngineRun[], cycles: readonly Cycle[])
   }
   // newest first, so the first ten seen per version are its last ten
   for (const run of [...runs].sort((a, b) => Date.parse(b.startedAt) - Date.parse(a.startedAt))) {
-    const e = row(run.workflowId, run.workflowTitle, run.version).engine;
+    // a run whose version the index does not know sits under version 0 (shown as a dash)
+    const e = row(run.workflowId, titles.get(run.workflowId) ?? run.workflowId, run.version ?? 0).engine;
     e.total++;
     if (run.status === "completed") e.completed++;
     if (FAILED.has(run.status)) e.failed++;
@@ -54,9 +56,10 @@ const TICK: Record<EngineRunStatus, { mark: string; status: Status }> = {
   completed: { mark: "✓", status: "live" },
   failed: { mark: "✗", status: "needs-you" },
   timed_out: { mark: "?", status: "needs-you" },
-  waiting: { mark: "!", status: "needs-you" },
   running: { mark: "…", status: "busy" },
   cancelled: { mark: "–", status: "idle" },
+  terminated: { mark: "–", status: "idle" },
+  skipped: { mark: "·", status: "idle" },
 };
 const pct = (n: number, of: number): string => (of === 0 ? "–" : `${Math.round((n / of) * 100)}%`);
 
@@ -116,7 +119,7 @@ export function EngineCycles({ cycles }: { cycles: readonly Cycle[] }) {
             {rows.map((r) => (
               <tr key={key(r.workflowId, r.version)}>
                 <td>{r.workflowTitle}</td>
-                <td className="num">v{r.version}</td>
+                <td className="num">{r.version ? `v${r.version}` : "–"}</td>
                 <td className="num">{r.legacy.total ? `${r.legacy.total} (${pct(r.legacy.completed, r.legacy.total)} completed)` : "–"}</td>
                 <td className="num">{r.engine.total || "–"}</td>
                 <td className="num">{pct(r.engine.completed, r.engine.total)}</td>

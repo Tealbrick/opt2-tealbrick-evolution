@@ -1,11 +1,13 @@
-// Workflow editor (C367 WP3): a typed step list with a form per step kind, the canonical-shape view, the JSON of the
-// contract, and a live validateContract() result. Owner only. The contract is held in this page (and in the browser tab's
-// session storage so a reload keeps it): saving it into a draft is the engine's (WP2), so for now it leaves as JSON.
+// Workflow editor (C367 WP3, aligned in M1): a typed step list with a form per step kind, the canonical-shape view, the JSON
+// of the contract, and a live check. Owner only. Save stores an immutable contract version in the engine
+// (`workflow_contract_save`); "Saved versions" lists them (`workflow_contracts_list`) and opens one (`workflow_contract_get`).
+// The working copy is also kept in the browser tab's session storage so a reload keeps it.
 import type { UseAgents } from "@opt2-tealbrick/miniapp-sdk/client";
 import { Button, Field, NativeSelect, Notice, Tabs, Tag, TextInput } from "@opt2-tealbrick/ui";
-import { useMemo, useRef, useState } from "react";
-import { newContract, type Trigger, validateContract, type WorkflowContract } from "./engine-contract.ts";
-import { engine, type ValidateOut } from "./engine-ops.ts";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { JsonObject } from "../engine/json.ts";
+import { liveCheck, newContract, type Trigger, type WorkflowContract } from "./engine-contract.ts";
+import { type ContractVersion, engine, type ValidateOut } from "./engine-ops.ts";
 import { SAMPLES } from "./engine-samples.ts";
 import { errorText, TIME_ZONES } from "./ops.ts";
 import { ShapeView } from "./Shape.tsx";
@@ -41,22 +43,58 @@ export function Editor({ agents }: { agents: UseAgents["agents"] }) {
   const [sample, setSample] = useState(SAMPLES[0]?.id ?? "");
   const [note, setNote] = useState<string | null>(null);
   const [server, setServer] = useState<{ busy: boolean; result: ValidateOut | null; error: string | null }>({ busy: false, result: null, error: null });
+  const [saved, setSaved] = useState<{ busy: boolean; list: ContractVersion[] | null; error: string | null }>({ busy: false, list: null, error: null });
   const file = useRef<HTMLInputElement>(null);
+  const loadSaved = useCallback(async () => {
+    try {
+      setSaved((s) => ({ ...s, list: null, error: null }));
+      const r = await engine("workflow_contracts_list", {});
+      setSaved((s) => ({ ...s, list: r.contracts }));
+    } catch (e) {
+      setSaved((s) => ({ ...s, list: [], error: `Saved versions could not be loaded. ${errorText(e)}` }));
+    }
+  }, []);
+  useEffect(() => {
+    void loadSaved();
+  }, [loadSaved]);
   const setContract = (c: WorkflowContract) => {
     setContractState(c);
     remember(c);
     setServer((s) => (s.result ? { ...s, result: null } : s)); // an edit makes the last server answer stale
   };
-  const live = useMemo(() => validateContract(contract), [contract]);
+  const live = useMemo(() => liveCheck(contract), [contract]);
   const taken = useMemo(() => idsOf(Array.isArray(contract.steps) ? contract.steps : []), [contract]);
   const set = <K extends keyof WorkflowContract>(k: K, v: WorkflowContract[K]) => setContract({ ...contract, [k]: v });
 
   const check = async () => {
     setServer({ busy: true, result: null, error: null });
     try {
-      setServer({ busy: false, result: await engine("workflow_contract_validate", { contract }), error: null });
+      setServer({ busy: false, result: await engine("workflow_contract_validate", { contract: contract as unknown as Record<string, unknown> }), error: null });
     } catch (e) {
       setServer({ busy: false, result: null, error: `The engine could not check this contract. ${errorText(e)}` });
+    }
+  };
+  // Save = a new immutable version in the engine (it does not run until you activate it on the Activation page)
+  const save = async () => {
+    setSaved((s) => ({ ...s, busy: true, error: null }));
+    try {
+      const r = await engine("workflow_contract_save", { contract: contract as unknown as Record<string, unknown> });
+      setNote(r.created ? `Saved as version ${r.version} of ${r.workflowId}. A saved version never changes. Activate it on the Activation page to run it.` : `Version ${r.version} of ${r.workflowId} was saved before with exactly this content. Nothing changed.`);
+      await loadSaved();
+      setSaved((s) => ({ ...s, busy: false }));
+    } catch (e) {
+      setSaved((s) => ({ ...s, busy: false, error: `Not saved. ${errorText(e)}` }));
+    }
+  };
+  const open = async (workflowId: string, version: number) => {
+    setSaved((s) => ({ ...s, busy: true, error: null }));
+    try {
+      const r = await engine("workflow_contract_get", { workflowId, version });
+      setContract(r.contract as unknown as WorkflowContract);
+      setNote(`Opened version ${r.version} of ${r.workflowId}. To change it, raise the contract version and save: a saved version never changes.`);
+      setSaved((s) => ({ ...s, busy: false }));
+    } catch (e) {
+      setSaved((s) => ({ ...s, busy: false, error: `Version ${version} could not be opened. ${errorText(e)}` }));
     }
   };
   const download = () => {
@@ -97,7 +135,7 @@ export function Editor({ agents }: { agents: UseAgents["agents"] }) {
           </p>
         </div>
       </div>
-      <Notice role="status">Your work stays in this browser tab. Copy or download the JSON to keep it. Saving it as a draft comes with the engine.</Notice>
+      <Notice role="status">Save stores this contract as a version in the engine. A saved version never changes; to change one, raise the contract version and save again. Until you save, your work stays in this browser tab.</Notice>
       <div className="toolbar">
         <Field label="Start from">
           <NativeSelect value={sample} onChange={(e) => setSample(e.target.value)} options={SAMPLES.map((s) => ({ value: s.id, label: s.label }))} />
@@ -113,6 +151,9 @@ export function Editor({ agents }: { agents: UseAgents["agents"] }) {
         <Button onClick={() => setContract(newContract())}>New workflow</Button>
         <Button onClick={() => file.current?.click()}>Import JSON</Button>
         <input ref={file} type="file" accept="application/json,.json" hidden aria-label="Contract file" onChange={(e) => void importFile(e.target.files?.[0])} />
+        <Button variant="primary" disabled={saved.busy || !live.ok} onClick={() => void save()}>
+          {saved.busy ? "Working…" : "Save version"}
+        </Button>
         <Button onClick={() => void copy()}>Copy JSON</Button>
         <Button onClick={download}>Download</Button>
       </div>
@@ -127,11 +168,35 @@ export function Editor({ agents }: { agents: UseAgents["agents"] }) {
         </Notice>
       ) : null}
 
+      {saved.error ? (
+        <Notice tone="needs-you" role="alert">
+          {saved.error}
+        </Notice>
+      ) : null}
+      {saved.list && saved.list.length > 0 ? (
+        <section className="tb-stack" aria-label="Saved versions">
+          <h2 className="tb-h3">Saved versions</h2>
+          <ul className="plain">
+            {saved.list.map((c) => (
+              <li key={`${c.workflowId}@${c.version}`} className="tb-row">
+                <span>
+                  {c.title} <code className="code-ops">{c.workflowId}</code> version {c.version}
+                </span>
+                {c.state ? <Tag status={c.state === "active" ? "live" : "idle"}>{c.state}</Tag> : null}
+                <Button size="sm" disabled={saved.busy} onClick={() => void open(c.workflowId, c.version)}>
+                  {`Open ${c.workflowId} version ${c.version}`}
+                </Button>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
+
       <section className="tb-stack validation" aria-label="Contract check" aria-live="polite">
         <div className="tb-row">
           {live.ok ? <Tag status="live">valid</Tag> : <Tag status="needs-you">{live.errors.length === 1 ? "1 problem" : `${live.errors.length} problems`}</Tag>}
           {live.warnings.length ? <Tag status="idle">{live.warnings.length === 1 ? "1 note" : `${live.warnings.length} notes`}</Tag> : null}
-          <span className="tb-soft">Checked as you type: shape, ids, refs, bounds. Whether an app accepts the inputs is checked against the installed apps.</span>
+          <span className="tb-soft">Checked as you type: shape, ids, refs, bounds. Whether an app accepts the inputs is checked by the engine against the installed apps.</span>
         </div>
         <Issues errors={live.errors} warnings={live.warnings} />
       </section>
@@ -284,7 +349,7 @@ function Triggers({ triggers, onChange }: { triggers: Trigger[]; onChange: (t: T
                 <Field label={`Cursor path (trigger ${i + 1})`} hint="A JSON pointer into the answer that says what is new, for example /result/historyId.">
                   <TextInput className="mono" value={t.cursorPath} onChange={(e) => put(i, { ...t, cursorPath: e.target.value })} />
                 </Field>
-                <JsonField label={`Input (trigger ${i + 1})`} value={t.input} onChange={(v) => put(i, { ...t, input: (v ?? {}) as Record<string, unknown> })} rows={4} />
+                <JsonField label={`Input (trigger ${i + 1})`} value={t.input} onChange={(v) => put(i, { ...t, input: (v ?? {}) as JsonObject })} rows={4} />
               </div>
             ) : null}
             {t.kind === "event" ? (
@@ -297,7 +362,7 @@ function Triggers({ triggers, onChange }: { triggers: Trigger[]; onChange: (t: T
                     <TextInput value={t.type} onChange={(e) => put(i, { ...t, type: e.target.value })} />
                   </Field>
                 </div>
-                <JsonField label={`Filter (trigger ${i + 1})`} value={t.filter} onChange={(v) => put(i, { ...t, filter: v as Record<string, unknown> | undefined })} rows={3} />
+                <JsonField label={`Filter (trigger ${i + 1})`} value={t.filter} onChange={(v) => put(i, { ...t, filter: v as JsonObject | undefined })} rows={3} />
               </div>
             ) : null}
             {t.kind === "manual" ? <p className="tb-hint">The owner starts a run with Run now.</p> : null}

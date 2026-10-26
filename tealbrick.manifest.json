@@ -1646,7 +1646,7 @@
     {
       "id": "step_heartbeat",
       "title": "Keep a claimed step alive",
-      "description": "Tell the engine that you still work on a step you claimed. Send it at least every heartbeatSec seconds: after three missed heartbeats, or after the deadline, the step times out and you get a refusal (step_timed_out) here and on step_report. A step the engine cancelled answers step_cancelled. Stop working when you get a refusal.",
+      "description": "Tell the engine that you still work on a step you claimed. Send it at least every heartbeatSec seconds (heartbeatSec 0 means the workflow asks for no heartbeat; then only the deadline applies): after three missed heartbeats, or after the deadline, the step times out and you get a refusal (step_timed_out) here and on step_report. A step the engine cancelled answers step_cancelled. Stop working when you get a refusal.",
       "input": {
         "type": "object",
         "additionalProperties": false,

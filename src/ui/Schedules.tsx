@@ -17,7 +17,7 @@ const SERVE_CONFIG = {
   routines: [{ due: "evolution__routines_due", claim: "evolution__routine_claim", report: "evolution__routine_report", items: "jobs", id: "occurrence" }],
 };
 
-export function Schedules({ agents, agentsLoading, onOpenRun }: { agents: UseAgents["agents"]; agentsLoading: boolean; onOpenRun?: (runId: string) => void }) {
+export function Schedules({ agents, agentsLoading, onOpenRuns }: { agents: UseAgents["agents"]; agentsLoading: boolean; onOpenRuns?: () => void }) {
   const [rows, setRows] = useState<Automation[] | null>(null);
   // null = not known yet (list not loaded): the New schedule form waits, so it never offers "no project" by mistake
   const [kanbanLinked, setKanbanLinked] = useState<boolean | null>(null);
@@ -149,7 +149,7 @@ export function Schedules({ agents, agentsLoading, onOpenRun }: { agents: UseAge
           <CopyBlock text={JSON.stringify(SERVE_CONFIG, null, 2)} label="runner configuration" />
         </div>
       </details>
-      <EngineSchedules onOpenRun={onOpenRun} />
+      <EngineSchedules onOpenRuns={onOpenRuns} />
       {editing ? (
         <EditSchedule
           automation={editing}

@@ -2,16 +2,14 @@
 // access (CRUD) and which scopes it uses, with the honest label, and then chooses Activate. The engine refuses any call
 // outside this list (not_in_workflow). Deactivate stops new runs of the workflow.
 import { Button, EmptyState, Field, NativeSelect, Notice, Tag } from "@opt2-tealbrick/ui";
-import { useCallback, useEffect, useState } from "react";
-import { engine, type ValidateOut } from "./engine-ops.ts";
-import { errorText, type Out, person } from "./ops.ts";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { type ContractVersion, engine, type ValidateOut } from "./engine-ops.ts";
+import { errorText } from "./ops.ts";
 import { Issues, UsageTable } from "./Usage.tsx";
 
-type Wf = Out<"workflows_list">["workflows"][number];
-
+/** The stored contract versions of the engine (`workflow_contracts_list`), newest first. */
 export function Activation() {
-  const [workflows, setWorkflows] = useState<Wf[] | null>(null);
-  const [versions, setVersions] = useState<number[]>([]);
+  const [contracts, setContracts] = useState<ContractVersion[] | null>(null);
   const [workflowId, setWorkflowId] = useState("");
   const [version, setVersion] = useState<number | null>(null);
   const [review, setReview] = useState<ValidateOut | null>(null);
@@ -20,28 +18,39 @@ export function Activation() {
   const [done, setDone] = useState<string | null>(null);
 
   useEffect(() => {
-    person("workflows_list", {})
+    engine("workflow_contracts_list", {})
       .then((r) => {
-        setWorkflows(r.workflows);
+        setContracts(r.contracts);
         setError(null);
       })
-      .catch((e) => setError(`Workflows could not be loaded. ${errorText(e)}`));
+      .catch((e) => setError(`Saved workflows could not be loaded. ${errorText(e)}`));
   }, []);
+
+  // one entry per workflow id, titled by its newest version
+  const workflows = useMemo(() => {
+    const seen = new Map<string, string>();
+    for (const c of [...(contracts ?? [])].sort((a, b) => b.version - a.version)) if (!seen.has(c.workflowId)) seen.set(c.workflowId, c.title);
+    return [...seen].map(([id, title]) => ({ id, title }));
+  }, [contracts]);
+  const versions = useMemo(
+    () =>
+      (contracts ?? [])
+        .filter((c) => c.workflowId === workflowId)
+        .map((c) => c.version)
+        .sort((a, b) => b - a),
+    [contracts, workflowId],
+  );
+  const stateOf = (v: number) => contracts?.find((c) => c.workflowId === workflowId && c.version === v)?.state ?? null;
 
   const pickWorkflow = (id: string) => {
     setWorkflowId(id);
-    setVersion(null);
     setReview(null);
     setDone(null);
-    setVersions([]);
-    if (!id) return;
-    person("workflow_versions", { workflowId: id })
-      .then((r) => {
-        const all = r.versions.map((v) => v.version).sort((a, b) => b - a);
-        setVersions(all);
-        setVersion(all[0] ?? null);
-      })
-      .catch((e) => setError(`Versions could not be loaded. ${errorText(e)}`));
+    const all = (contracts ?? [])
+      .filter((c) => c.workflowId === id)
+      .map((c) => c.version)
+      .sort((a, b) => b - a);
+    setVersion(all[0] ?? null);
   };
 
   const load = useCallback(async (id: string, v: number) => {
@@ -62,6 +71,7 @@ export function Activation() {
     setError(null);
     try {
       setDone(await fn());
+      setContracts((await engine("workflow_contracts_list", {})).contracts);
       if (workflowId && version !== null) await load(workflowId, version);
     } catch (e) {
       setError(errorText(e));
@@ -84,15 +94,15 @@ export function Activation() {
           {error}
         </Notice>
       ) : null}
-      {workflows !== null && workflows.length === 0 ? (
-        <EmptyState title="No promoted workflows yet.">Promote a draft first. Then review and activate it here.</EmptyState>
+      {contracts !== null && contracts.length === 0 ? (
+        <EmptyState title="No saved workflow versions yet.">Save a version in the editor first. Then review and activate it here.</EmptyState>
       ) : (
         <div className="toolbar">
           <Field label="Workflow">
-            <NativeSelect value={workflowId} onChange={(e) => pickWorkflow(e.target.value)} options={[{ value: "", label: "Choose a workflow" }, ...(workflows ?? []).map((w) => ({ value: w.id, label: w.title }))]} />
+            <NativeSelect value={workflowId} onChange={(e) => pickWorkflow(e.target.value)} options={[{ value: "", label: "Choose a workflow" }, ...workflows.map((w) => ({ value: w.id, label: w.title }))]} />
           </Field>
           <Field label="Version">
-            <NativeSelect value={version === null ? "" : String(version)} disabled={versions.length === 0} onChange={(e) => setVersion(Number(e.target.value))} options={versions.map((v) => ({ value: String(v), label: `version ${v}` }))} />
+            <NativeSelect value={version === null ? "" : String(version)} disabled={versions.length === 0} onChange={(e) => setVersion(Number(e.target.value))} options={versions.map((v) => ({ value: String(v), label: `version ${v}${stateOf(v) ? ` (${stateOf(v)})` : ""}` }))} />
           </Field>
         </div>
       )}
@@ -123,8 +133,8 @@ export function Activation() {
                   disabled={busy || !review.ok || isActive}
                   onClick={() =>
                     void act(async () => {
-                      await engine("workflow_activate", { workflowId, version });
-                      return `Version ${version} is active.`;
+                      const r = await engine("workflow_activate", { workflowId, version });
+                      return r.previousVersion === null ? `Version ${r.version} is active.` : `Version ${r.version} is active. Version ${r.previousVersion} no longer starts new runs.`;
                     })
                   }
                 >
@@ -134,15 +144,15 @@ export function Activation() {
                   disabled={busy || review.activeVersion === null}
                   onClick={() =>
                     void act(async () => {
-                      await engine("workflow_deactivate", { workflowId });
-                      return "The workflow is deactivated. No new run starts.";
+                      const r = await engine("workflow_deactivate", { workflowId });
+                      return `The workflow is deactivated. No new run starts.${r.schedulesPaused ? ` ${r.schedulesPaused === 1 ? "1 schedule is" : `${r.schedulesPaused} schedules are`} paused.` : ""}`;
                     })
                   }
                 >
                   Deactivate
                 </Button>
               </div>
-              {!review.ok ? <p className="tb-hint">The engine refused this version. Fix the problems and promote a new version.</p> : null}
+              {!review.ok ? <p className="tb-hint">The engine refused this version. A saved version never changes: fix the problems in the editor and save a new version.</p> : null}
             </>
           )}
         </article>
