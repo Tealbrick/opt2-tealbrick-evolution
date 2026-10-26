@@ -17,6 +17,7 @@ import * as directory from "./directory.ts";
 import { startEngine, stopEngine } from "./engine/engine.ts";
 import { engineAttention, refreshEngineHealth, startEngineHealthWatch } from "./engine/health.ts";
 import { engineHandlers } from "./engine/ops.ts";
+import { migrate, migrateHandlers } from "./migrate/index.ts";
 import { ALLOWLIST_NOTICE, allowedFromSteps, diffNotice, diffSnapshots, freeTargetNotice, ModelError, type Snapshot } from "./model.ts";
 import * as pipeline from "./pipeline.ts";
 import { buildRecipe } from "./recipe.ts";
@@ -437,6 +438,8 @@ export const handlers = {
   ...engineHandlers(manifest),
   // ── agent steps (C367 WP3): steps_due, step_claim, step_heartbeat, step_report (agent) and agent_steps_list (person) ──
   ...agentStepHandlers({ completion: defaultCompletion }),
+  // ── C367 M3: the move from 0.3.x (owner op) ──
+  ...migrateHandlers(),
 } satisfies Record<OpId, HandlerSpec>;
 
 function draftRow(d: store.Draft): K.DraftsListOutput["drafts"][number] {
@@ -456,6 +459,14 @@ export const definition: SdkAppDefinition = {
     // C367: agent steps. The engine's `ai` activity offers a step through the port (stored in agent_step_runs); step_report
     // completes the Temporal activity with the client of the engine (503 engine_unavailable while Temporal is down).
     wireAgentSteps(ctx.db);
+    // C367 M3: the one-time move of 0.3.x agent workflows and schedules to the engine (a marker row says it is done; this is a
+    // no-op afterwards). Database rows only, so it runs before the engine starts: the reconcile job creates the Temporal Schedules.
+    try {
+      const r = migrate(ctx.db, { engineConfigured: Boolean(process.env.TEMPORAL_ADDRESS?.trim()) });
+      if (r.ran) ctx.log.info("0.3.x workflows moved to the engine", { ...r.counts, complete: r.complete });
+    } catch (e) {
+      ctx.log.error("the move of 0.3.x workflows to the engine failed; the 0.3.x path is unchanged", { error: e instanceof Error ? e.message.slice(0, 300) : "unknown" });
+    }
     // C367: the Temporal worker + reconcile job (off while TEMPORAL_ADDRESS is not set)
     startEngine({ db: ctx.db, callApp: ctx.callApp.bind(ctx), log: ctx.log });
     // C367 WP1: tell the status push when the workflow engine goes down or comes back (never in /tb/v1/health).

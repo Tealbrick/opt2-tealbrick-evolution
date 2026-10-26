@@ -4,6 +4,7 @@
 import { Button, Dialog, EmptyState, Field, NativeSelect, Notice, Tag, TextInput } from "@opt2-tealbrick/ui";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { type EngineSchedule, engine } from "./engine-ops.ts";
+import { MigratedBadge, useMigration } from "./Migration.tsx";
 import { errorText, TIME_ZONES, zoned } from "./ops.ts";
 
 /** A saved workflow the schedule can run: one entry per workflow id, titled by its newest version (`workflow_contracts_list`). */
@@ -23,6 +24,7 @@ export function EngineSchedules({ onOpenRuns }: { onOpenRuns?: () => void }) {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [editing, setEditing] = useState<EngineSchedule | "new" | null>(null);
+  const migration = useMigration();
   const busy = useRef(new Set<string>()); // C8: one call at a time per schedule, even for two clicks before React re-renders
   const [working, setWorking] = useState<string | null>(null);
   const load = useCallback(async () => {
@@ -112,6 +114,7 @@ export function EngineSchedules({ onOpenRuns }: { onOpenRuns?: () => void }) {
               <div className="card-head">
                 <h3>
                   {titleOf(s.workflowId)} <Tag status={s.paused ? "idle" : "live"}>{s.paused ? "paused" : "active"}</Tag>
+                  {migration.isMigratedSchedule(s.id) ? <MigratedBadge title="A 0.3.x schedule became this one. The old schedule is paused and kept for a rollback." /> : null}
                 </h3>
                 <div className="tb-ctas">
                   <Button

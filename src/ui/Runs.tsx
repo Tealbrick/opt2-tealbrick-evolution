@@ -6,12 +6,16 @@ import type { UseAgents } from "@opt2-tealbrick/miniapp-sdk/client";
 import { Button, Chip, ChipGroup, CopyBlock, EmptyState, Notice, type Status, Tag } from "@opt2-tealbrick/ui";
 import { useCallback, useEffect, useState } from "react";
 import { AGENT_STEP_LABEL, type EngineRun, type EngineRunStatus, type EngineRunStep, type EngineStepStatus, engine } from "./engine-ops.ts";
+import { MigratedBadge, useMigration } from "./Migration.tsx";
 import { errorText, type Out, person, spanText, stamp } from "./ops.ts";
 
 type AgentStep = Out<"agent_steps_list">["steps"][number];
 
 /** The runner config of a Free agent that answers workflow steps (ENGINE-BUILD §5: the routines mode of `tealbrick agent serve`
- *  with the step ops as due / claim / report). The runner must also send `evolution__step_heartbeat` while it works. */
+ *  with the step ops as due / claim / report). KNOWN GAP (C367 M3, checked against opt2-tealbrick-cli serve.ts pollRoutine): the
+ *  CLI claims with `{occurrence}` and reports `{occurrence, status, summary}` whatever `id` says, and reads the claim answer's
+ *  `job`; step_claim takes `{stepRunId}` and answers `step`, step_report takes `{stepRunId, status, output}`. Until the CLI
+ *  has a steps mode (or sends the id under the name the op takes), this config is the shape to aim at, not one that runs. */
 export const STEPS_SERVE_CONFIG = {
   format: "tealbrick.agent-serve/1",
   harness: { kind: "claude", modelKeyEnv: "ANTHROPIC_API_KEY" },
@@ -54,6 +58,7 @@ export function Runs({ agents, openId, holdHref }: { agents: UseAgents["agents"]
   const [filter, setFilter] = useState<Filter>("all");
   const [open, setOpen] = useState<string | null>(openId ?? null);
   const [titles, setTitles] = useState<Map<string, string>>(new Map());
+  const migration = useMigration();
   const load = useCallback(async () => {
     engine("workflow_contracts_list", {})
       .then((r) => setTitles(new Map([...r.contracts].sort((a, b) => a.version - b.version).map((c) => [c.workflowId, c.title]))))
@@ -118,6 +123,7 @@ export function Runs({ agents, openId, holdHref }: { agents: UseAgents["agents"]
                 <button key={r.runId} type="button" className="pane-item" aria-current={current === r.runId} onClick={() => setOpen(r.runId)}>
                   <span className="tb-ink">
                     {titles.get(r.workflowId) ?? r.workflowId} <span className="tb-soft">{r.version ? `v${r.version}` : ""}</span>
+                    {migration.legacyWorkflowOf(r.workflowId) ? <MigratedBadge /> : null}
                     <br />
                     <span className="tb-soft">{stamp(r.startedAt)}</span>
                   </span>
@@ -125,7 +131,7 @@ export function Runs({ agents, openId, holdHref }: { agents: UseAgents["agents"]
                 </button>
               ))}
             </nav>
-            {current ? <RunDetail key={current} runId={current} title={currentRun ? titles.get(currentRun.workflowId) : undefined} agents={agents} holdHref={holdHref} /> : <p className="tb-soft">Choose a run.</p>}
+            {current ? <RunDetail key={current} runId={current} title={currentRun ? titles.get(currentRun.workflowId) : undefined} migrated={currentRun ? migration.legacyWorkflowOf(currentRun.workflowId) !== null : false} agents={agents} holdHref={holdHref} /> : <p className="tb-soft">Choose a run.</p>}
           </div>
         </>
       )}
@@ -137,6 +143,10 @@ export function Runs({ agents, openId, holdHref }: { agents: UseAgents["agents"]
             <code className="code-ops"> evolution__step_heartbeat</code> and reports the typed output. It returns the output only: the engine runs every action itself.
           </p>
           <CopyBlock text={JSON.stringify(STEPS_SERVE_CONFIG, null, 2)} label="step runner configuration" />
+          <Notice role="status">
+            Today <code className="code-ops">tealbrick agent serve</code> cannot claim or report steps with this configuration: it sends the id as <code className="code-ops">occurrence</code> and reads the answer as <code className="code-ops">job</code>, while the step operations take{" "}
+            <code className="code-ops">stepRunId</code> and answer <code className="code-ops">step</code>. A Free agent with a Claude Code or Hermes skill can call the step operations directly. Bound agents keep the 0.3.x runner.
+          </Notice>
         </div>
       </details>
     </section>
@@ -145,7 +155,7 @@ export function Runs({ agents, openId, holdHref }: { agents: UseAgents["agents"]
 
 const nameOf = (agents: UseAgents["agents"], id: string | null): string => (id ? (agents.find((a) => a.id === id)?.name ?? id) : "an agent");
 
-export function RunDetail({ runId, title, agents, holdHref }: { runId: string; title?: string; agents: UseAgents["agents"]; holdHref: (holdId: string) => string }) {
+export function RunDetail({ runId, title, migrated = false, agents, holdHref }: { runId: string; title?: string; migrated?: boolean; agents: UseAgents["agents"]; holdHref: (holdId: string) => string }) {
   const [data, setData] = useState<{ run: EngineRun; steps: EngineRunStep[]; outputs: Record<string, unknown> | null } | null>(null);
   const [agentSteps, setAgentSteps] = useState<AgentStep[]>([]);
   const [agentError, setAgentError] = useState<string | null>(null);
@@ -196,6 +206,7 @@ export function RunDetail({ runId, title, agents, holdHref }: { runId: string; t
     <article className="tb-card detail" aria-label={`Run ${run.runId}`}>
       <div className="detail-head">
         <h2>{title ?? run.workflowId}</h2>
+        {migrated ? <MigratedBadge /> : null}
         <Tag status={RUN_STATUS[run.status].status}>{RUN_STATUS[run.status].label}</Tag>
       </div>
       <p className="tb-hint">

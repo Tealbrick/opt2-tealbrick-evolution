@@ -98,8 +98,10 @@ interface Stub {
   exported: Record<string, unknown> | null;
   /** C364a R1a: the schedules automations_list answers */
   automations: Record<string, unknown>[];
+  /** C367 M3: what migration_status answers (null = nothing moved) */
+  migration: Record<string, unknown> | null;
 }
-const stub: Stub = { holds: [], calls: [], fail: {}, gate: {}, networkDown: false, cycles: [], lessons: [], drafts: [], workflows: [], versions: null, exported: null, automations: [] };
+const stub: Stub = { holds: [], calls: [], fail: {}, gate: {}, networkDown: false, cycles: [], lessons: [], drafts: [], workflows: [], versions: null, exported: null, automations: [], migration: null };
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
 globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
@@ -120,6 +122,7 @@ globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) =>
   if (op === "cycles_list") return json(200, { status: "ok", output: { cycles: stub.cycles } });
   // the engine sections of Schedules and Cycles (C367 WP3): no engine data here; test/ui-engine.test.ts covers them
   if (op === "engine_runs_list") return json(200, { status: "ok", output: { runs: [] } });
+  if (op === "migration_status") return json(200, { status: "ok", output: stub.migration ?? { done: true, doneAt: "2026-10-26T10:00:00.000Z", counts: { workflowsMigrated: 0, workflowsFailed: 0, schedulesMigrated: 0, schedulesLegacyBound: 0, schedulesSkipped: 0, schedulesFailed: 0, deferred: 0 }, items: [] } });
   if (op === "schedules_list") return json(200, { status: "ok", output: { schedules: [] } });
   if (op === "cycle_get") {
     const { workflowId, version } = body.input as { workflowId: string; version: number };
@@ -213,6 +216,7 @@ const reset = (holds: StubHold[]) => {
   stub.versions = null;
   stub.exported = null;
   stub.automations = [];
+  stub.migration = null;
 };
 
 describe("Holds page", () => {
@@ -957,6 +961,84 @@ describe("Pipeline contract import and export (C288 R10)", () => {
     stub.fail.workflow_versions = { status: 500, code: "internal_error" };
     m = await mount(h(drafts.Drafts, { openId: PIPE_DRAFT.id, onPromoted: () => {} }));
     assert.match(m.host.textContent ?? "", /could not be loaded, so this draft was not compared/);
+    await m.unmount();
+  });
+});
+
+describe("Move from 0.3 (C367 M3)", () => {
+  const WF = "wfl_01HZX3K8Q2V4N6P8R0S2T4V6W8";
+  const WF2 = "wfl_01HZX3K8Q2V4N6P8R0S2T4V6W9";
+  const counts = (extra: Record<string, number> = {}) => ({ workflowsMigrated: 1, workflowsFailed: 0, schedulesMigrated: 1, schedulesLegacyBound: 0, schedulesSkipped: 0, schedulesFailed: 0, deferred: 0, ...extra });
+  const wf = (id: string, title: string) => ({ id, title, summary: "s", activeVersion: 1, draftId: PIPE_DRAFT.id, createdAt: "2026-10-19T08:00:00.000Z", updatedAt: "2026-10-19T08:00:00.000Z" });
+  const versionsOf = (id: string, title: string) => ({ workflow: wf(id, title), versions: [{ ...PIPE_DRAFT, workflowId: id, title, version: 1, draftId: PIPE_DRAFT.id, draftRevision: 1, promotedAt: "2026-10-02T08:00:00.000Z" }], pipelines: [] });
+  const item = (kind: string, legacyId: string, status: string, engineId: string | null = null, reason: string | null = null, versions: number | null = null) => ({ kind, legacyId, engineId, status, reason, versions });
+  const setup = (migration: Record<string, unknown> | null) => {
+    reset([]);
+    stub.workflows = [wf(WF, "Daily rollup"), wf(WF2, "Triage inbox")];
+    stub.versions = versionsOf(WF, "Daily rollup");
+    stub.migration = migration;
+  };
+
+  it("quiet: a workflow that moved has the badge in the list and in its page; one that did not has none; the summary counts what happened", async () => {
+    setup({
+      done: true,
+      doneAt: "2026-10-26T10:00:00.000Z",
+      counts: counts({ schedulesLegacyBound: 1 }),
+      items: [item("workflow", WF, "migrated", "wfl-01hzx3k8q2v4n6p8r0s2t4v6w8", null, 1), item("schedule", "aut_1", "migrated", "sch_abc"), item("schedule", "aut_2", "legacy_bound", null, "A Bound agent keeps its schedule on routines_*.")],
+    });
+    const m = await mount(h(wfs.Workflows, { openId: WF, stills: "" }));
+    const list = [...m.host.querySelectorAll(".pane-item")].map((b) => b.textContent ?? "");
+    assert.match(list[0] ?? "", /Daily rollup.*Migrated from 0\.3/);
+    assert.doesNotMatch(list[1] ?? "", /Migrated from 0\.3/, "Triage inbox did not move");
+    assert.match(m.host.querySelector(".detail-head")?.textContent ?? "", /Migrated from 0\.3/);
+    const panel = m.host.querySelector('[aria-label="Move from 0.3"]');
+    assert.ok(panel);
+    const kv = [...(panel?.querySelectorAll("dt, dd") ?? [])].map((x) => x.textContent);
+    assert.deepEqual(kv, ["Workflows moved", "1", "Schedules moved", "1", "Stay on 0.3.x (Bound agent)", "1", "Skipped", "0", "Failed", "0"]);
+    assert.match(panel?.textContent ?? "", /keeps its schedule on the 0\.3\.x runner/);
+    assert.match(panel?.textContent ?? "", /deprecated and stays for one more release/);
+    assert.equal(panel?.querySelector(".migration-problems"), null, "a legacy_bound schedule is a count, not a problem");
+    assert.deepEqual(alerts(m.host), []);
+    await m.unmount();
+  });
+
+  it("fire: failed, skipped and waiting items are named with their reason", async () => {
+    setup({
+      done: false,
+      doneAt: null,
+      counts: counts({ workflowsMigrated: 0, schedulesMigrated: 0, workflowsFailed: 1, schedulesSkipped: 1, deferred: 1 }),
+      items: [
+        item("workflow", WF2, "failed", null, "v2: the instruction and steps are 9000 characters, the engine allows 8000"),
+        item("schedule", "aut_9", "skipped", null, "other_agent: a workflow has one agent in the engine."),
+        item("schedule", "aut_8", "deferred", null, "engine_off: the workflow engine is not configured."),
+      ],
+    });
+    const m = await mount(h(wfs.Workflows, { openId: WF, stills: "" }));
+    const panel = m.host.querySelector('[aria-label="Move from 0.3"]');
+    assert.match(panel?.textContent ?? "", /not finished/);
+    const lines = [...(panel?.querySelectorAll(".migration-problems li") ?? [])].map((li) => (li.textContent ?? "").replace(/\s+/g, " "));
+    assert.equal(lines.length, 3);
+    assert.match(lines.find((l) => /failed/.test(l)) ?? "", /Workflow Triage inbox: v2: the instruction and steps are 9000 characters/);
+    assert.match(lines.find((l) => /skipped/.test(l)) ?? "", /other_agent/);
+    assert.match(lines.find((l) => /waits for the engine/.test(l)) ?? "", /engine_off/);
+    assert.doesNotMatch(m.host.querySelector(".detail-head")?.textContent ?? "", /Migrated from 0\.3/, "the open workflow did not move");
+    await m.unmount();
+  });
+
+  it("nothing moved (a new install): no panel and no badge; a failed status read is an alert with Try again, not silence", async () => {
+    setup(null);
+    let m = await mount(h(wfs.Workflows, { openId: WF, stills: "" }));
+    assert.equal(m.host.querySelector('[aria-label="Move from 0.3"]'), null);
+    assert.doesNotMatch(m.host.textContent ?? "", /Migrated from 0\.3/);
+    await m.unmount();
+    setup(null);
+    stub.fail.migration_status = { status: 500, code: "internal_error" };
+    m = await mount(h(wfs.Workflows, { openId: WF, stills: "" }));
+    assert.match(alerts(m.host).join(" "), /The move from 0\.3 could not be read/);
+    stub.fail.migration_status = undefined;
+    await click(button(m.host, "Try again"));
+    await flush();
+    assert.deepEqual(alerts(m.host), []);
     await m.unmount();
   });
 });
