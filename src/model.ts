@@ -40,6 +40,11 @@ export const CRUD_ORDER: readonly Crud[] = ["create", "read", "update", "delete"
 export const ALLOWLIST_NOTICE =
   "The agent may call these operations; the bridge blocks every other operation. The steps are guidance the owner reviewed: nothing forces the agent to follow them in order or with given inputs.";
 
+/** The same honest sentence for a schedule that targets a FREE agent (C364a R1a): there is no run token and no recipe yet,
+ *  so the operation list is guidance only. Shown to the Free caller (`workflow_get`) and in the Schedules page. */
+export const freeTargetNotice = (agentName: string): string =>
+  `Runs with ${agentName}'s own access. The operation list is guidance until per-run narrowing (C288 R2–R4).`;
+
 /** Thrown for input the owner or agent must fix (mapped to 422 validation_failed by the app). */
 export class ModelError extends Error {
   readonly pointer: string | null;

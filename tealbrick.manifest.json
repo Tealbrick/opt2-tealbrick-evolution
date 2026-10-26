@@ -704,7 +704,7 @@
     {
       "id": "workflow_get",
       "title": "Get a workflow",
-      "description": "Read a promoted workflow: instruction, trigger, reviewed steps and the operations you may call. A Bound agent reads its workflow here before it works. Without version: the active version.",
+      "description": "Read a promoted workflow: instruction, trigger, reviewed steps and the operations you may call. A Bound agent reads its workflow here before it works; for a Free agent the notice says that it runs with its own access and the operation list is guidance. Without version: the active version.",
       "input": {
         "type": "object",
         "additionalProperties": false,
@@ -886,7 +886,7 @@
     {
       "id": "routines_due",
       "title": "Due workflow runs",
-      "description": "For a Bound agent: the scheduled runs of your workflows that are due now. Reading claims nothing (it only records runs whose due time passed the misfire grace as missed); claim a run with routine_claim before you start it. Your `tealbrick agent serve` routines mode calls this for you.",
+      "description": "For a Bound or a Free agent: the scheduled runs due now on the schedules that name you and target your own mode (a Bound agent gets Bound schedules, a Free agent gets Free ones). A paused or removed agent gets none. Reading claims nothing (it only records runs whose due time passed the misfire grace as missed); claim a run with routine_claim before you start it. Your `tealbrick agent serve` routines mode calls this for you.",
       "input": {
         "type": "object",
         "additionalProperties": false,
@@ -948,7 +948,7 @@
     {
       "id": "routine_claim",
       "title": "Claim a due run",
-      "description": "Claim one due run by its occurrence. At most one claim per occurrence ever succeeds; a run that was claimed, missed or is not due answers claimed false with a reason. The answer carries the reviewed workflow (instruction, steps, allowed operations).",
+      "description": "Claim one due run by its occurrence. At most one claim per occurrence ever succeeds; a run that was claimed, missed or is not due answers claimed false with a reason. You can claim only an occurrence of your own schedule of your own mode: mode_mismatch (the schedule targets the other mode), agent_unavailable (you are paused or removed), not_bound (not an agent, or a Free agent with no Free schedule). The answer carries the reviewed workflow (instruction, steps, allowed operations).",
       "input": {
         "type": "object",
         "additionalProperties": false,
@@ -986,6 +986,8 @@
                   "not_due",
                   "paused",
                   "not_bound",
+                  "mode_mismatch",
+                  "agent_unavailable",
                   "version_missing",
                   "policy_stale"
                 ]
@@ -4942,7 +4944,7 @@
     {
       "id": "automation_set",
       "title": "Schedule a workflow",
-      "description": "Create or change the schedule of a workflow for one Bound agent (cron, 5 fields, UTC). Each run becomes a Task Board issue in kanbanProject: a project you share with the Bound agent in Task Board, so the agent can read and comment on its runs. When Task Board is connected, a new schedule needs kanbanProject (kanban_project_required); an edit can keep an old schedule without one but not remove one.",
+      "description": "Create or change the schedule of a workflow for one agent (cron, 5 fields, UTC). targetMode \"bound\" (the default) is a Bound agent that holds the recipe of the workflow. targetMode \"free\" is an existing Free agent from the agent list: it claims its runs with its own access, no recipe is applied, so policyVersion must be left out (422 policy_version_not_applicable) and the agent must be a Free agent of this workspace (422 agent_not_free). An edit without targetMode keeps the stored mode. Each run becomes a Task Board issue in kanbanProject: a project you share with the agent in Task Board, so the agent can read and comment on its runs. When Task Board is connected, a new schedule needs kanbanProject (kanban_project_required); an edit can keep an old schedule without one but not remove one.",
       "input": {
         "type": "object",
         "additionalProperties": false,
@@ -4989,6 +4991,13 @@
             "maxLength": 64,
             "pattern": "^agt_[0-9A-Za-z]{1,60}$"
           },
+          "targetMode": {
+            "type": "string",
+            "enum": [
+              "bound",
+              "free"
+            ]
+          },
           "cron": {
             "type": "string",
             "minLength": 9,
@@ -5026,6 +5035,7 @@
           "versionPin",
           "policyVersion",
           "agentId",
+          "targetMode",
           "cron",
           "enabled",
           "misfireGraceSec",
@@ -5063,6 +5073,13 @@
           },
           "agentId": {
             "type": "string"
+          },
+          "targetMode": {
+            "type": "string",
+            "enum": [
+              "bound",
+              "free"
+            ]
           },
           "cron": {
             "type": "string"
@@ -5181,6 +5198,7 @@
           "versionPin",
           "policyVersion",
           "agentId",
+          "targetMode",
           "cron",
           "enabled",
           "misfireGraceSec",
@@ -5218,6 +5236,13 @@
           },
           "agentId": {
             "type": "string"
+          },
+          "targetMode": {
+            "type": "string",
+            "enum": [
+              "bound",
+              "free"
+            ]
           },
           "cron": {
             "type": "string"
@@ -5350,7 +5375,7 @@
     {
       "id": "automations_list",
       "title": "Schedules",
-      "description": "All schedules with their next due time and warnings (a version that needs a new recipe; no Task Board project). kanbanLinked: Evolving Workflows can reach Task Board.",
+      "description": "All schedules (targetMode: bound or free) with their next due time and warnings (a version that needs a new recipe; no Task Board project). kanbanLinked: Evolving Workflows can reach Task Board.",
       "input": {
         "type": "object",
         "additionalProperties": false,
@@ -5377,6 +5402,7 @@
                 "versionPin",
                 "policyVersion",
                 "agentId",
+                "targetMode",
                 "cron",
                 "enabled",
                 "misfireGraceSec",
@@ -5414,6 +5440,13 @@
                 },
                 "agentId": {
                   "type": "string"
+                },
+                "targetMode": {
+                  "type": "string",
+                  "enum": [
+                    "bound",
+                    "free"
+                  ]
                 },
                 "cron": {
                   "type": "string"

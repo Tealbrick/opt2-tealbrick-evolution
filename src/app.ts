@@ -12,7 +12,8 @@ import type * as K from "#kit";
 import { OP, type OpId } from "#kit";
 import * as cycles from "./cycles.ts";
 import { DEFAULT_MIN_REPEATS, KANBAN } from "./detector.ts";
-import { ALLOWLIST_NOTICE, allowedFromSteps, diffNotice, diffSnapshots, ModelError, type Snapshot } from "./model.ts";
+import * as directory from "./directory.ts";
+import { ALLOWLIST_NOTICE, allowedFromSteps, diffNotice, diffSnapshots, freeTargetNotice, ModelError, type Snapshot } from "./model.ts";
 import * as pipeline from "./pipeline.ts";
 import { buildRecipe } from "./recipe.ts";
 import * as routines from "./routines.ts";
@@ -39,7 +40,7 @@ function op<I, O>(spec: HandlerSpec<I, O>): HandlerSpec {
   } as unknown as HandlerSpec;
 }
 
-const STATUS: Record<store.StoreError["code"], number> = { not_found: 404, conflict: 409, revision_conflict: 409, validation_failed: 422, kanban_project_required: 422, metrics_need_terminal_status: 422, metric_names_full: 422, pipeline_id_mismatch: 409, confirm_replace_required: 409, contract_too_large: 422, metric_not_declared: 422 };
+const STATUS: Record<store.StoreError["code"], number> = { not_found: 404, conflict: 409, revision_conflict: 409, validation_failed: 422, kanban_project_required: 422, metrics_need_terminal_status: 422, metric_names_full: 422, pipeline_id_mismatch: 409, confirm_replace_required: 409, contract_too_large: 422, metric_not_declared: 422, agent_not_free: 422, policy_version_not_applicable: 422 };
 export function toTbError(e: unknown): unknown {
   if (e instanceof store.StoreError) return new TbError(e.code, e.message, STATUS[e.code], e.details);
   if (e instanceof ModelError) return new TbError("validation_failed", e.message, 422, { pointer: e.pointer });
@@ -181,7 +182,9 @@ export const handlers = {
   }),
   [OP.workflowGet]: op<K.WorkflowGetInput, K.WorkflowGetOutput>({
     async run(input, ctx) {
-      return { ...store.getVersion(ctx.db, input.id, input.version), notice: ALLOWLIST_NOTICE };
+      // A Free agent that reads its workflow runs with its own access (R1a): the bridge does not narrow it to the list.
+      const free = ctx.caller.type === "agent" && ctx.caller.mode === "free";
+      return { ...store.getVersion(ctx.db, input.id, input.version), notice: free ? freeTargetNotice(ctx.caller.name || ctx.caller.id) : ALLOWLIST_NOTICE };
     },
   }),
 
@@ -189,8 +192,11 @@ export const handlers = {
     // The poll target of `tealbrick agent serve` routines mode. No receipt and no decision: it only books what the clock
     // and the policy gate imply (missed and policy_stale periods), the same bookkeeping the owner's lists do.
     async run(_input, ctx) {
-      if (ctx.caller.type !== "agent" || ctx.caller.mode !== "bound") return { jobs: [] };
-      return { jobs: routines.dueJobs(ctx.db, ctx.caller.id) };
+      // Bound and Free agents get their OWN schedules of their own mode (R1a). A paused or removed agent gets none: the SDK
+      // refuses it first; `dueJobs` asks the directory again (second layer).
+      const mode = ctx.caller.type === "agent" ? ctx.caller.mode : null;
+      if (mode !== "bound" && mode !== "free") return { jobs: [] };
+      return { jobs: routines.dueJobs(ctx.db, ctx.caller.id, Date.now(), mode) };
     },
   }),
   [OP.routineClaim]: op<K.RoutineClaimInput, K.RoutineClaimOutput>({
@@ -442,8 +448,15 @@ export const definition: SdkAppDefinition = {
   },
   events: {
     // Agent directory (manifest needsAgentDirectory): keep names so suggestion text can say who repeated the work.
+    // R1a: also its mode and status, so a Free target can be checked and a paused or removed agent gets no runs (src/directory.ts).
     async agentAdded(agent, ctx) {
-      ctx.db.prepare("INSERT INTO agent_names (id, name, seen_at) VALUES (?, ?, ?) ON CONFLICT (id) DO UPDATE SET name = excluded.name, seen_at = excluded.seen_at").run(agent.id, agent.name, Date.now());
+      directory.recordAgent(ctx.db, agent);
+    },
+    async agentsChanged(agents, ctx) {
+      directory.recordDirectory(ctx.db, agents);
+    },
+    async agentRemoved(agent, ctx) {
+      directory.markRemoved(ctx.db, agent.id);
     },
   },
 };

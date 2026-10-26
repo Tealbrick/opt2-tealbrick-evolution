@@ -78,7 +78,7 @@ export interface Version extends Snapshot {
 
 /** Store-level refusal; the app maps `code` to the CORE §8 envelope. */
 export class StoreError extends Error {
-  readonly code: "not_found" | "conflict" | "revision_conflict" | "validation_failed" | "kanban_project_required" | "metrics_need_terminal_status" | "metric_names_full" | "pipeline_id_mismatch" | "confirm_replace_required" | "contract_too_large" | "metric_not_declared";
+  readonly code: "not_found" | "conflict" | "revision_conflict" | "validation_failed" | "kanban_project_required" | "metrics_need_terminal_status" | "metric_names_full" | "pipeline_id_mismatch" | "confirm_replace_required" | "contract_too_large" | "metric_not_declared" | "agent_not_free" | "policy_version_not_applicable";
   readonly details: Record<string, unknown> | undefined;
   constructor(code: StoreError["code"], message: string, details?: Record<string, unknown>) {
     super(message);

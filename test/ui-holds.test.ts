@@ -10,6 +10,7 @@ import { after, before, describe, it } from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { Window } from "happy-dom";
 import type { ReactElement } from "react";
+import { freeTargetNotice } from "../src/model.ts";
 
 type Standard = typeof import("../src/ui/standard.tsx");
 type SchedulesUi = typeof import("../src/ui/Schedules.tsx");
@@ -95,8 +96,10 @@ interface Stub {
   workflows: Record<string, unknown>[];
   versions: Record<string, unknown> | null;
   exported: Record<string, unknown> | null;
+  /** C364a R1a: the schedules automations_list answers */
+  automations: Record<string, unknown>[];
 }
-const stub: Stub = { holds: [], calls: [], fail: {}, gate: {}, networkDown: false, cycles: [], lessons: [], drafts: [], workflows: [], versions: null, exported: null };
+const stub: Stub = { holds: [], calls: [], fail: {}, gate: {}, networkDown: false, cycles: [], lessons: [], drafts: [], workflows: [], versions: null, exported: null, automations: [] };
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
 globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
@@ -112,6 +115,8 @@ globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) =>
   const failure = stub.fail[op];
   if (failure) return json(failure.status, { error: { code: failure.code, message: `raw upstream text for ${failure.code}`, requestId: "req_1" } });
   if (op === "automation_set") return json(200, { status: "ok", output: {} });
+  if (op === "automations_list") return json(200, { status: "ok", output: { automations: stub.automations, kanbanLinked: false } });
+  if (op === "runs_list") return json(200, { status: "ok", output: { runs: [] } });
   if (op === "cycles_list") return json(200, { status: "ok", output: { cycles: stub.cycles } });
   if (op === "cycle_get") {
     const { workflowId, version } = body.input as { workflowId: string; version: number };
@@ -204,6 +209,7 @@ const reset = (holds: StubHold[]) => {
   stub.workflows = [];
   stub.versions = null;
   stub.exported = null;
+  stub.automations = [];
 };
 
 describe("Holds page", () => {
@@ -362,6 +368,7 @@ describe("Schedules: Edit (C250 review S2: the warnings ask for Edit)", () => {
     versionPin: null,
     policyVersion: 1,
     agentId: "agt_01HZX3K8Q2V4N6P8R0S2T4V6W8",
+    targetMode: "bound" as const,
     cron: "0 8 * * *",
     enabled: true,
     misfireGraceSec: 120,
@@ -403,6 +410,88 @@ describe("Schedules: Edit (C250 review S2: the warnings ask for Edit)", () => {
       kanbanProject: "prj_shared",
     });
     assert.equal(saved, 1);
+    await m.unmount();
+  });
+});
+
+describe("Schedules: a Free agent as the target (C364a R1a)", () => {
+  const FREE_AGENT = "agt_01HZX3K8Q2V4N6P8R0S2T4V6WF";
+  const BOUND_AGENT = "agt_01HZX3K8Q2V4N6P8R0S2T4V6WB";
+  const NOTICE = "Runs with Henry's own access. The operation list is guidance until per-run narrowing (C288 R2–R4).";
+  const automation = (extra: Record<string, unknown>) => ({
+    id: "aut_01HZX3K8Q2V4N6P8R0S2T4V6W8",
+    workflowId: "wfl_01HZX3K8Q2V4N6P8R0S2T4V6W8",
+    workflowTitle: "Morning rollup",
+    versionPin: null,
+    policyVersion: 1,
+    agentId: FREE_AGENT,
+    targetMode: "free" as const,
+    cron: "0 8 * * *",
+    enabled: true,
+    misfireGraceSec: 120,
+    kanbanProject: null,
+    revision: 3,
+    nextDueAt: "2026-10-13T08:00:00.000Z",
+    effectiveNextDueAt: "2026-10-13T08:00:00.000Z",
+    missedSince: null,
+    createdAt: "2026-10-12T06:00:00.000Z",
+    updatedAt: "2026-10-12T06:00:00.000Z",
+    warnings: [],
+    ...extra,
+  });
+  const agents = [
+    { id: FREE_AGENT, name: "Henry", mode: "free", status: "active", access: [] },
+    { id: BOUND_AGENT, name: "Rollup bot", mode: "bound", status: "active", access: [] },
+  ];
+
+  it("the list says Free agent and shows the own-access sentence for a Free target only; a Bound schedule shows neither", async () => {
+    reset([]);
+    stub.automations = [automation({}), automation({ id: "aut_01HZX3K8Q2V4N6P8R0S2T4V6W9", agentId: BOUND_AGENT, targetMode: "bound" })];
+    // the page text and the workflow_get text are one sentence (src/ui/ops.ts, src/model.ts)
+    const uiOps = (await import(pathToFileURL(join(outDir, "ui", "ops.js")).href)) as { freeTargetText: (n: string) => string };
+    assert.equal(uiOps.freeTargetText("Henry"), freeTargetNotice("Henry"));
+    const m = await mount(h(sched.Schedules, { agents: agents as never, agentsLoading: false }));
+    const cards = [...m.host.querySelectorAll("article")];
+    assert.equal(cards.length, 2);
+    assert.match(cards[0]?.textContent ?? "", /Henry \(Free agent\)/);
+    assert.ok([...cards[0]?.querySelectorAll('[role="status"]') ?? []].some((n) => n.textContent === NOTICE), "the notice, exactly");
+    assert.match(cards[1]?.textContent ?? "", /Rollup bot/);
+    assert.doesNotMatch(cards[1]?.textContent ?? "", /Free agent|own access/);
+    await m.unmount();
+  });
+
+  it("Edit of a Free schedule: the notice, no 'Recipe applied', and Save sends no policyVersion and no targetMode", async () => {
+    reset([]);
+    const a = automation({});
+    const m = await mount(h(sched.EditSchedule, { automation: a, agentName: "Henry", activeVersion: 2, kanbanLinked: false, onClose: () => {}, onSaved: async () => {} }));
+    assert.ok([...document.querySelectorAll('[role="status"]')].some((n) => n.textContent === NOTICE));
+    assert.ok(![...document.querySelectorAll("label, span")].some((n) => n.textContent === "Recipe applied"), "a Free agent has no applied recipe");
+    await click(button(document.body, "Save"));
+    await flush();
+    const call = stub.calls.find((c) => c.op === "automation_set");
+    assert.deepEqual(call?.input, { id: a.id, revision: 3, workflowId: a.workflowId, agentId: FREE_AGENT, versionPin: null, enabled: true, misfireGraceSec: 120, cron: "0 8 * * *", kanbanProject: null });
+    await m.unmount();
+  });
+
+  it("New schedule: choosing Free lists only the Free agents, shows the sentence and creates with targetMode free; Bound sends no targetMode", async () => {
+    reset([]);
+    stub.workflows = [{ id: "wfl_01HZX3K8Q2V4N6P8R0S2T4V6W8", title: "Morning rollup", activeVersion: 1 }];
+    const m = await mount(h(sched.Schedules, { agents: agents as never, agentsLoading: false }));
+    await click(button(m.host, "New schedule"));
+    await flush();
+    const options = () => [...document.querySelectorAll('li[role="option"]')].map((o) => o.textContent ?? "");
+    const pick = (label: string) => act(async () => ([...document.querySelectorAll('li[role="option"]')].find((o) => o.textContent === label) as HTMLElement).click());
+    assert.ok(options().includes("Rollup bot") && !options().includes("Henry"), "Bound by default: the Bound agent only");
+    assert.ok(![...document.querySelectorAll('[role="status"]')].some((n) => n.textContent === NOTICE));
+    await pick("Free agent");
+    assert.ok(options().includes("Henry") && !options().includes("Rollup bot"), "Free: the Free agent only");
+    await pick("Henry");
+    await pick("Morning rollup (v1)");
+    assert.ok([...document.querySelectorAll('[role="status"]')].some((n) => n.textContent === NOTICE), "the sentence names the chosen agent");
+    await click(button(document.body, "Create schedule"));
+    await flush();
+    const call = stub.calls.filter((c) => c.op === "automation_set").at(-1);
+    assert.deepEqual(call?.input, { workflowId: "wfl_01HZX3K8Q2V4N6P8R0S2T4V6W8", agentId: FREE_AGENT, targetMode: "free", cron: "0 8 * * 1-5" });
     await m.unmount();
   });
 });

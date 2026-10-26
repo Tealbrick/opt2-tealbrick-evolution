@@ -13,6 +13,9 @@ export type Out<K extends keyof PersonOps> = PersonOps[K]["output"];
 export const ALLOWLIST_TEXT =
   "The agent may call these operations; the bridge blocks every other operation. The steps are guidance you reviewed: nothing forces the agent to follow them in order.";
 
+/** The same sentence for a schedule that targets a Free agent (C364a R1a; keep in step with `freeTargetNotice` in src/model.ts). */
+export const freeTargetText = (agentName: string): string => `Runs with ${agentName}'s own access. The operation list is guidance until per-run narrowing (C288 R2–R4).`;
+
 const SESSION_CODES = new Set(["session_required", "csrf_invalid", "network_error"]);
 
 /** Plain sentence for a failed call: the app's own message (it is written for the owner), or the shared one for session and network errors. */

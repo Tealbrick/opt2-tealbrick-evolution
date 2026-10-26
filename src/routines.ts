@@ -8,9 +8,14 @@
 //   policy_stale (C250): a due occurrence of a wider active version than the recipe the agent has (`policyVersion`) is
 //   skipped like a claimed period; the first one per schedule revision and version is recorded as a `policy_stale` run;
 //   routines_due leaves it out and routine_claim answers policy_stale. One gate (`policyStale`) decides it for both.
+//   R1a (C364a): a schedule targets a Bound agent (`target_mode` 'bound', as before) or an existing FREE agent ('free'): the
+//   Free agent claims its runs with its own grant. A caller gets and claims a schedule only when (agent_id = caller id AND
+//   target_mode = caller mode); a Free caller reaches only its own schedules, never another agent's. No recipe is applied to
+//   a Free target, so the policy_stale gate does not apply. A paused or removed agent (src/directory.ts) gets nothing.
 import { createHash } from "node:crypto";
 import { CronError, cronDue, nextCronTime, ulid } from "@opt2-tealbrick/manifest";
 import type { Db } from "@opt2-tealbrick/miniapp-sdk";
+import * as directory from "./directory.ts";
 import { diffSnapshots } from "./model.ts";
 import { getVersion, getWorkflow, StoreError, snapshotOf, type Version } from "./store.ts";
 
@@ -18,7 +23,12 @@ export const CLAIMED_TIMEOUT_MS = 10 * 60_000;
 export const DISPATCHED_TIMEOUT_MS = 30 * 60_000;
 export const DEFAULT_GRACE_SEC = 120;
 export type RunStatus = "claimed" | "dispatched" | "completed" | "failed" | "missed" | "uncertain" | "policy_stale";
-export type ClaimReason = "already_claimed" | "missed" | "not_due" | "paused" | "not_bound" | "version_missing" | "policy_stale";
+export type TargetMode = "bound" | "free";
+/** `not_bound`: the caller is not an agent, or a Free agent that has no Free schedule. `mode_mismatch`: the occurrence is
+ *  a due occurrence of one of the caller's own schedules, but that schedule targets the other mode (a Bound caller with a
+ *  Free schedule, a Free caller with a Bound one). `agent_unavailable`: the directory says the caller is paused or removed.
+ *  `paused` stays the schedule's own state. */
+export type ClaimReason = "already_claimed" | "missed" | "not_due" | "paused" | "not_bound" | "mode_mismatch" | "agent_unavailable" | "version_missing" | "policy_stale";
 
 export interface Automation {
   id: string;
@@ -26,6 +36,8 @@ export interface Automation {
   versionPin: number | null;
   policyVersion: number;
   agentId: string;
+  /** 'free': the agent runs with its own access (R1a); 'bound': the Bound agent that holds the recipe */
+  targetMode: TargetMode;
   cron: string;
   enabled: boolean;
   misfireGraceSec: number;
@@ -67,6 +79,7 @@ interface Row {
   versionPin: number | null;
   policyVersion: number;
   agentId: string;
+  targetMode: TargetMode;
   cron: string;
   enabled: boolean;
   grace: number;
@@ -85,6 +98,7 @@ function toRow(r: Record<string, unknown>): Row {
     versionPin: r.version_pin === null ? null : Number(r.version_pin),
     policyVersion: Number(r.policy_version),
     agentId: String(r.agent_id),
+    targetMode: r.target_mode === "free" ? "free" : "bound", // a database before 0008 has no column: every schedule there is bound
     cron: String(r.cron),
     enabled: Number(r.enabled) === 1,
     grace: Number(r.misfire_grace_sec),
@@ -104,6 +118,7 @@ function view(r: Row): Automation {
     versionPin: r.versionPin,
     policyVersion: r.policyVersion,
     agentId: r.agentId,
+    targetMode: r.targetMode,
     cron: r.cron,
     enabled: r.enabled,
     misfireGraceSec: r.grace,
@@ -141,6 +156,8 @@ export interface AutomationInput {
   versionPin?: number | null;
   policyVersion?: number;
   agentId: string;
+  /** default bound; an edit without it keeps the stored value */
+  targetMode?: TargetMode;
   cron: string;
   enabled?: boolean;
   misfireGraceSec?: number;
@@ -157,6 +174,10 @@ export interface SetOptions {
 const KANBAN_PROJECT_REQUIRED =
   "Choose a Task Board project that you share with the Bound agent. Run issues in the own project of Evolving Workflows are not visible to the agent.";
 
+const NOT_FREE =
+  "This agent is not a Free agent that Evolving Workflows knows. Choose an agent that is in the agent list of this workspace and has the mode Free. A Bound agent takes a Bound schedule.";
+const NO_RECIPE_FOR_FREE = "A Free agent runs with its own access: no recipe is applied to it. Leave \"Recipe applied\" (policyVersion) out.";
+
 export function setAutomation(db: Db, input: AutomationInput, now: number = Date.now(), opts: SetOptions = {}): Automation {
   return db.transaction(() => {
     const wf = getWorkflow(db, input.workflowId);
@@ -165,6 +186,15 @@ export function setAutomation(db: Db, input: AutomationInput, now: number = Date
     // The applied recipe version is the owner's statement: a new schedule starts at the pin or the active version; an edit
     // that does not name it keeps it (an edit of the project or the cron must not silently clear a policy_stale gate).
     const prior = input.id ? load(db, input.id) : null;
+    // R1a: the target mode. Free = the agent's own access, no applied recipe. The agent must be a listed Free agent when
+    // the schedule is new or its agent or mode changes; a later edit (cron, pause, project) of a schedule whose agent has
+    // since gone must still work, so pause and delete are never blocked by the directory.
+    const targetMode: TargetMode = input.targetMode ?? prior?.targetMode ?? "bound";
+    if (targetMode === "free") {
+      if (input.policyVersion !== undefined) throw new StoreError("policy_version_not_applicable", NO_RECIPE_FOR_FREE, { pointer: "/policyVersion" });
+      if ((prior?.targetMode !== "free" || prior.agentId !== input.agentId) && !directory.isFreeAgent(db, input.agentId))
+        throw new StoreError("agent_not_free", NOT_FREE, { pointer: "/agentId" });
+    }
     // (also when the pin changes: a pinned schedule skips the gate, so keeping the value is safe, and unpinning must not
     // jump to a wider active version)
     const policyVersion = input.policyVersion ?? (prior && prior.workflowId === wf.id ? prior.policyVersion : (pin ?? wf.activeVersion));
@@ -176,8 +206,8 @@ export function setAutomation(db: Db, input: AutomationInput, now: number = Date
       if (opts.kanbanLinked && project === null) throw new StoreError("kanban_project_required", KANBAN_PROJECT_REQUIRED, { pointer: "/kanbanProject" });
       const id = `aut_${ulid(now)}`;
       db.prepare(
-        "INSERT INTO automations (id, workflow_id, version_pin, policy_version, agent_id, cron, enabled, misfire_grace_sec, kanban_project, revision, next_due_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)",
-      ).run(id, wf.id, pin, policyVersion, input.agentId, cron, input.enabled === false ? 0 : 1, input.misfireGraceSec ?? DEFAULT_GRACE_SEC, project, firstDue, now, now);
+        "INSERT INTO automations (id, workflow_id, version_pin, policy_version, agent_id, target_mode, cron, enabled, misfire_grace_sec, kanban_project, revision, next_due_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)",
+      ).run(id, wf.id, pin, policyVersion, input.agentId, targetMode, cron, input.enabled === false ? 0 : 1, input.misfireGraceSec ?? DEFAULT_GRACE_SEC, project, firstDue, now, now);
       return view(load(db, id));
     }
     const cur = load(db, input.id);
@@ -190,12 +220,13 @@ export function setAutomation(db: Db, input: AutomationInput, now: number = Date
     // a changed cron or a re-enabled schedule starts from now; otherwise keep the pending due time
     const keep = cron === cur.cron && enabled === cur.enabled;
     db.prepare(
-      "UPDATE automations SET workflow_id = ?, version_pin = ?, policy_version = ?, agent_id = ?, cron = ?, enabled = ?, misfire_grace_sec = ?, kanban_project = ?, revision = revision + 1, next_due_at = ?, updated_at = ? WHERE id = ?",
+      "UPDATE automations SET workflow_id = ?, version_pin = ?, policy_version = ?, agent_id = ?, target_mode = ?, cron = ?, enabled = ?, misfire_grace_sec = ?, kanban_project = ?, revision = revision + 1, next_due_at = ?, updated_at = ? WHERE id = ?",
     ).run(
       wf.id,
       pin,
       policyVersion,
       input.agentId,
+      targetMode,
       cron,
       enabled ? 1 : 0,
       input.misfireGraceSec ?? cur.grace,
@@ -212,7 +243,18 @@ export function pauseAutomation(db: Db, id: string, revision: number, paused: bo
   const cur = load(db, id);
   return setAutomation(
     db,
-    { id, revision, workflowId: cur.workflowId, versionPin: cur.versionPin, policyVersion: cur.policyVersion, agentId: cur.agentId, cron: cur.cron, enabled: !paused },
+    {
+      id,
+      revision,
+      workflowId: cur.workflowId,
+      versionPin: cur.versionPin,
+      // a Free target has no applied recipe: policyVersion must stay out of the edit
+      ...(cur.targetMode === "free" ? {} : { policyVersion: cur.policyVersion }),
+      agentId: cur.agentId,
+      targetMode: cur.targetMode,
+      cron: cur.cron,
+      enabled: !paused,
+    },
     now,
   );
 }
@@ -358,6 +400,7 @@ export interface Job {
 /** THE policy gate of routines_due and routine_claim: a schedule that follows the active version may run it only when
  *  that version needs no more access than the recipe the owner applied (`policyVersion`). */
 export function policyStale(db: Db, a: Row, v: Version): boolean {
+  if (a.targetMode === "free") return false; // no applied recipe: the Free agent runs with its own access (R1a)
   if (a.versionPin !== null || v.version === a.policyVersion) return false;
   const applied = resolveVersionAt(db, a.workflowId, a.policyVersion);
   return !applied || diffSnapshots(snapshotOf(applied), snapshotOf(v)).widensAccess;
@@ -371,13 +414,15 @@ function resolveVersion(db: Db, a: Row): Version | null {
   }
 }
 
-/** routines_due: Bound callers only; one job per automation at most (its due occurrence inside the grace). Claims
- *  nothing. Bookkeeping only (facts from the clock and the policy gate): records missed runs (see `settle`) and skips /
+/** routines_due: one job per automation at most (its due occurrence inside the grace), only for the caller's own schedules of
+ *  the caller's own mode (`mode`: a Bound caller gets Bound schedules, a Free caller Free ones; default bound). A paused or
+ *  removed agent gets none. Claims nothing. Bookkeeping only (facts from the clock and the policy gate): records missed runs (see `settle`) and skips /
  *  records policy-stale periods (`recordPolicyStale`); no receipt. */
-export function dueJobs(db: Db, agentId: string, now: number = Date.now()): Job[] {
+export function dueJobs(db: Db, agentId: string, now: number = Date.now(), mode: TargetMode = "bound"): Job[] {
   return db.transaction(() => {
     const jobs: Job[] = [];
-    for (const a0 of db.prepare("SELECT * FROM automations WHERE agent_id = ? AND deleted_at IS NULL AND enabled = 1").all(agentId).map(toRow)) {
+    if (!directory.isAvailable(db, agentId)) return jobs;
+    for (const a0 of db.prepare("SELECT * FROM automations WHERE agent_id = ? AND target_mode = ? AND deleted_at IS NULL AND enabled = 1").all(agentId, mode).map(toRow)) {
       const { row: a, due } = settle(db, a0, now);
       if (due === null) continue;
       const occurrence = occurrenceOf(a.id, a.revision, due);
@@ -405,17 +450,22 @@ export interface ClaimedJob extends Job {
 }
 export type ClaimResult = { claimed: true; job: ClaimedJob; automation: Automation } | { claimed: false; reason: ClaimReason };
 
-/** routine_claim: the ONE write that turns a due occurrence into a run (primary key = at-most-once). */
+/** routine_claim: the ONE write that turns a due occurrence into a run (primary key = at-most-once). Only the caller's own
+ *  schedules are looked at (agent_id = caller id), and a schedule is claimed only by a caller of its target mode. */
 export function claim(db: Db, caller: { id: string; mode: string | null }, occurrence: string, now: number = Date.now()): ClaimResult {
   return db.transaction((): ClaimResult => {
     sweep(db, now);
-    if (caller.mode !== "bound") return { claimed: false, reason: getRun(db, occurrence) ? "already_claimed" : "not_bound" };
-    for (const a0 of db.prepare("SELECT * FROM automations WHERE agent_id = ? AND deleted_at IS NULL").all(caller.id).map(toRow)) settle(db, a0, now);
+    const mode: TargetMode | null = caller.mode === "bound" || caller.mode === "free" ? caller.mode : null;
+    if (mode === null) return { claimed: false, reason: getRun(db, occurrence) ? "already_claimed" : "not_bound" };
+    if (!directory.isAvailable(db, caller.id)) return { claimed: false, reason: "agent_unavailable" };
+    const own = db.prepare("SELECT * FROM automations WHERE agent_id = ? AND deleted_at IS NULL").all(caller.id).map(toRow);
+    for (const a0 of own) if (a0.targetMode === mode) settle(db, a0, now);
     const prior = getRun(db, occurrence);
     if (prior) return { claimed: false, reason: prior.status === "missed" || prior.status === "policy_stale" ? prior.status : "already_claimed" };
     for (const a of db.prepare("SELECT * FROM automations WHERE agent_id = ? AND deleted_at IS NULL").all(caller.id).map(toRow)) {
       const r = cronDue(a.cron, { nextDueAt: new Date(a.nextDueAt), now: new Date(now), graceSec: a.grace });
       if (!r.due || r.missed || occurrenceOf(a.id, a.revision, r.due.getTime()) !== occurrence) continue;
+      if (a.targetMode !== mode) return { claimed: false, reason: "mode_mismatch" };
       const s = { due: r.due.getTime(), next: r.nextDueAt?.getTime() ?? null };
       if (!a.enabled) return { claimed: false, reason: "paused" };
       const v = resolveVersion(db, a);
@@ -449,7 +499,7 @@ export function claim(db: Db, caller: { id: string; mode: string | null }, occur
         },
       };
     }
-    return { claimed: false, reason: "not_due" };
+    return { claimed: false, reason: mode === "free" && !own.some((a) => a.targetMode === "free") ? "not_bound" : "not_due" };
   });
 }
 

@@ -87,8 +87,8 @@ test("owner review: decide, draft (needs approval), edit with revisions, promote
   assert.equal(p1.workflow.activeVersion, 1);
   await refused(call(H, "workflow_promote", { draftId: d1.id, revision: d2.revision }, owner), "conflict", 409);
 
-  // the agent reads it, with the honest notice
-  const wf = await call<K.WorkflowGetOutput>(H, "workflow_get", { id: p1.workflow.id }, ctxFor(db, AGENT_B));
+  // the Bound agent reads it, with the honest notice (a Free agent gets the Free-target notice: test/free-target.test.ts)
+  const wf = await call<K.WorkflowGetOutput>(H, "workflow_get", { id: p1.workflow.id }, ctxFor(db, { ...AGENT_B, mode: "bound" }));
   assert.equal(wf.version, 1);
   assert.equal(wf.notice, ALLOWLIST_NOTICE);
   assert.match(wf.notice, /may call these operations/);

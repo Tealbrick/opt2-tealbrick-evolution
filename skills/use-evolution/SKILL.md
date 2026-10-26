@@ -32,5 +32,10 @@ description: When and how to suggest a workflow for repeated work, and how a Bou
   - **If a report with metrics is refused, send the same report again without metrics, so the run still ends.**
 - Do one run per claim and then stop. Never start another run of the workflow on your own.
 
+## If you are a Free agent with a schedule
+- An owner can schedule a workflow for you without a recipe (R1a). You get and claim only runs of schedules that name you, with the same runner and the same three operations. You cannot see or claim another agent's runs.
+- You run with your own access. The operation list in `evolution__workflow_get` is guidance, not a limit: stay inside it. Its notice says: "Runs with <your name>'s own access. The operation list is guidance until per-run narrowing (C288 R2–R4)."
+- A claim can answer `mode_mismatch` (the schedule is for the other agent mode), `not_bound` (you have no Free schedule) or `agent_unavailable` (you are paused or removed). Do not retry; tell the owner.
+
 ## Held calls
 If a call answers `held`, the owner must approve it. Poll `evolution__tb_hold_status` with the `holdId`, then repeat the same call.
