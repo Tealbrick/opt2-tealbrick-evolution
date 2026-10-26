@@ -3,7 +3,8 @@
   "kind": "miniapp",
   "paths": ["."],
   "images": [
-    { "name": "opt2-tealbrick-evolution", "product": "evolution", "kind": "app", "manifest": "tealbrick.manifest.json" }
+    { "name": "opt2-tealbrick-evolution", "product": "evolution", "kind": "app", "manifest": "tealbrick.manifest.json" },
+    { "name": "opt2-tealbrick-evolution-temporal", "product": "evolution", "kind": "service", "service": "temporal", "context": ".", "dockerfile": "services/temporal/Dockerfile" }
   ],
   "preReleaseChecks": ["eval/run.ts"]
 }

@@ -13,6 +13,7 @@ import { OP, type OpId } from "#kit";
 import * as cycles from "./cycles.ts";
 import { DEFAULT_MIN_REPEATS, KANBAN } from "./detector.ts";
 import * as directory from "./directory.ts";
+import { engineAttention, refreshEngineHealth, startEngineHealthWatch } from "./engine/health.ts";
 import { ALLOWLIST_NOTICE, allowedFromSteps, diffNotice, diffSnapshots, freeTargetNotice, ModelError, type Snapshot } from "./model.ts";
 import * as pipeline from "./pipeline.ts";
 import { buildRecipe } from "./recipe.ts";
@@ -445,6 +446,13 @@ export const definition: SdkAppDefinition = {
   // C85: the Kanban scan runs without an op call (app-initiated companion call with Evolution's own grant).
   async onStart(ctx) {
     detectorRefresh.start({ db: ctx.db, callApp: ctx.callApp.bind(ctx), log: ctx.log });
+    // C367 WP1: tell the status push when the workflow engine goes down or comes back (never in /tb/v1/health).
+    startEngineHealthWatch(() => ctx.statusChanged());
+  },
+  // C367 WP1: the Temporal companion unreachable -> readiness `degraded` with the reason; the app still serves.
+  async attention() {
+    await refreshEngineHealth();
+    return engineAttention();
   },
   events: {
     // Agent directory (manifest needsAgentDirectory): keep names so suggestion text can say who repeated the work.

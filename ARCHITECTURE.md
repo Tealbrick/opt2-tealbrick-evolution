@@ -72,13 +72,47 @@ Suggestions, Drafts, Workflows, Schedules, Cycles, Holds, Agents and scopes (`sr
 
 Kanban is a soft dependency for the detector (suggestions from agents work without it) and is needed for run issues. A Bound agent and its runner must exist for schedules to do anything.
 
-Port 8080. 0.25 cpu, 256 MB. Data 1 GB plus backup 2 GB. Backup cron `30 2 * * *`, retain 7.
+Port 8080. 0.5 cpu, 768 MB (C367 WP1; was 0.25 cpu / 256 MB). Data 1 GB plus backup 2 GB. Backup cron `30 2 * * *`, retain 7. The `temporal` companion service (below): 0.5 cpu, 768 MB, data 5 GB.
 
 ## Pinned packages
 
 miniapp-sdk 0.1.31, spec 0.1.47, manifest 0.1.25, conformance 0.1.22, ui 0.2.4. Cron maths come from `@opt2-tealbrick/manifest` (`cronDue`, `nextCronTime`).
 
 All `@opt2-tealbrick/*` pins use dist-host tarball URLs. Upgrade safety (SDK 0.1.25 and later: pre-update snapshot, migration lock, failed mode) is in every release since 0.2.12 (stable since 2026-10-18). A failed update is rolled back by Core with the SDK pre-update snapshot; there are no down migrations.
+
+## Temporal service (companion `temporal`, C367 WP1)
+
+The workflow engine runs on Temporal in the single-binary shape: one companion service, `temporal`, built from `services/temporal/Dockerfile`
+(`runtime.services[]`, always on, `startOrder` 0, private network only, no UI, no public route). The app reaches it through the env
+`TEMPORAL_ADDRESS={{services.temporal.host}}:7233`; the engine namespace is `evolution`.
+
+- **Image:** `node:24.22.1-bookworm-slim` by digest, the Temporal CLI 1.9.1 (server 1.32.0; MIT; downloaded by URL with a pinned sha256 per
+  architecture), `sqlite3`, and the tb-exec layer (`services/temporal/tb-exec`, integrity-pinned lock, `npm ci --ignore-scripts`; keep its
+  miniapp-sdk version equal to the app's). tb-exec claims the service, then runs `services/temporal/run.sh` as uid 1000 (`dropPrivileges`).
+- **Server:** `temporal server start-dev --headless --ip 0.0.0.0 --port 7233 --db-filename /data/temporal.db --namespace evolution --log-level warn`.
+  The state is one SQLite file on the 5 GB volume `temporal_data`. Health is a TCP check on 7233. `run.sh` raises the `evolution` namespace retention
+  from the dev default of 24 h to 14 days (`TEMPORAL_RETENTION`, default `336h`) once the server answers. The dev server also opens a metrics port and
+  the internal service ports on random numbers; only 7233 is declared, and nothing is routed to the service from outside the private network.
+  There is no authentication on 7233: the private network is the boundary (the same as v1).
+- **Schema (the self-migration finding):** `start-dev` never migrates an existing SQLite file. It creates the schema once in an empty file and then
+  only opens it. A newer CLI on an older file starts, but features that need newer tables fail later (measured: a file made by CLI 1.5.1 and opened
+  by 1.9.1 starts, and `DescribeSchedule` then fails with `no such table: current_chasm_executions`). There is no flag to turn anything on or off.
+  So the E3 rule "no self-migration at start" holds, and the version is pinned by the image. The risk is the other way round: a CLI bump needs an explicit
+  schema step. Guard: `services/temporal/schema.sha256` is the hash (`services/temporal/schema-hash`) of the table, index, view and trigger
+  definitions of a fresh database of the pinned CLI. `run.sh` refuses to start (exit 78, `temporal_schema_mismatch` in the log, health stays red) on a
+  file with another hash, and `temporal-restore` refuses a copy with another hash. A CLI bump is its own Evolution release: new version and two sha256
+  in the Dockerfile, a new `schema.sha256`, the versioned SQL of the new server release applied by an explicit step after the pre-update snapshot, a test.
+- **Backup (`backup.dump` / `backup.restore`, extension `sqlite`):** `temporal-dump` writes a consistent copy with the SQLite online backup
+  (`sqlite3 ... .backup`) to a temporary file on the volume, checks it (`quick_check`) and streams it to stdout. `temporal-restore` stores the copy as
+  `/data/restore/pending.sqlite`, checks it (`integrity_check`, schema hash), stops the server, and waits until `run.sh` has moved the old file to
+  `/data/restore/previous.sqlite`, put the copy in place and started the server again. SDK limits: tb-exec caps a restore body at 512 MB, and Core
+  offers no snapshot restore for an app with companions (update-safety), so a bad release is fixed forward.
+- **App side:** `src/engine/health.ts` probes `TEMPORAL_ADDRESS` with a TCP connect (cached 10 s, one probe at a time, bounded below the SDK's 1 s
+  attention timeout). When the engine does not answer, `defineApp({attention})` reports `temporal_unreachable` (readiness `degraded`, the app still
+  serves). It is never part of `GET /tb/v1/health`, so the E3 upgrade gate does not depend on the engine.
+- **Proof:** `smoke/engine-smoke.ts` (start the image, gRPC reachability, schema hash, retention, a workflow through an inline worker, a Schedule:
+  create, fire, trigger, pause, unpause, delete; and the dump -> restore round trip with three workflows in flight) and `smoke/measure/` (24 h
+  RAM/CPU run with about 100 runs per hour, cold start on a copy of the live file). They need a container CLI and are run by hand (podman on neuu), not in CI.
 
 ## Known gaps
 

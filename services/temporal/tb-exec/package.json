@@ -1,0 +1,8 @@
+{
+  "name": "evolution-temporal-tb-exec",
+  "private": true,
+  "description": "The tb-exec layer of the Evolution `temporal` companion image, installed with `npm ci --ignore-scripts` from the integrity-pinned package-lock.json next to this file. Keep the SDK version equal to the app's own miniapp-sdk dependency.",
+  "dependencies": {
+    "@opt2-tealbrick/miniapp-sdk": "https://github.com/Tealbrick/opt2-tealbrick-dist/releases/download/opt2-tealbrick-sdk-miniapp-sdk-v0.1.31/opt2-tealbrick-miniapp-sdk-0.1.31.tgz"
+  }
+}

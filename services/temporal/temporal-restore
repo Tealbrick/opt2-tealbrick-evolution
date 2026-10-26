@@ -1,0 +1,35 @@
+#!/bin/sh
+# SDK restore part: the SQLite copy arrives on stdin. Replacing the file under a running server would corrupt it, so
+# this script (1) stores and checks the copy as /data/restore/pending.sqlite, (2) stops the server, (3) waits until the
+# supervisor (run.sh) has swapped the file in and the restarted server answers. Workers reconnect by themselves.
+set -eu
+DATA_DIR=${TEMPORAL_DATA_DIR:-/data}
+RESTORE_DIR="$DATA_DIR/restore"
+PENDING="$RESTORE_DIR/pending.sqlite"
+PIDFILE=${TEMPORAL_PIDFILE:-/tmp/temporal-server.pid}
+EXPECTED_SCHEMA=${TEMPORAL_SCHEMA_SHA256_FILE:-/opt/temporal/schema.sha256}
+SCHEMA_HASH=${TEMPORAL_SCHEMA_HASH_CMD:-/opt/temporal/schema-hash}
+mkdir -p "$RESTORE_DIR"
+rm -f "$PENDING.part" "$RESTORE_DIR/rejected.sqlite"
+cat >"$PENDING.part"
+trap 'rm -f "$PENDING.part"' EXIT
+[ "$(sqlite3 "$PENDING.part" 'PRAGMA integrity_check;')" = "ok" ] || { echo "temporal-restore: the copy failed integrity_check" >&2; exit 1; }
+want=$(cut -d' ' -f1 "$EXPECTED_SCHEMA")
+have=$("$SCHEMA_HASH" "$PENDING.part")
+[ "$have" = "$want" ] || { echo "temporal-restore: the copy has another Temporal schema than this image (have $have, want $want)" >&2; exit 1; }
+[ -f "$PIDFILE" ] || { echo "temporal-restore: the server is not running (no $PIDFILE)" >&2; exit 1; }
+mv -f "$PENDING.part" "$PENDING"
+kill -TERM "$(cat "$PIDFILE")"
+i=0
+while [ -f "$PENDING" ]; do
+  i=$((i + 1))
+  [ "$i" -le 120 ] || { echo "temporal-restore: the supervisor did not apply the copy within 120 s" >&2; exit 1; }
+  sleep 1
+done
+[ ! -f "$RESTORE_DIR/rejected.sqlite" ] || { echo "temporal-restore: the supervisor rejected the copy" >&2; exit 1; }
+i=0
+until temporal operator cluster health --address 127.0.0.1:7233 >/dev/null 2>&1; do
+  i=$((i + 1))
+  [ "$i" -le 120 ] || { echo "temporal-restore: the server did not come back within 120 s" >&2; exit 1; }
+  sleep 1
+done
