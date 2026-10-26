@@ -3,12 +3,22 @@
 // card (which card was offered the step, who claimed it, who timed out). Owner only (C88): the inputs and outputs of a step
 // are shown when the engine gives them, and never to an agent.
 import type { UseAgents } from "@opt2-tealbrick/miniapp-sdk/client";
-import { Button, Chip, ChipGroup, EmptyState, Notice, type Status, Tag } from "@opt2-tealbrick/ui";
+import { Button, Chip, ChipGroup, CopyBlock, EmptyState, Notice, type Status, Tag } from "@opt2-tealbrick/ui";
 import { useCallback, useEffect, useState } from "react";
 import { AGENT_STEP_LABEL, type EngineRun, type EngineRunStatus, type EngineRunStep, type EngineStepStatus, engine } from "./engine-ops.ts";
 import { errorText, type Out, person, spanText, stamp } from "./ops.ts";
 
 type AgentStep = Out<"agent_steps_list">["steps"][number];
+
+/** The runner config of a Free agent that answers workflow steps (ENGINE-BUILD §5: the routines mode of `tealbrick agent serve`
+ *  with the step ops as due / claim / report). The runner must also send `evolution__step_heartbeat` while it works. */
+export const STEPS_SERVE_CONFIG = {
+  format: "tealbrick.agent-serve/1",
+  harness: { kind: "claude", modelKeyEnv: "ANTHROPIC_API_KEY" },
+  pollSeconds: 60,
+  inboxes: [],
+  routines: [{ due: "evolution__steps_due", claim: "evolution__step_claim", report: "evolution__step_report", items: "steps", id: "stepRunId" }],
+};
 
 export const RUN_STATUS: Record<EngineRunStatus, { status: Status; label: string }> = {
   running: { status: "busy", label: "running" },
@@ -113,6 +123,16 @@ export function Runs({ agents, openId, holdHref }: { agents: UseAgents["agents"]
           </div>
         </>
       )}
+      <details className="history">
+        <summary>Runner configuration for an agent that answers workflow steps</summary>
+        <div className="tb-stack">
+          <p className="tb-hint">
+            A workflow can ask a Free agent for content as one of its steps. The agent's own runner (<code className="code-ops">tealbrick agent serve</code>) asks for offered steps, claims one, works on it in a fresh session, keeps it alive with
+            <code className="code-ops"> evolution__step_heartbeat</code> and reports the typed output. It returns the output only: the engine runs every action itself.
+          </p>
+          <CopyBlock text={JSON.stringify(STEPS_SERVE_CONFIG, null, 2)} label="step runner configuration" />
+        </div>
+      </details>
     </section>
   );
 }

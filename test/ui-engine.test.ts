@@ -688,6 +688,18 @@ describe("Runs and run detail", () => {
     await m.unmount();
   });
 
+  it("the runner configuration for step-answering agents names the four step ops", async () => {
+    setup();
+    const m = await mountRuns();
+    const block = text([...m.host.querySelectorAll("details")].find((d) => /Runner configuration/.test(d.textContent ?? "")) ?? null);
+    assert.match(block, /Runner configuration for an agent that answers workflow steps/);
+    assert.match(block, /evolution__steps_due/);
+    assert.match(block, /evolution__step_claim/);
+    assert.match(block, /evolution__step_report/);
+    assert.match(block, /"id": "stepRunId"/);
+    await m.unmount();
+  });
+
   it("owner-only input and output show where the engine gives them, and only there", async () => {
     setup();
     const m = await mountRuns();
