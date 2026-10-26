@@ -10,6 +10,7 @@ import * as store from "../../src/engine/engine-store.ts";
 import { executionCeilingMs } from "../../src/engine/run-types.ts";
 import { scheduleAction } from "../../src/engine/schedules.ts";
 import { assertPayloadSize, childRunId, MAX_PAYLOAD_BYTES } from "../../src/engine/workflow.ts";
+import { within } from "../poll.ts";
 import { type Env, indexOf, read, startEnv, waitFor, wf, write } from "./harness.ts";
 
 let t: Env;
@@ -54,7 +55,7 @@ test("F2: a value the interpreter composes over 1.5 MB fails the STEP (input_too
   t.apps.on["knowledge.recall"] = () => ({ text: "x".repeat(1_400_000) });
   t.apps.on["kanban.issue_create"] = () => ({ issue: { id: "i" } });
   t.install(wf([rd("a"), { id: "big", type: "transform", template: "{{ $steps.a.output.text }}{{ $steps.a.output.text }}{{ $steps.a.output.text }}" }, write("w", { input: { title: "t", summary: "$steps.big.output" } })], { id: "big-flow" }));
-  const f = await Promise.race([failure(t.run({ workflowId: "big-flow", runId: "run_big" })), new Promise<never>((_, no) => setTimeout(() => no(new Error("the run wedged (no end within 60 s)")), 60_000))]);
+  const f = await within(60_000, "the run wedged (no end within 60 s)", failure(t.run({ workflowId: "big-flow", runId: "run_big" })));
   assert.equal(f.code, "input_too_large");
   assert.equal(t.apps.calls.filter((c) => c.op === "issue_create").length, 0, "nothing was sent");
   assert.equal(indexOf(t.db, "big-flow", "run_big").run?.status, "failed");

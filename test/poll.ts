@@ -30,3 +30,18 @@ export async function waitFor(what: string, check: () => unknown, opts: WaitOpti
     await new Promise((r) => setTimeout(r, intervalMs));
   }
 }
+
+/** The result of `p`, or a failure with `what` when it takes longer than `ms`. The timer is cleared, so it never keeps the process alive. */
+export async function within<T>(ms: number, what: string, p: Promise<T>): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      p,
+      new Promise<never>((_, no) => {
+        timer = setTimeout(() => no(new Error(what)), ms);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}

@@ -37,6 +37,31 @@ after(async () => {
   await t.stop();
 });
 
+/**
+ * The schedule has taken `taken` actions (recentActions) and every workflow it started has CLOSED. The schedule's own
+ * `runningActions` is NOT trusted for this: right after a trigger it can read empty while the started workflow is still running
+ * (the scheduler records the action and the close a moment after the fact), so the workflows are described one by one.
+ */
+async function actionsSettled(scheduleId: string, taken: number): Promise<boolean> {
+  const info = (await t.client.schedule.getHandle(scheduleIdOf(scheduleId)).describe()).info;
+  if (info.recentActions.length < taken) return false;
+  for (const a of info.recentActions) {
+    if (!("workflow" in a.action)) continue;
+    if ((await t.client.workflow.getHandle(a.action.workflow.workflowId).describe()).status.name === "RUNNING") return false;
+  }
+  return true;
+}
+/**
+ * The scheduler names the workflow it starts <schedule id>-<trigger time to the SECOND>. A second "run now" in the same second
+ * as the first gets the SAME workflow id: while the first is still running the start is refused ("already running") and the
+ * trigger is lost. A test that triggers twice must therefore let the wall-clock second pass; it never races a sleep against it.
+ */
+async function waitForNextSecond(scheduleId: string): Promise<void> {
+  const last = (await t.client.schedule.getHandle(scheduleIdOf(scheduleId)).describe()).info.recentActions.at(-1)?.scheduledAt;
+  assert.ok(last, "the schedule took an action");
+  await waitFor("the wall clock is in a later second than the first run's workflow id (the scheduler names runs by the second)", () => Math.floor(Date.now() / 1000) > Math.floor(last.getTime() / 1000));
+}
+
 let n = 0;
 function install(extra: Record<string, unknown> = {}, steps: unknown[] = [read("a")]): string {
   const id = `sched-flow-${++n}`;
@@ -145,11 +170,12 @@ test("a poll schedule is built from the contract's poll trigger: the run stops e
   await op("schedule_run_now", { id: s.id });
   await waitFor("the first poll run is in the index", () => (t.db.prepare("SELECT count(*) AS c FROM engine_runs WHERE workflow_id = ?").get(id)?.c as number) === 1);
   // the schedule's overlap policy is SKIP: the second trigger must wait until the first run has CLOSED, or Temporal drops it
-  await waitFor("the first poll run has closed (no running action on the schedule)", async () => (await t.client.schedule.getHandle(scheduleIdOf(s.id)).describe()).info.runningActions.length === 0);
+  await waitFor("the schedule has recorded the first action and that run has closed", () => actionsSettled(s.id, 1));
   const before = t.apps.calls.filter((c) => c.op === "recall" && (c.input as { query: string }).query === "inbox").length;
+  await waitForNextSecond(s.id);
   await op("schedule_run_now", { id: s.id });
   await waitFor("the second poll ran (the recall call arrived)", () => t.apps.calls.filter((c) => c.op === "recall" && (c.input as { query: string }).query === "inbox").length > before);
-  await waitFor("the second poll run has closed (no running action on the schedule)", async () => (await t.client.schedule.getHandle(scheduleIdOf(s.id)).describe()).info.runningActions.length === 0);
+  await waitFor("the schedule has recorded the second action and that run has closed", () => actionsSettled(s.id, 2));
   assert.equal(t.db.prepare("SELECT count(*) AS c FROM engine_runs WHERE workflow_id = ?").get(id)?.c, 1, "the second poll saw the same cursor: no run");
   assert.equal(store.getSchedule(t.db, s.id)?.cursor, "c1");
   t.apps.on["knowledge.recall"] = () => ({});

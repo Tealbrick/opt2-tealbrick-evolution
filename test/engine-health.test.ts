@@ -179,7 +179,7 @@ test("watch calls onChange when the owner-visible state flips (the attention sho
   stop();
   const n = changes.length;
   up = false;
-  await new Promise((r) => setTimeout(r, 60)); // an absence check: a slow runner can only make it pass sooner, never fail
+  await new Promise((r) => setTimeout(r, 60)); // an absence check: a slow runner can make it pass vacuously, never fail
   assert.equal(changes.length, n, "stopped");
 });
 
