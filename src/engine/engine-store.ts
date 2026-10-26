@@ -241,6 +241,8 @@ export interface StepRow {
   holdStartedAt: string | null;
   holdEndedAt: string | null;
   holdOutcome: string | null;
+  stepRunId: string | null;
+  agentId: string | null;
   inBytes: number | null;
   outBytes: number | null;
   tokensIn: number | null;
@@ -301,6 +303,8 @@ function toStep(r: Record<string, unknown>): StepRow {
     holdStartedAt: iso(num(r.hold_started_at)),
     holdEndedAt: iso(num(r.hold_ended_at)),
     holdOutcome: str(r.hold_outcome),
+    stepRunId: str(r.step_run_id),
+    agentId: str(r.agent_id),
     inBytes: num(r.in_bytes),
     outBytes: num(r.out_bytes),
     tokensIn: num(r.tokens_in),
@@ -346,7 +350,7 @@ export interface StepWrite {
   stepId: string;
   loopPath: number[];
   kind: string;
-  status: "running" | "completed" | "failed" | "skipped" | "waiting_hold" | "waiting_owner";
+  status: "running" | "completed" | "failed" | "skipped" | "waiting_hold" | "waiting_agent" | "waiting_owner";
   startedAt: number;
   endedAt?: number | null;
   product?: string | null;
@@ -358,14 +362,15 @@ export interface StepWrite {
   tokensIn?: number | null;
   tokensOut?: number | null;
   hold?: { id: string; startedAt: number } | null;
+  agent?: { stepRunId: string; agentId: string } | null;
 }
 
 export function writeStep(db: Db, w: StepWrite, now: number): void {
   // the run row may be missing in a unit test of one activity; a step without a run is not indexed
   if (!db.prepare("SELECT 1 AS x FROM engine_runs WHERE workflow_id = ? AND run_id = ?").get(w.workflowId, w.runId)) return;
   db.prepare(
-    `INSERT INTO engine_steps (workflow_id, run_id, step_key, step_id, loop_path, kind, product, op, status, attempts, started_at, ended_at, hold_id, hold_started_at, in_bytes, out_bytes, tokens_in, tokens_out, error_code, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `INSERT INTO engine_steps (workflow_id, run_id, step_key, step_id, loop_path, kind, product, op, status, attempts, started_at, ended_at, hold_id, hold_started_at, step_run_id, agent_id, in_bytes, out_bytes, tokens_in, tokens_out, error_code, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT (workflow_id, run_id, step_key) DO UPDATE SET
        status = excluded.status,
        attempts = max(engine_steps.attempts, excluded.attempts),
@@ -374,13 +379,15 @@ export function writeStep(db: Db, w: StepWrite, now: number): void {
        op = coalesce(excluded.op, engine_steps.op),
        hold_id = coalesce(excluded.hold_id, engine_steps.hold_id),
        hold_started_at = coalesce(engine_steps.hold_started_at, excluded.hold_started_at),
+       step_run_id = coalesce(excluded.step_run_id, engine_steps.step_run_id),
+       agent_id = coalesce(excluded.agent_id, engine_steps.agent_id),
        in_bytes = coalesce(excluded.in_bytes, engine_steps.in_bytes),
        out_bytes = coalesce(excluded.out_bytes, engine_steps.out_bytes),
        tokens_in = coalesce(excluded.tokens_in, engine_steps.tokens_in),
        tokens_out = coalesce(excluded.tokens_out, engine_steps.tokens_out),
        error_code = excluded.error_code,
        updated_at = excluded.updated_at`,
-  ).run(w.workflowId, w.runId, w.stepKey, w.stepId, w.loopPath.length ? w.loopPath.join(".") : null, w.kind, w.product ?? null, w.op ?? null, w.status, w.attempts ?? 0, w.startedAt, w.endedAt ?? null, w.hold?.id ?? null, w.hold?.startedAt ?? null, w.inBytes ?? null, w.outBytes ?? null, w.tokensIn ?? null, w.tokensOut ?? null, w.errorCode ?? null, now);
+  ).run(w.workflowId, w.runId, w.stepKey, w.stepId, w.loopPath.length ? w.loopPath.join(".") : null, w.kind, w.product ?? null, w.op ?? null, w.status, w.attempts ?? 0, w.startedAt, w.endedAt ?? null, w.hold?.id ?? null, w.hold?.startedAt ?? null, w.agent?.stepRunId ?? null, w.agent?.agentId ?? null, w.inBytes ?? null, w.outBytes ?? null, w.tokensIn ?? null, w.tokensOut ?? null, w.errorCode ?? null, now);
 }
 
 export function endHold(db: Db, workflowId: string, runId: string, stepKey: string, outcome: string, now: number): void {
@@ -428,4 +435,10 @@ export function runningRuns(db: Db, limit = 500): { workflowId: string; runId: s
 
 export function hasRun(db: Db, temporalWorkflowId: string): boolean {
   return db.prepare("SELECT 1 AS x FROM engine_runs WHERE temporal_workflow_id = ?").get(temporalWorkflowId) !== undefined;
+}
+
+/** The workflow of a run id (run ids are ULIDs or schedule ids, unique in practice; the newest wins). */
+export function workflowOfRun(db: Db, runId: string): string | null {
+  const r = db.prepare("SELECT workflow_id FROM engine_runs WHERE run_id = ? ORDER BY started_at DESC LIMIT 1").get(runId);
+  return r ? String(r.workflow_id) : null;
 }

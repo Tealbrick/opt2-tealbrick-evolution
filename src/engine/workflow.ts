@@ -117,17 +117,25 @@ function failStep(step: { id: string; onFail?: OnFail }, err: { code: string; me
   throw new StepFailed(err.code, step.onFail === "ask" ? `${err.message} (onFail "ask" stops the run until the owner question ships)` : err.message, step.id);
 }
 
-async function execSteps(steps: readonly Step[], sc: RtScope, rt: Rt, path: readonly number[], startAt = 0, resumeLoop?: ResumeState["loop"]): Promise<Json | null> {
+/** A parallel branch gets a stop flag; a flag also stops when the flag of the enclosing branch is set. */
+interface Stop {
+  v: boolean;
+  parent?: Stop | undefined;
+}
+const isStopped = (s: Stop | undefined): boolean => (s ? s.v || isStopped(s.parent) : false);
+
+async function execSteps(steps: readonly Step[], sc: RtScope, rt: Rt, path: readonly number[], startAt = 0, resumeLoop?: ResumeState["loop"], stop?: Stop): Promise<Json | null> {
   let last: Json | null = null;
   for (let i = startAt; i < steps.length; i++) {
     const step = steps[i] as Step;
-    last = await execStep(step, sc, rt, path, i, resumeLoop && resumeLoop.stepId === step.id ? resumeLoop : undefined);
+    last = await execStep(step, sc, rt, path, i, resumeLoop && resumeLoop.stepId === step.id ? resumeLoop : undefined, stop);
   }
   return last;
 }
 
-async function execStep(step: Step, sc: RtScope, rt: Rt, path: readonly number[], index: number, resumeLoop?: ResumeState["loop"]): Promise<Json | null> {
+async function execStep(step: Step, sc: RtScope, rt: Rt, path: readonly number[], index: number, resumeLoop?: ResumeState["loop"], stop?: Stop): Promise<Json | null> {
   if (++rt.executed > MAX_EXECUTIONS) throw new StepFailed("run_too_large", `the run executed more than ${MAX_EXECUTIONS} steps`, step.id);
+  if (isStopped(stop)) throw new StepFailed("sibling_stopped", "another branch stopped the run", step.id);
   if (Date.now() > rt.deadlineMs) throw new StepFailed("run_timeout", "the run is past its maxRunMinutes limit", step.id);
   let out: Json | null;
   switch (step.type) {
@@ -147,13 +155,13 @@ async function execStep(step: Step, sc: RtScope, rt: Rt, path: readonly number[]
       out = await execTimer(step, sc, rt, path);
       break;
     case "condition":
-      out = await execCondition(step, sc, rt, path);
+      out = await execCondition(step, sc, rt, path, stop);
       break;
     case "loop":
-      out = await execLoop(step, sc, rt, path, index, resumeLoop);
+      out = await execLoop(step, sc, rt, path, index, resumeLoop, stop);
       break;
     case "parallel":
-      out = await execParallel(step, sc, rt, path);
+      out = await execParallel(step, sc, rt, path, stop);
       break;
     case "workflow":
       out = await execWorkflow(step, sc, rt, path);
@@ -205,11 +213,13 @@ async function execAi(step: AiStep, sc: RtScope, rt: Rt, path: readonly number[]
     const instruction = String(renderString(step.instruction, s) ?? "");
     const timeoutSec = step.timeoutSec ?? (agent ? 900 : 120);
     const retry = retryOf(step, rt, agent ? 1 : 2);
-    const acts = proxyActivities<Activities>({ startToCloseTimeout: `${timeoutSec} seconds`, ...(agent ? { heartbeatTimeout: "3 minutes" } : {}), retry });
+    const acts = proxyActivities<Activities>({ startToCloseTimeout: `${timeoutSec} seconds`, ...(agent && (step.heartbeatSec ?? 0) > 0 ? { heartbeatTimeout: `${3 * (step.heartbeatSec as number)} seconds` } : {}), retry });
     const res = await acts.aiStep({ ...r, by: step.by, instruction, inputs, outputSchema: step.outputSchema, timeoutSec, ...(step.maxTokens ? { maxTokens: step.maxTokens } : {}), maxAttempts: retry.maximumAttempts, startedAtMs });
-    await checkOutput(step.outputSchema, res.output, step.id);
-    await record({ ...r, kind: "ai", status: "completed", startedAtMs, endedAtMs: Date.now(), outBytes: JSON.stringify(res.output ?? null).length });
-    return res.output;
+    // a role call answers {output, tokens}; an agent step completes asynchronously with the typed output itself (step_report)
+    const output = (agent ? (res as unknown as Json) : res.output) ?? null;
+    await checkOutput(step.outputSchema, output, step.id);
+    await record({ ...r, kind: "ai", status: "completed", startedAtMs, endedAtMs: Date.now(), outBytes: JSON.stringify(output).length });
+    return output;
   } catch (e) {
     const err = toStepError(e);
     await record({ ...r, kind: "ai", status: "failed", startedAtMs, endedAtMs: Date.now(), errorCode: err.code });
@@ -271,7 +281,7 @@ async function execTimer(step: TimerStep, sc: RtScope, rt: Rt, path: readonly nu
   return { waitedSec };
 }
 
-async function execCondition(step: ConditionStep, sc: RtScope, rt: Rt, path: readonly number[]): Promise<Json | null> {
+async function execCondition(step: ConditionStep, sc: RtScope, rt: Rt, path: readonly number[], stop?: Stop): Promise<Json | null> {
   const startedAtMs = Date.now();
   const r = ref(rt, step, path);
   let taken: "then" | "else" | "none";
@@ -283,12 +293,12 @@ async function execCondition(step: ConditionStep, sc: RtScope, rt: Rt, path: rea
     throw new StepFailed(err.code, err.message, step.id);
   }
   const branch = taken === "then" ? step.then : taken === "else" ? (step.else ?? []) : [];
-  const output = await execSteps(branch, sc, rt, path);
+  const output = await execSteps(branch, sc, rt, path, 0, undefined, stop);
   await record({ ...r, kind: "condition", status: "completed", startedAtMs, endedAtMs: Date.now() });
   return { branch: taken, output };
 }
 
-async function execLoop(step: LoopStep, sc: RtScope, rt: Rt, path: readonly number[], topIndex: number, resumeLoop?: ResumeState["loop"]): Promise<Json | null> {
+async function execLoop(step: LoopStep, sc: RtScope, rt: Rt, path: readonly number[], topIndex: number, resumeLoop?: ResumeState["loop"], stop?: Stop): Promise<Json | null> {
   const startedAtMs = Date.now();
   const r = ref(rt, step, path);
   const list = renderString(step.forEach, scopeOf(sc));
@@ -311,7 +321,7 @@ async function execLoop(step: LoopStep, sc: RtScope, rt: Rt, path: readonly numb
       await continueAsNew<typeof evolutionRun>({ ...rt.input, runId: rt.runId, version: rt.version, trigger: rt.trigger, resume });
     }
     const iter: RtScope = { ...sc, steps: { ...sc.steps }, loop: { item: list[i], index: i } };
-    const last = await execSteps(step.steps, iter, rt, [...path, i]);
+    const last = await execSteps(step.steps, iter, rt, [...path, i], 0, undefined, stop);
     results.push(last);
     doneHere++;
   }
@@ -319,20 +329,31 @@ async function execLoop(step: LoopStep, sc: RtScope, rt: Rt, path: readonly numb
   return { items: results, count: results.length };
 }
 
-async function execParallel(step: ParallelStep, sc: RtScope, rt: Rt, path: readonly number[]): Promise<Json | null> {
+async function execParallel(step: ParallelStep, sc: RtScope, rt: Rt, path: readonly number[], outer?: Stop): Promise<Json | null> {
   const startedAtMs = Date.now();
   const r = ref(rt, step, path);
   const names = Object.keys(step.branches);
   const scopes = names.map(() => ({ ...sc, steps: { ...sc.steps } }) as RtScope);
-  const outputs = await CancellationScope.cancellable(async () => {
-    try {
-      return await Promise.all(names.map((n, i) => execSteps(step.branches[n] as Step[], scopes[i] as RtScope, rt, path)));
-    } catch (e) {
-      // one branch stopped the run: cancel the others
-      CancellationScope.current().cancel();
-      throw e;
-    }
-  });
+  // Branches run side by side. When one stops the run, the others do not start another step (cooperative stop) and the run
+  // fails with the FIRST error. No cancellation of in-flight activities: cancelling a sibling that completes in the same
+  // workflow activation is an SDK race (ACTIVITY_UNKNOWN), and an activity that already did its work should be recorded.
+  let first: unknown;
+  const flag: Stop = { v: false, parent: outer };
+  const settled = await Promise.all(
+    names.map(async (n, i) => {
+      try {
+        return { ok: true as const, v: await execSteps(step.branches[n] as Step[], scopes[i] as RtScope, rt, path, 0, undefined, flag) };
+      } catch (e) {
+        if (!flag.v) {
+          flag.v = true;
+          first = e;
+        }
+        return { ok: false as const, v: null };
+      }
+    }),
+  );
+  if (flag.v) throw first;
+  const outputs = settled.map((x) => x.v);
   for (const b of scopes) for (const [k, v] of Object.entries(b.steps)) if (!(k in sc.steps)) sc.steps[k] = v;
   await record({ ...r, kind: "parallel", status: "completed", startedAtMs, endedAtMs: Date.now() });
   const out: { [k: string]: Json } = {};
@@ -362,6 +383,12 @@ async function execWorkflow(step: WorkflowStep, sc: RtScope, rt: Rt, path: reado
   }
 }
 
+/** A failure before the run exists (no definition, not activated, bad input): the workflow fails with the activity's code. */
+function failRun(e: unknown): never {
+  const err = toStepError(e);
+  throw ApplicationFailure.nonRetryable(err.message, err.code);
+}
+
 export async function evolutionRun(input: RunInput): Promise<RunResult> {
   const info = workflowInfo();
   const runId = input.runId || deriveRunId(info.workflowId, input.workflowId);
@@ -370,12 +397,13 @@ export async function evolutionRun(input: RunInput): Promise<RunResult> {
 
   // A poll start reads first and stops early, without a run row, when the cursor did not change.
   if (trigger.kind === "poll" && !input.resume && trigger.item === undefined) {
-    const p = await base.pollCheck({ workflowId: input.workflowId, runId, version: input.version ?? 0, scheduleId: trigger.scheduleId ?? null });
+    const p = await base.pollCheck({ workflowId: input.workflowId, runId, version: input.version ?? 0, scheduleId: trigger.scheduleId ?? null }).catch(failRun);
     if (!p.changed) return { status: "skipped", workflowId: input.workflowId, version: input.version ?? 0, runId, outputs: {}, reason: "no_change" };
     trigger = { ...trigger, item: p.item ?? null, ...(p.cursor !== undefined ? { cursor: p.cursor } : {}), ...(p.previousCursor !== undefined ? { previousCursor: p.previousCursor } : {}) };
   }
 
-  const prepared: Prepared = await base.prepareRun({
+  const prepared: Prepared = await base
+    .prepareRun({
     workflowId: input.workflowId,
     version: input.version,
     runId,
@@ -386,7 +414,8 @@ export async function evolutionRun(input: RunInput): Promise<RunResult> {
     depth: input.depth ?? 0,
     ...(input.parent ? { parent: input.parent } : {}),
     resumed: input.resume !== undefined,
-  });
+  })
+    .catch(failRun);
   trigger = prepared.trigger;
   const c = prepared.contract;
   const rt: Rt = {

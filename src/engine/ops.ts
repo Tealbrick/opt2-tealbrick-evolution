@@ -5,7 +5,7 @@ import { nextCronTime, validateAgainstSchema } from "@opt2-tealbrick/manifest";
 import { type HandlerSpec, type OpContext, TbError } from "@opt2-tealbrick/miniapp-sdk";
 import type * as K from "#kit";
 import { OP } from "#kit";
-import type { WorkflowContract } from "./contract.ts";
+import { type WorkflowContract, walkSteps } from "./contract.ts";
 import * as store from "./engine-store.ts";
 import { EngineError } from "./errors.ts";
 import type { Json } from "./json.ts";
@@ -34,6 +34,11 @@ function eop<I, O>(spec: HandlerSpec<I, O>): HandlerSpec {
   } as unknown as HandlerSpec;
 }
 
+/** UsageRow of the owner UI: the ops a version calls, with the scope type and whether the target op is held. */
+export function usageRows(uses: readonly OpUse[]) {
+  return uses.map((u) => ({ product: u.product, op: u.op, crud: u.crud, effect: u.effect, scope: u.scopeType ?? null, held: u.holdFamily !== undefined, ...(u.tools ? { tools: u.tools } : {}) }));
+}
+
 export function engineHandlers(manifest: { companions?: Companions }) {
   const companions: Companions = manifest.companions ?? [];
 
@@ -51,6 +56,12 @@ export function engineHandlers(manifest: { companions?: Companions }) {
     const d = store.getDefinition(ctx.db, workflowId, version);
     if (!d) throw new EngineError("not_found", `No saved version ${version} of ${workflowId}.`, 404);
     return d;
+  }
+
+  /** The validate answer with the field names the owner UI reads too: `pointer` (= path) and `usage` (= uses). */
+  function withAliases(r: ValidationResult, activeVersion: number | null) {
+    const pt = (i: ValidationIssue) => ({ ...i, pointer: i.path });
+    return { ...r, errors: r.errors.map(pt), warnings: r.warnings.map(pt), usage: usageRows(r.uses), activeVersion };
   }
 
   function failValidation(r: ValidationResult): never {
@@ -156,7 +167,15 @@ export function engineHandlers(manifest: { companions?: Companions }) {
     [OP.workflowContractValidate]: eop<K.WorkflowContractValidateInput, K.WorkflowContractValidateOutput>({
       redact: (_i, o) => (o ? `Checked a contract: ${o.ok ? "valid" : `${o.errors.length} error(s)`}` : "Checked a contract"),
       async run(input, ctx) {
-        return validate(ctx, input.contract) as unknown as K.WorkflowContractValidateOutput;
+        let contract: unknown = input.contract;
+        if (contract === undefined) {
+          if (!input.workflowId || input.version === undefined) throw new EngineError("validation_failed", "Give the contract, or workflowId and version of a saved one.", 422);
+          contract = mustDefinition(ctx, input.workflowId, input.version).contract;
+        }
+        const r = validate(ctx, contract);
+        const id = (contract as { id?: unknown } | null)?.id;
+        const active = typeof id === "string" ? (store.activeActivation(ctx.db, id)?.version ?? null) : null;
+        return withAliases(r, active) as unknown as K.WorkflowContractValidateOutput;
       },
     }),
     [OP.workflowContractSave]: eop<K.WorkflowContractSaveInput, K.WorkflowContractSaveOutput>({
@@ -191,7 +210,7 @@ export function engineHandlers(manifest: { companions?: Companions }) {
         const crud: Record<string, string[]> = {};
         for (const u of r.uses) crud[u.product] = [...new Set([...(crud[u.product] ?? []), ...u.crud])].sort();
         const scopes = [...new Map(r.uses.filter((u) => u.scopeType).map((u) => [`${u.product}/${u.scopeType}`, { product: u.product, scopeType: u.scopeType as string }])).values()];
-        return { workflowId: d.workflowId, version: d.version, previousVersion: previous, activatedAt: activation.activatedAt, ops: r.uses as OpUse[], crud, scopes, warnings: r.warnings as ValidationIssue[], notice: GRANT_NOTICE } as unknown as K.WorkflowActivateOutput;
+        return { workflowId: d.workflowId, version: d.version, previousVersion: previous, activatedAt: activation.activatedAt, ops: r.uses as OpUse[], activeVersion: d.version, usage: usageRows(r.uses), crud, scopes, warnings: r.warnings as ValidationIssue[], notice: GRANT_NOTICE } as unknown as K.WorkflowActivateOutput;
       },
     }),
     [OP.workflowDeactivate]: eop<K.WorkflowDeactivateInput, K.WorkflowDeactivateOutput>({
@@ -300,7 +319,8 @@ export function engineHandlers(manifest: { companions?: Companions }) {
     }),
     [OP.engineRunGet]: eop<K.EngineRunGetInput, K.EngineRunGetOutput>({
       async run(input, ctx) {
-        const r = store.getRun(ctx.db, input.workflowId, input.runId);
+        const workflowId = input.workflowId ?? store.workflowOfRun(ctx.db, input.runId);
+        const r = workflowId ? store.getRun(ctx.db, workflowId, input.runId) : null;
         if (!r) throw new EngineError("not_found", "No run with this id.", 404);
         let outputs: Record<string, Json> | null = null;
         if (r.run.status === "completed") {
@@ -311,7 +331,12 @@ export function engineHandlers(manifest: { companions?: Companions }) {
             if (o && typeof o === "object") outputs = o;
           }
         }
-        return { run: r.run, steps: r.steps, outputs } as unknown as K.EngineRunGetOutput;
+        // the stage label of each step comes from the contract version the run used
+        const stages = new Map<string, string>();
+        const def = r.run.version === null ? null : store.getDefinition(ctx.db, r.run.workflowId, r.run.version);
+        if (def) walkSteps(def.contract.steps, (s) => (s.stage ? stages.set(s.id, s.stage) : undefined));
+        const steps = r.steps.map((s) => ({ ...s, attempt: s.attempts, stage: stages.get(s.stepId) ?? null }));
+        return { run: r.run, steps, outputs } as unknown as K.EngineRunGetOutput;
       },
     }),
   };

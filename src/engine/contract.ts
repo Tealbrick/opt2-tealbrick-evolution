@@ -47,6 +47,8 @@ export interface AiStep extends StepBase {
   inputs?: Record<string, Json>;
   outputSchema: JsonSchemaObject;
   timeoutSec?: number;
+  /** agent steps: seconds between heartbeats; 0 or absent = none (only the timeout applies) */
+  heartbeatSec?: number;
   retry?: RetryPolicy;
   maxTokens?: number;
   onFail?: OnFail;

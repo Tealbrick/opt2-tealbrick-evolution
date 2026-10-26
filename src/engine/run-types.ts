@@ -118,6 +118,8 @@ export interface AiStepArgs extends StepRef {
   inputs: Json;
   outputSchema: Json;
   timeoutSec: number;
+  /** agent steps: 0 or absent = no heartbeat timeout (only startToClose); `tealbrick agent serve` sends no heartbeat today */
+  heartbeatSec?: number;
   maxTokens?: number;
   maxAttempts: number;
   startedAtMs: number;
@@ -152,7 +154,7 @@ export interface FinishArgs {
 
 export interface RecordStepArgs extends StepRef {
   kind: string;
-  status: "running" | "completed" | "failed" | "skipped" | "waiting_hold" | "waiting_owner";
+  status: "running" | "completed" | "failed" | "skipped" | "waiting_hold" | "waiting_agent" | "waiting_owner";
   startedAtMs: number;
   endedAtMs?: number;
   product?: string;

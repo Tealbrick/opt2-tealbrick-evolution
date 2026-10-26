@@ -6948,18 +6948,26 @@
     {
       "id": "workflow_contract_validate",
       "title": "Check a workflow contract",
-      "description": "Check a tealbrick.workflow/1 contract without saving it. It lists every error and warning (refs that do not resolve, type clashes between steps, unbounded loops, operations that are not agent operations of an installed app, operations without idempotency, unknown model roles). When it is valid it also lists the operations the workflow would use. Owner only.",
+      "description": "Check a tealbrick.workflow/1 contract without saving it. Give the contract, or workflowId and version of a saved one. It lists every error and warning (refs that do not resolve, type clashes between steps, unbounded loops, operations that are not agent operations of an installed app, operations without idempotency, unknown model roles). When it is valid it also lists the operations the workflow would use. Owner only.",
       "input": {
         "type": "object",
         "additionalProperties": false,
         "properties": {
           "contract": {
             "type": "object"
+          },
+          "workflowId": {
+            "type": "string",
+            "minLength": 3,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9_-]{2,63}$"
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100000
           }
-        },
-        "required": [
-          "contract"
-        ]
+        }
       },
       "output": {
         "type": "object",
@@ -6990,6 +6998,9 @@
                   "type": "string"
                 },
                 "stepId": {
+                  "type": "string"
+                },
+                "pointer": {
                   "type": "string"
                 }
               },
@@ -7023,6 +7034,9 @@
                   "type": "string"
                 },
                 "stepId": {
+                  "type": "string"
+                },
+                "pointer": {
                   "type": "string"
                 }
               },
@@ -7089,6 +7103,59 @@
           },
           "stepTypes": {
             "type": "object"
+          },
+          "usage": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "product",
+                "op",
+                "crud",
+                "effect",
+                "scope",
+                "held"
+              ],
+              "properties": {
+                "product": {
+                  "type": "string"
+                },
+                "op": {
+                  "type": "string"
+                },
+                "crud": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "effect": {
+                  "type": "string"
+                },
+                "scope": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "held": {
+                  "type": "boolean"
+                },
+                "tools": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          },
+          "activeVersion": {
+            "type": [
+              "integer",
+              "null"
+            ]
           }
         },
         "required": [
@@ -7096,7 +7163,9 @@
           "errors",
           "warnings",
           "uses",
-          "stepTypes"
+          "stepTypes",
+          "usage",
+          "activeVersion"
         ]
       },
       "crud": [
@@ -7485,6 +7554,56 @@
           },
           "notice": {
             "type": "string"
+          },
+          "activeVersion": {
+            "type": "integer"
+          },
+          "usage": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "product",
+                "op",
+                "crud",
+                "effect",
+                "scope",
+                "held"
+              ],
+              "properties": {
+                "product": {
+                  "type": "string"
+                },
+                "op": {
+                  "type": "string"
+                },
+                "crud": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "effect": {
+                  "type": "string"
+                },
+                "scope": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "held": {
+                  "type": "boolean"
+                },
+                "tools": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
           }
         },
         "required": [
@@ -7496,7 +7615,9 @@
           "crud",
           "scopes",
           "warnings",
-          "notice"
+          "notice",
+          "activeVersion",
+          "usage"
         ]
       },
       "crud": [
@@ -8552,10 +8673,13 @@
     {
       "id": "engine_run_get",
       "title": "Workflow run",
-      "description": "One run with its step timeline (attempts, held waits, sizes, error codes) and, when it finished, its outputs. Owner only.",
+      "description": "One run with its step timeline (attempts, held waits, sizes, error codes) and, when it finished, its outputs. Owner only. The workflow id is optional: a run id is unique in practice.",
       "input": {
         "type": "object",
         "additionalProperties": false,
+        "required": [
+          "runId"
+        ],
         "properties": {
           "workflowId": {
             "type": "string",
@@ -8569,11 +8693,7 @@
             "maxLength": 80,
             "pattern": "^[A-Za-z0-9._@-]{1,80}$"
           }
-        },
-        "required": [
-          "workflowId",
-          "runId"
-        ]
+        }
       },
       "output": {
         "type": "object",
@@ -8744,7 +8864,8 @@
                   ]
                 },
                 "status": {
-                  "type": "string"
+                  "type": "string",
+                  "description": "running, completed, failed, skipped, waiting_hold, waiting_agent or waiting_owner"
                 },
                 "attempts": {
                   "type": "integer"
@@ -8817,6 +8938,27 @@
                     "string",
                     "null"
                   ]
+                },
+                "attempt": {
+                  "type": "integer"
+                },
+                "stage": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "stepRunId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "agentId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
                 }
               },
               "required": [
@@ -8839,7 +8981,11 @@
                 "outBytes",
                 "tokensIn",
                 "tokensOut",
-                "errorCode"
+                "errorCode",
+                "attempt",
+                "stage",
+                "stepRunId",
+                "agentId"
               ]
             }
           },

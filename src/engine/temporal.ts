@@ -31,6 +31,8 @@ interface Cached {
   client: Client;
   checkedAt: number;
   connected: boolean;
+  /** the probe in flight, so a close waits for it */
+  probing: Promise<boolean> | null;
 }
 let cached: Cached | null = null;
 let override: Client | null = null;
@@ -42,20 +44,14 @@ export function setTemporalClientForTests(c: Client | null): void {
   override = c;
 }
 
+/** One cheap call with a deadline. The deadline also ends the client's own retry loop (a call without one retries on a timer
+ *  for a long time and throws from that timer after the connection is closed). */
 async function probe(connection: Connection): Promise<boolean> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    await Promise.race([
-      connection.workflowService.getSystemInfo({}),
-      new Promise((_, reject) => {
-        timer = setTimeout(() => reject(new Error("timeout")), CHECK_TIMEOUT_MS);
-      }),
-    ]);
+    await connection.withDeadline(Date.now() + CHECK_TIMEOUT_MS, () => connection.workflowService.getSystemInfo({}));
     return true;
   } catch {
     return false;
-  } finally {
-    if (timer) clearTimeout(timer);
   }
 }
 
@@ -65,15 +61,18 @@ export async function getTemporal(): Promise<{ client: Client; connected: boolea
   const address = cfg.address ?? "localhost:7233";
   const key = `${address}|${cfg.namespace}`;
   if (!cached || cached.key !== key) {
-    if (cached) void cached.connection.close().catch(() => undefined);
+    if (cached) void closeTemporal();
     // lazy: the app boots and serves while Temporal is still starting; the first call connects
     const connection = Connection.lazy({ address });
-    cached = { key, connection, client: new Client({ connection, namespace: cfg.namespace }), checkedAt: 0, connected: false };
+    cached = { key, connection, client: new Client({ connection, namespace: cfg.namespace }), checkedAt: 0, connected: false, probing: null };
   }
   const c = cached;
   if (cfg.address === null) return { client: c.client, connected: false };
   if (Date.now() - c.checkedAt > CHECK_TTL_MS) {
-    c.connected = await probe(c.connection);
+    c.probing ??= probe(c.connection).finally(() => {
+      c.probing = null;
+    });
+    c.connected = await c.probing;
     c.checkedAt = Date.now();
   }
   return { client: c.client, connected: c.connected };
@@ -82,7 +81,10 @@ export async function getTemporal(): Promise<{ client: Client; connected: boolea
 export async function closeTemporal(): Promise<void> {
   const c = cached;
   cached = null;
-  if (c) await c.connection.close().catch(() => undefined);
+  if (c) {
+    await c.probing?.catch(() => undefined);
+    await c.connection.close().catch(() => undefined);
+  }
 }
 
 // ───────────────────────────── worker ─────────────────────────────

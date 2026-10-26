@@ -8,7 +8,7 @@ import { type Env, startEnv } from "./harness.ts";
 const exampleA = JSON.parse(readFileSync(new URL("./fixtures/example-a.json", import.meta.url), "utf8")) as WorkflowContract;
 let t: Env;
 before(async () => {
-  t = await startEnv({ models: { async run(req) { return { output: { bullets: ["one", "two"], needsReply: ["Bob"] }, tokensIn: 10, tokensOut: 5 }; } } as typeof notImplementedModels });
+  t = await startEnv({ models: { async run() { return { output: { bullets: ["one", "two"], needsReply: ["Bob"] }, tokensIn: 10, tokensOut: 5 }; } } as typeof notImplementedModels });
 });
 after(async () => {
   await t.stop();

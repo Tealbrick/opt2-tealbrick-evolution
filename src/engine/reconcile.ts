@@ -19,6 +19,8 @@ export interface ReconcileResult {
   lost: number;
   schedulesChecked: number;
   schedulesCreated: number;
+  /** Temporal schedules of this app that no row owns (a delete that never reached Temporal): deleted */
+  schedulesOrphaned: number;
   errors: number;
 }
 
@@ -54,7 +56,7 @@ async function failureCode(client: Client, workflowId: string): Promise<string |
 
 export async function reconcile(db: Db, client: Client, opts: { now?: number; boot?: boolean; log?: Logger } = {}): Promise<ReconcileResult> {
   const now = opts.now ?? Date.now();
-  const out: ReconcileResult = { checked: 0, closed: 0, inserted: 0, lost: 0, schedulesChecked: 0, schedulesCreated: 0, errors: 0 };
+  const out: ReconcileResult = { checked: 0, closed: 0, inserted: 0, lost: 0, schedulesChecked: 0, schedulesCreated: 0, schedulesOrphaned: 0, errors: 0 };
 
   // 1. runs the index shows as running
   for (const r of store.runningRuns(db)) {
@@ -129,6 +131,18 @@ export async function reconcile(db: Db, client: Client, opts: { now?: number; bo
     } catch {
       out.errors++;
     }
+  }
+  // a Temporal schedule of ours that no row owns would keep starting runs: delete it
+  try {
+    const owned = new Set(store.listSchedules(db).map((x) => `evo-sched:${x.id}`));
+    for await (const sch of client.schedule.list()) {
+      if (!sch.scheduleId.startsWith("evo-sched:") || owned.has(sch.scheduleId)) continue;
+      await client.schedule.getHandle(sch.scheduleId).delete();
+      out.schedulesOrphaned++;
+    }
+  } catch (e) {
+    out.errors++;
+    opts.log?.warn("reconcile: schedule list failed", { error: e instanceof Error ? e.message : String(e) });
   }
   return out;
 }

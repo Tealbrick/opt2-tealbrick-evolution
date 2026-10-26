@@ -172,7 +172,9 @@ export function validateContract(contract: unknown, opts: ValidateOptions = {}):
   });
 
   function validateInputObject(values: JsonObject, path: string): void {
-    const r = validateAgainstSchema(inputSchema as never, values as never);
+    // defaults may be partial: check the types of the given fields, not the required list
+    const { required: _required, ...partial } = (inputSchema ?? {}) as { [k: string]: Json };
+    const r = validateAgainstSchema(partial as never, values as never);
     if (!r.ok) for (const e of r.errors) err("input_default_invalid", `${path}${e.path}`, `${e.message}: the value does not fit the workflow inputs`);
   }
 

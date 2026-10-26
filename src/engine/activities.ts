@@ -232,7 +232,7 @@ export function createActivities(deps: EngineDeps): Activities & LocalActivities
             inputs: (a.inputs ?? {}) as Record<string, unknown>,
             outputSchema: a.outputSchema as object,
             timeoutSec: a.timeoutSec,
-            heartbeatSec: 60,
+            heartbeatSec: a.heartbeatSec ?? 0,
             attempt: attempts,
             taskToken: Buffer.from(info.taskToken).toString("base64"),
           });
@@ -241,7 +241,8 @@ export function createActivities(deps: EngineDeps): Activities & LocalActivities
           store.writeStep(db, { ...base, status: "failed", endedAt: now(), attempts, errorCode: code }, now());
           throw permanent(code, code === "agent_port_unavailable" ? "Agent steps are not available in this build." : "The agent step could not be offered.");
         }
-        Context.current().heartbeat();
+        store.writeStep(db, { ...base, status: "waiting_agent", attempts, agent: { stepRunId, agentId: a.by.agent } }, now());
+        if ((a.heartbeatSec ?? 0) > 0) Context.current().heartbeat();
         // WP3 completes this activity from step_report (client.activity.complete). The index row is closed by the workflow's record.
         throw new CompleteAsyncError();
       }

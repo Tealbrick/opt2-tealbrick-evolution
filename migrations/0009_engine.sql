@@ -92,7 +92,7 @@ CREATE TABLE engine_steps (
   kind TEXT NOT NULL,
   product TEXT,
   op TEXT,
-  status TEXT NOT NULL CHECK (status IN ('running', 'completed', 'failed', 'skipped', 'waiting_hold', 'waiting_owner')),
+  status TEXT NOT NULL CHECK (status IN ('running', 'completed', 'failed', 'skipped', 'waiting_hold', 'waiting_agent', 'waiting_owner')),
   attempts INTEGER NOT NULL DEFAULT 0,
   started_at INTEGER NOT NULL,
   ended_at INTEGER,
@@ -100,6 +100,9 @@ CREATE TABLE engine_steps (
   hold_started_at INTEGER,
   hold_ended_at INTEGER,
   hold_outcome TEXT,
+  -- an agent step: the offer the agent works on (agent_steps_list) and the agent
+  step_run_id TEXT,
+  agent_id TEXT,
   in_bytes INTEGER,
   out_bytes INTEGER,
   tokens_in INTEGER,

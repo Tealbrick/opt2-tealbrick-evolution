@@ -166,6 +166,7 @@ export const CONTRACT_SCHEMA = {
             inputs: { type: "object", maxProperties: 20 },
             outputSchema: OUTPUT_SCHEMA,
             timeoutSec: { type: "integer", minimum: 10, maximum: 86400 },
+            heartbeatSec: { type: "integer", minimum: 0, maximum: 600 },
             retry: RETRY,
             maxTokens: { type: "integer", minimum: 1, maximum: 4000 },
             onFail: { enum: [...ON_FAIL] },
