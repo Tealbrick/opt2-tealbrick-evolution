@@ -457,7 +457,7 @@ export const definition: SdkAppDefinition = {
     // completes the Temporal activity with the client of the engine (503 engine_unavailable while Temporal is down).
     wireAgentSteps(ctx.db);
     // C367: the Temporal worker + reconcile job (off while TEMPORAL_ADDRESS is not set)
-    startEngine({ db: ctx.db, callApp: ctx.callApp.bind(ctx), log: ctx.log, bridgeCaps: () => ctx.bridgeCaps() });
+    await startEngine({ db: ctx.db, callApp: ctx.callApp.bind(ctx), log: ctx.log, secrets: ctx.secrets, bridgeCaps: () => ctx.bridgeCaps() });
     // C367 WP1: tell the status push when the workflow engine goes down or comes back (never in /tb/v1/health).
     startEngineHealthWatch(() => ctx.statusChanged());
   },

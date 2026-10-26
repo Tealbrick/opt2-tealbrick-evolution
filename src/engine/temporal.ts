@@ -10,7 +10,9 @@
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { Client, Connection } from "@temporalio/client";
+import type { Payload, PayloadCodec } from "@temporalio/common";
 import { NativeConnection, Worker } from "@temporalio/worker";
+import { lockedCodec } from "./codec.ts";
 import type { Activities, LocalActivities } from "./run-types.ts";
 import { NAMESPACE, TASK_QUEUE } from "./run-types.ts";
 
@@ -35,6 +37,21 @@ interface Cached {
   probing: Promise<boolean> | null;
 }
 let cached: Cached | null = null;
+
+// ── the payload codec (C371): every payload of the client and the worker goes through it ──
+let activeCodec: PayloadCodec = lockedCodec;
+let codecReady = false;
+/** Installs the sealing codec once its key ring is loaded (engine.ts). Until then every payload is refused and getTemporal says not connected. */
+export function setPayloadCodec(c: PayloadCodec | null): void {
+  activeCodec = c ?? lockedCodec;
+  codecReady = c !== null;
+}
+/** The codec the client, the worker and the history reads share; it follows setPayloadCodec. */
+export const payloadCodec: PayloadCodec = {
+  encode: (p: Payload[]) => activeCodec.encode(p),
+  decode: (p: Payload[]) => activeCodec.decode(p),
+};
+export const dataConverter = { payloadCodecs: [payloadCodec] };
 let override: Client | null = null;
 const CHECK_TTL_MS = 3000;
 const CHECK_TIMEOUT_MS = 2000;
@@ -64,10 +81,10 @@ export async function getTemporal(): Promise<{ client: Client; connected: boolea
     if (cached) void closeTemporal();
     // lazy: the app boots and serves while Temporal is still starting; the first call connects
     const connection = Connection.lazy({ address });
-    cached = { key, connection, client: new Client({ connection, namespace: cfg.namespace }), checkedAt: 0, connected: false, probing: null };
+    cached = { key, connection, client: new Client({ connection, namespace: cfg.namespace, dataConverter }), checkedAt: 0, connected: false, probing: null };
   }
   const c = cached;
-  if (cfg.address === null) return { client: c.client, connected: false };
+  if (cfg.address === null || !codecReady) return { client: c.client, connected: false };
   if (Date.now() - c.checkedAt > CHECK_TTL_MS) {
     c.probing ??= probe(c.connection).finally(() => {
       c.probing = null;
@@ -143,6 +160,7 @@ export function startWorker(o: WorkerOptions): WorkerHandle {
       taskQueue: cfg.taskQueue,
       ...workflowSource(),
       activities: o.activities as never,
+      dataConverter,
       // a small host (0.5 vCPU, 768 MB): few cached workflows, one workflow thread pair
       maxCachedWorkflows: 100,
       maxConcurrentActivityTaskExecutions: 20,
