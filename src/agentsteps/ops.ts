@@ -64,6 +64,8 @@ export function agentStepHandlers(deps: AgentStepDeps) {
       async run(input, ctx) {
         const r = store.claim(ctx.db, ctx.caller, input.stepRunId, clock());
         if (!r.claimed) return { claimed: false, reason: r.reason as NonNullable<K.StepClaimOutput["reason"]>, step: null };
+        // The same agent asking again after a lost answer gets the same payload: a read, nothing to tell Temporal.
+        if (r.replay) return { claimed: true, reason: null, step: r.step as unknown as NonNullable<K.StepClaimOutput["step"]> };
         // The claim is the first heartbeat. If Temporal no longer has the activity, the step is not claimable after all.
         try {
           await (await deps.completion()).heartbeat(tokenOf(r.row.taskToken));

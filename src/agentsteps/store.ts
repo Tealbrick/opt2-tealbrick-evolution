@@ -271,7 +271,8 @@ function allowedHintOf(db: Db, r: StepRow): ClaimedStep["allowedHint"] {
   }
 }
 
-export type ClaimResult = { claimed: true; step: ClaimedStep; row: StepRow } | { claimed: false; reason: StepRefusal };
+/** `replay`: the caller had claimed this step already; the answer is the same payload, read again, with no state change (F8). */
+export type ClaimResult = { claimed: true; step: ClaimedStep; row: StepRow; replay: boolean } | { claimed: false; reason: StepRefusal };
 
 const REFUSAL_BY_STATUS: Record<Exclude<StepStatus, "offered">, StepRefusal> = { claimed: "already_claimed", completed: "finished", failed: "finished", timed_out: "timed_out", cancelled: "cancelled" };
 
@@ -286,35 +287,38 @@ function ownStep(db: Db, caller: CallerLike, stepRunId: string): { row: StepRow 
   return { row };
 }
 
-/** step_claim: the ONE write that turns an offered step into a claimed one. At most once: the conditional UPDATE matches only 'offered'. */
+function claimPayload(db: Db, row: StepRow): ClaimedStep {
+  return {
+    stepRunId: row.stepRunId,
+    workflowTitle: titleOf(db, row.workflowId, row.version),
+    attempt: row.attempt,
+    instruction: row.instruction,
+    inputs: JSON.parse(row.inputsJson ?? "{}") as Record<string, unknown>,
+    outputSchema: JSON.parse(row.outputSchemaJson) as object,
+    allowedHint: allowedHintOf(db, row),
+    deadline: iso(row.deadlineAt),
+    heartbeatSec: row.heartbeatSec,
+    mode: "content",
+    note: CONTENT_ONLY_NOTE,
+  };
+}
+
+/** step_claim: the ONE write that turns an offered step into a claimed one. At most once: the conditional UPDATE matches only 'offered'.
+ *  F8: a claim whose answer was lost is asked again by the same agent. A step that THIS caller claimed answers the same payload
+ *  again (a read: no event, no heartbeat, no new time), so the inputs are not stranded. Another caller still gets already_claimed. */
 export function claim(db: Db, caller: CallerLike, stepRunId: string, now: number = Date.now()): ClaimResult {
   return db.transaction((): ClaimResult => {
     sweep(db, now);
     const own = ownStep(db, caller, stepRunId);
     if ("reason" in own) return { claimed: false, reason: own.reason };
     const { row } = own;
+    if (row.status === "claimed" && row.claimedBy === caller.id) return { claimed: true, replay: true, row, step: claimPayload(db, row) };
     if (row.status !== "offered") return { claimed: false, reason: REFUSAL_BY_STATUS[row.status] };
     const won = db.prepare("UPDATE agent_step_runs SET status = 'claimed', claimed_by = ?, claimed_at = ?, heartbeat_at = ?, updated_at = ? WHERE step_run_id = ? AND status = 'offered'").run(caller.id, now, now, now, stepRunId);
     if (Number(won.changes) !== 1) return { claimed: false, reason: "already_claimed" };
     logEvent(db, row, "claimed", null, now, caller.id);
     const claimed = getRow(db, stepRunId) ?? row;
-    return {
-      claimed: true,
-      row: claimed,
-      step: {
-        stepRunId,
-        workflowTitle: titleOf(db, row.workflowId, row.version),
-        attempt: row.attempt,
-        instruction: row.instruction,
-        inputs: JSON.parse(row.inputsJson ?? "{}") as Record<string, unknown>,
-        outputSchema: JSON.parse(row.outputSchemaJson) as object,
-        allowedHint: allowedHintOf(db, row),
-        deadline: iso(row.deadlineAt),
-        heartbeatSec: row.heartbeatSec,
-        mode: "content",
-        note: CONTENT_ONLY_NOTE,
-      },
-    };
+    return { claimed: true, replay: false, row: claimed, step: claimPayload(db, row) };
   });
 }
 
