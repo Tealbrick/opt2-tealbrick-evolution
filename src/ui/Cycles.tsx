@@ -8,6 +8,7 @@
 // Lessons are free text written by agents: shown on this owner page only, as plain text.
 import { Button, EmptyState, Notice, type Status, Table, Tag } from "@opt2-tealbrick/ui";
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
+import { EngineCycles } from "./EngineCycles.tsx";
 import { day, errorText, type Out, person, stamp } from "./ops.ts";
 import { STATUS } from "./Schedules.tsx";
 
@@ -232,6 +233,7 @@ export function Cycles() {
           </tbody>
         </Table>
       )}
+      <EngineCycles cycles={cycles ?? []} />
     </section>
   );
 }

@@ -1435,6 +1435,634 @@
       "audience": "agent"
     },
     {
+      "id": "steps_due",
+      "title": "Workflow steps offered to you",
+      "description": "For a Free agent: the steps of running workflows that are offered to you now, each as {stepRunId, workflowTitle, deadline}. An agent step asks you for content, not for an action. A Bound agent, a paused agent and a removed agent get none. Reading claims nothing; claim a step with step_claim before you work on it. Your `tealbrick agent serve` steps mode calls this for you.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      },
+      "output": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "steps"
+        ],
+        "properties": {
+          "steps": {
+            "type": "array",
+            "maxItems": 50,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "stepRunId",
+                "workflowTitle",
+                "deadline"
+              ],
+              "properties": {
+                "stepRunId": {
+                  "type": "string"
+                },
+                "workflowTitle": {
+                  "type": "string"
+                },
+                "deadline": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      },
+      "crud": [
+        "read"
+      ],
+      "effect": "read",
+      "idempotency": "none",
+      "receipt": false,
+      "audience": "agent"
+    },
+    {
+      "id": "step_claim",
+      "title": "Claim a workflow step",
+      "description": "Claim one offered step by its stepRunId. At most one claim per step attempt ever succeeds; a step that is claimed, ended, timed out, cancelled, not yours or not for your mode answers claimed false with a reason (already_claimed, finished, timed_out, cancelled, not_found, mode_mismatch, agent_unavailable). The answer carries the instruction, the typed inputs, the outputSchema your answer must match, an allowedHint (guidance only: you act with your own access), the deadline and heartbeatSec. It says mode content: return the output only, do not act. The step is not a task to carry out; the engine runs every action itself. The claim takes no idempotency key on purpose: the SDK would keep a copy of the answer, and the inputs can hold data of other apps. A claim whose answer was lost is not repeated; the step times out and the engine offers it again.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "stepRunId"
+        ],
+        "properties": {
+          "stepRunId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
+          }
+        }
+      },
+      "output": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "claimed",
+          "reason",
+          "step"
+        ],
+        "properties": {
+          "claimed": {
+            "type": "boolean"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "already_claimed",
+                  "finished",
+                  "timed_out",
+                  "cancelled",
+                  "not_found",
+                  "mode_mismatch",
+                  "agent_unavailable"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "step": {
+            "anyOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "stepRunId",
+                  "workflowTitle",
+                  "attempt",
+                  "instruction",
+                  "inputs",
+                  "outputSchema",
+                  "allowedHint",
+                  "deadline",
+                  "heartbeatSec",
+                  "mode",
+                  "note"
+                ],
+                "properties": {
+                  "stepRunId": {
+                    "type": "string"
+                  },
+                  "workflowTitle": {
+                    "type": "string"
+                  },
+                  "attempt": {
+                    "type": "integer"
+                  },
+                  "instruction": {
+                    "type": "string"
+                  },
+                  "inputs": {
+                    "type": "object",
+                    "description": "The typed inputs of the step: name to value."
+                  },
+                  "outputSchema": {
+                    "type": "object",
+                    "description": "A JSON Schema (type object). Your output must match it."
+                  },
+                  "allowedHint": {
+                    "type": "array",
+                    "maxItems": 32,
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "product",
+                        "operations",
+                        "crud"
+                      ],
+                      "properties": {
+                        "product": {
+                          "type": "string"
+                        },
+                        "operations": {
+                          "type": "array",
+                          "maxItems": 64,
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "crud": {
+                          "type": "array",
+                          "maxItems": 4,
+                          "items": {
+                            "type": "string",
+                            "enum": [
+                              "create",
+                              "read",
+                              "update",
+                              "delete"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  },
+                  "deadline": {
+                    "type": "string"
+                  },
+                  "heartbeatSec": {
+                    "type": "integer"
+                  },
+                  "mode": {
+                    "type": "string",
+                    "enum": [
+                      "content"
+                    ]
+                  },
+                  "note": {
+                    "type": "string"
+                  }
+                }
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "crud": [
+        "update"
+      ],
+      "effect": "write",
+      "idempotency": "none",
+      "receipt": true,
+      "audience": "agent"
+    },
+    {
+      "id": "step_heartbeat",
+      "title": "Keep a claimed step alive",
+      "description": "Tell the engine that you still work on a step you claimed. Send it at least every heartbeatSec seconds: after three missed heartbeats, or after the deadline, the step times out and you get a refusal (step_timed_out) here and on step_report. A step the engine cancelled answers step_cancelled. Stop working when you get a refusal.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "stepRunId"
+        ],
+        "properties": {
+          "stepRunId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
+          }
+        }
+      },
+      "output": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "stepRunId",
+          "status",
+          "deadline",
+          "heartbeatBy",
+          "heartbeatSec"
+        ],
+        "properties": {
+          "stepRunId": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "claimed"
+            ]
+          },
+          "deadline": {
+            "type": "string"
+          },
+          "heartbeatBy": {
+            "type": "string"
+          },
+          "heartbeatSec": {
+            "type": "integer"
+          }
+        }
+      },
+      "crud": [
+        "update"
+      ],
+      "effect": "write",
+      "idempotency": "none",
+      "receipt": false,
+      "audience": "agent"
+    },
+    {
+      "id": "step_report",
+      "title": "Report a workflow step",
+      "description": "Report the end of a step you claimed: completed with the typed output, or failed with a short summary. The output is checked against the outputSchema of the step: an output that does not match answers 422 output_invalid with a pointer to the field, and the step stays claimed until it times out, so you can report again. Repeating a report that already ended the step changes nothing. With the report you may send a summary (at most 500 characters, the owner sees it) and metrics (your own named numbers, name to number, at most 20; the owner sees them, no agent does). Return the output only: do not act.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "stepRunId",
+          "status"
+        ],
+        "properties": {
+          "stepRunId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "completed",
+              "failed"
+            ]
+          },
+          "output": {
+            "type": "object",
+            "description": "The typed output. Required with completed."
+          },
+          "summary": {
+            "type": "string",
+            "minLength": 0,
+            "maxLength": 500
+          },
+          "metrics": {
+            "type": "object",
+            "description": "Named numbers: name to number (from -1e12 to 1e12). A name starts with a lower case letter and has 2 to 41 characters (lower case letters, digits, underscore). At most 20.",
+            "propertyNames": {
+              "pattern": "^[a-z][a-z0-9_]{1,40}$"
+            },
+            "additionalProperties": {
+              "type": "number",
+              "minimum": -1000000000000.0,
+              "maximum": 1000000000000.0
+            },
+            "maxProperties": 20
+          }
+        }
+      },
+      "output": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "stepRunId",
+          "status",
+          "attempt",
+          "outputBytes",
+          "summary",
+          "finishedAt"
+        ],
+        "properties": {
+          "stepRunId": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "offered",
+              "claimed",
+              "completed",
+              "failed",
+              "timed_out",
+              "cancelled"
+            ]
+          },
+          "attempt": {
+            "type": "integer"
+          },
+          "outputBytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "summary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "finishedAt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "crud": [
+        "update"
+      ],
+      "effect": "write",
+      "idempotency": "supported",
+      "receipt": true,
+      "audience": "agent"
+    },
+    {
+      "id": "agent_steps_list",
+      "title": "Agent steps",
+      "description": "The agent steps of workflow runs, newest first: which agent card was offered the step, who claimed it, heartbeats, timeouts, cancellations and re-offers (attempts), the size of the output, and the summary and numbers the agent reported. Of one run, of one workflow, or of all. Never the inputs and never the output itself. Owner only.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "runId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "workflowId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z]{3}_[0-9A-Za-z]{1,60}$"
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 200
+          }
+        }
+      },
+      "output": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "steps"
+        ],
+        "properties": {
+          "steps": {
+            "type": "array",
+            "maxItems": 200,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "stepRunId",
+                "workflowId",
+                "workflowTitle",
+                "version",
+                "runId",
+                "stepId",
+                "agentId",
+                "status",
+                "attempt",
+                "offeredAt",
+                "deadlineAt",
+                "claimedBy",
+                "claimedAt",
+                "heartbeatAt",
+                "finishedAt",
+                "heartbeatSec",
+                "outputBytes",
+                "summary",
+                "metrics",
+                "invalidReports",
+                "events"
+              ],
+              "properties": {
+                "stepRunId": {
+                  "type": "string"
+                },
+                "workflowId": {
+                  "type": "string"
+                },
+                "workflowTitle": {
+                  "type": "string"
+                },
+                "version": {
+                  "type": "integer"
+                },
+                "runId": {
+                  "type": "string"
+                },
+                "stepId": {
+                  "type": "string"
+                },
+                "agentId": {
+                  "type": "string"
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "offered",
+                    "claimed",
+                    "completed",
+                    "failed",
+                    "timed_out",
+                    "cancelled"
+                  ]
+                },
+                "attempt": {
+                  "type": "integer"
+                },
+                "offeredAt": {
+                  "type": "string"
+                },
+                "deadlineAt": {
+                  "type": "string"
+                },
+                "claimedBy": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "claimedAt": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "heartbeatAt": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "finishedAt": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "heartbeatSec": {
+                  "type": "integer"
+                },
+                "outputBytes": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "summary": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "metrics": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "number"
+                      }
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "invalidReports": {
+                  "type": "integer"
+                },
+                "events": {
+                  "type": "array",
+                  "maxItems": 200,
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "attempt",
+                      "kind",
+                      "agentId",
+                      "detail",
+                      "at"
+                    ],
+                    "properties": {
+                      "attempt": {
+                        "type": "integer"
+                      },
+                      "kind": {
+                        "type": "string",
+                        "enum": [
+                          "offered",
+                          "claimed",
+                          "completed",
+                          "failed",
+                          "timed_out",
+                          "cancelled"
+                        ]
+                      },
+                      "agentId": {
+                        "type": "string"
+                      },
+                      "detail": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "at": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "crud": [
+        "read"
+      ],
+      "effect": "read",
+      "idempotency": "none",
+      "receipt": false,
+      "audience": "person"
+    },
+    {
       "id": "review_suggestions",
       "title": "Suggestions to review",
       "description": "All suggestions in this workspace, newest first.",

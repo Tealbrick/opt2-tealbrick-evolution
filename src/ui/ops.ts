@@ -55,3 +55,45 @@ export function stamp(iso: string): string {
   const p = parts(iso, { ...DAY, ...TIME });
   return `${p.day} ${p.month} ${p.year}, ${p.hour}:${p.minute}`;
 }
+
+/** "14 Oct 2026, 08:00" in the named IANA time zone (engine schedules say which zone they run in). */
+export function zoned(iso: string, timeZone: string): string {
+  try {
+    const p = parts(iso, { ...DAY, ...TIME, timeZone });
+    return `${p.day} ${p.month} ${p.year}, ${p.hour}:${p.minute}`;
+  } catch {
+    return utcStamp(iso);
+  }
+}
+
+/** The IANA time zones this browser knows ("UTC" first), for the time zone pickers. */
+export const TIME_ZONES: string[] = (() => {
+  let list: string[] = [];
+  try {
+    list = (Intl as unknown as { supportedValuesOf?: (k: string) => string[] }).supportedValuesOf?.("timeZone") ?? [];
+  } catch {
+    list = [];
+  }
+  const base = list.length ? list : ["Africa/Cairo", "America/Chicago", "America/Los_Angeles", "America/New_York", "America/Sao_Paulo", "Asia/Bangkok", "Asia/Kolkata", "Asia/Singapore", "Asia/Tokyo", "Australia/Sydney", "Europe/Berlin", "Europe/London", "Europe/Paris"];
+  return ["UTC", ...base.filter((z) => z !== "UTC")];
+})();
+
+/** "5 min", "2 h", "1 day": the length of an interval schedule. */
+export function everyText(sec: number): string {
+  if (sec % 86_400 === 0) return sec === 86_400 ? "1 day" : `${sec / 86_400} days`;
+  if (sec % 3_600 === 0) return `${sec / 3_600} h`;
+  if (sec % 60 === 0) return `${sec / 60} min`;
+  return `${sec} s`;
+}
+
+/** "3 min 20 s" between two stamps (a step's running time). */
+export function spanText(from: string | null, to: string | null): string {
+  if (!from) return "";
+  const ms = Math.max(0, (to ? Date.parse(to) : Date.now()) - Date.parse(from));
+  if (ms < 1_000) return `${ms} ms`;
+  const s = Math.round(ms / 1_000);
+  if (s < 60) return `${s} s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m} min ${s % 60} s`;
+  return `${Math.floor(m / 60)} h ${m % 60} min`;
+}

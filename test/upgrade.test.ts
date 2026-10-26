@@ -463,7 +463,7 @@ test("scripts/upgrade-check.ts passes on a 0.3.0 + R8 data file and reports the 
   const run = spawnSync(process.execPath, [join(root, "scripts", "upgrade-check.ts"), file, "--work", work], { encoding: "utf8" });
   assert.equal(run.status, 0, `${run.stdout}${run.stderr}`);
   const out = JSON.parse(run.stdout) as { applied: string[]; addedColumns: string[]; result: string };
-  assert.deepEqual(out.applied, ["0007_pipeline_contract.sql", "0008_free_target.sql", "0009_engine.sql"]);
+  assert.deepEqual(out.applied, files.filter((f) => f >= "0007_")); // 0007 and 0008, then the engine line (0009, 0010)
   assert.deepEqual(out.addedColumns.sort(), ["agent_names.in_directory", "agent_names.mode", "agent_names.status", "automations.target_mode"]);
   assert.equal(out.result, "pass");
 });

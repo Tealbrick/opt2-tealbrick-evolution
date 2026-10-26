@@ -1,11 +1,15 @@
 // Owner UI inside the ONE app shell (<AppShell> from @opt2-tealbrick/ui, SDK-API §14): Suggestions, Drafts, Workflows,
-// Schedules and Cycles (0.3.0), plus the shared Holds and Agents & scopes pages (./standard.tsx). Every action here is a person op (owner only).
+// Schedules and Cycles (0.3.0); the engine pages of the evolving-workflows line (C367): Editor, Activation and Runs; plus the shared
+// Holds and Agents & scopes pages (./standard.tsx). Every action here is a person op (owner only).
 import { useAgents, useSession } from "@opt2-tealbrick/miniapp-sdk/client";
 import { AppShell, appArt, appColour, Button, Notice, STANDARD_PAGES, Tag } from "@opt2-tealbrick/ui";
 import { useEffect, useState } from "react";
+import { Activation } from "./Activation.tsx";
 import { Cycles } from "./Cycles.tsx";
 import { Drafts } from "./Drafts.tsx";
+import { Editor } from "./Editor.tsx";
 import { person } from "./ops.ts";
+import { Runs } from "./Runs.tsx";
 import { Schedules } from "./Schedules.tsx";
 import { Suggestions } from "./Suggestions.tsx";
 import { AgentsPage, HoldsPage, portalHref, type Routes, useHoldList, useNav } from "./standard.tsx";
@@ -16,12 +20,15 @@ const NAME = "Evolving Workflows";
 const STILLS = new URL("./stills/", import.meta.url).href;
 
 /** Shell page id → path under the base `/a/evolution/`. Suggestions is the launch page (manifest `ui.launchPath`), Agents & scopes is `ui.configurePath`. */
-const ROUTES: Routes = { suggestions: "", drafts: "drafts", workflows: "workflows", schedules: "schedules", cycles: "cycles", holds: "holds", agents: "configure" };
+const ROUTES: Routes = { suggestions: "", drafts: "drafts", workflows: "workflows", editor: "editor", activation: "activation", schedules: "schedules", runs: "runs", cycles: "cycles", holds: "holds", agents: "configure" };
 const APP_PAGES = [
   { id: "suggestions", label: "Suggestions" },
   { id: "drafts", label: "Drafts" },
   { id: "workflows", label: "Workflows" },
+  { id: "editor", label: "Editor" },
+  { id: "activation", label: "Activation" },
   { id: "schedules", label: "Schedules" },
+  { id: "runs", label: "Runs" },
   { id: "cycles", label: "Cycles" },
 ];
 const PAGES = [...APP_PAGES, ...STANDARD_PAGES.filter((p) => p.id in ROUTES)];
@@ -33,6 +40,7 @@ export function App() {
   const holds = useHoldList();
   const [openDraft, setOpenDraft] = useState<string | null>(null);
   const [openWorkflow, setOpenWorkflow] = useState<string | null>(null);
+  const [openRun, setOpenRun] = useState<string | null>(null);
   const [toReview, setToReview] = useState(0);
   const [notice, setNotice] = useState<string | null>(null);
   const [portal] = useState(portalHref);
@@ -61,8 +69,23 @@ export function App() {
         );
       case "workflows":
         return <Workflows openId={openWorkflow} stills={STILLS} />;
+      case "editor":
+        return <Editor agents={directory.agents} />;
+      case "activation":
+        return <Activation />;
       case "schedules":
-        return <Schedules agents={directory.agents} agentsLoading={directory.loading} />;
+        return (
+          <Schedules
+            agents={directory.agents}
+            agentsLoading={directory.loading}
+            onOpenRun={(runId) => {
+              setOpenRun(runId);
+              nav.go("runs");
+            }}
+          />
+        );
+      case "runs":
+        return <Runs agents={directory.agents} openId={openRun} holdHref={(holdId) => `${nav.href("holds")}/${holdId}`} />;
       case "cycles":
         return <Cycles />;
       case "holds":
