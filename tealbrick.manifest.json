@@ -1444,7 +1444,7 @@
     {
       "id": "step_claim",
       "title": "Claim a workflow step",
-      "description": "Claim one offered step by its stepRunId. At most one claim per step attempt ever succeeds; a step that is claimed, ended, timed out, cancelled, not yours or not for your mode answers claimed false with a reason (already_claimed, finished, timed_out, cancelled, not_found, mode_mismatch, agent_unavailable). The answer carries the instruction, the typed inputs, the outputSchema your answer must match, an allowedHint (guidance only: you act with your own access), the deadline and heartbeatSec. It says mode content: return the output only, do not act. The step is not a task to carry out; the engine runs every action itself.",
+      "description": "Claim one offered step by its stepRunId. At most one claim per step attempt ever succeeds; a step that is claimed, ended, timed out, cancelled, not yours or not for your mode answers claimed false with a reason (already_claimed, finished, timed_out, cancelled, not_found, mode_mismatch, agent_unavailable). The answer carries the instruction, the typed inputs, the outputSchema your answer must match, an allowedHint (guidance only: you act with your own access), the deadline and heartbeatSec. It says mode content: return the output only, do not act. The step is not a task to carry out; the engine runs every action itself. The claim takes no idempotency key on purpose: the SDK would keep a copy of the answer, and the inputs can hold data of other apps. A claim whose answer was lost is not repeated; the step times out and the engine offers it again.",
       "input": {
         "type": "object",
         "additionalProperties": false,
@@ -1596,7 +1596,7 @@
         "update"
       ],
       "effect": "write",
-      "idempotency": "supported",
+      "idempotency": "none",
       "receipt": true,
       "audience": "agent"
     },

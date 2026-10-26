@@ -372,11 +372,14 @@ test("a step of a workflow that Evolution does not store as a version has an emp
 });
 
 test("the manifest: four agent ops and one person op, wired in app.ts", async () => {
-  const ops = manifest.operations as { id: string; audience: string; effect: string }[];
+  const ops = manifest.operations as { id: string; audience: string; effect: string; idempotency: string }[];
   const by = (id: string) => ops.find((o) => o.id === id);
   for (const id of ["steps_due", "step_claim", "step_heartbeat", "step_report"]) assert.equal(by(id)?.audience, "agent", id);
   assert.equal(by("agent_steps_list")?.audience, "person");
   assert.equal(by("steps_due")?.effect, "read");
+  // the SDK keeps a (sealed) copy of the answer to a call with an idempotency key: the claim answer holds the step's inputs, which can be other apps' data
+  assert.equal(by("step_claim")?.idempotency, "none");
+  assert.equal(by("step_report")?.idempotency, "supported", "the report's answer has no body, so a repeat may replay it");
   const { handlers } = await import("../../src/app.ts");
   for (const id of ["steps_due", "step_claim", "step_heartbeat", "step_report", "agent_steps_list"]) assert.ok(id in handlers, id);
   // the wired default has no engine yet (TEMP until WP2 lands): a report is a 503, never a crash
