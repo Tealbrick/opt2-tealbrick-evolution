@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import { type AppDefinition, type Caller, type Db, defineApp, type HandlerSpec, type OpContext, type SdkAppDefinition, type SdkOpContext, TbError } from "@opt2-tealbrick/miniapp-sdk";
 import type * as K from "#kit";
 import { OP, type OpId } from "#kit";
+import { agentStepHandlers, defaultCompletion } from "./agentsteps/index.ts";
 import * as cycles from "./cycles.ts";
 import { DEFAULT_MIN_REPEATS, KANBAN } from "./detector.ts";
 import * as directory from "./directory.ts";
@@ -429,6 +430,8 @@ export const handlers = {
       return ctx.db.transaction(() => cycles.storeEval(ctx.db, input.workflowId, input.version, "owner", Date.now(), ctx.idempotencyKey ?? null));
     },
   }),
+  // ── agent steps (C367 WP3): steps_due, step_claim, step_heartbeat, step_report (agent) and agent_steps_list (person) ──
+  ...agentStepHandlers({ completion: defaultCompletion }),
 } satisfies Record<OpId, HandlerSpec>;
 
 function draftRow(d: store.Draft): K.DraftsListOutput["drafts"][number] {

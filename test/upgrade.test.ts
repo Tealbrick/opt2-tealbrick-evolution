@@ -148,7 +148,9 @@ test("the 0.2.13 code works on migrated 0.2.12 data", () => {
 });
 
 test("the migration files are gap-free and 0001-0005 are unchanged since their release (the SDK refuses a changed file)", () => {
-  assert.deepEqual(files, ["0001_init.sql", "0002_routines.sql", "0003_detector_state.sql", "0004_policy_stale_runs.sql", "0005_eval_runs.sql", "0006_run_metrics.sql", "0007_pipeline_contract.sql", "0008_free_target.sql"]);
+  assert.deepEqual(files.slice(0, 8), ["0001_init.sql", "0002_routines.sql", "0003_detector_state.sql", "0004_policy_stale_runs.sql", "0005_eval_runs.sql", "0006_run_metrics.sql", "0007_pipeline_contract.sql", "0008_free_target.sql"]);
+  // the engine line adds 0009 (engine run index) and 0010 (agent steps); the numbers stay gap-free whatever comes next
+  assert.deepEqual(files.map((f) => Number(f.slice(0, 4))), files.map((_, i) => i + 1));
   // sha256 of the files in tags v0.2.12 / v0.2.13 / v0.3.0 (the SDK stores these in tb_migrations and refuses a changed applied file)
   const RELEASED: Record<string, string> = {
     "0001_init.sql": "61853b592934920222d86bd1ec3d658822aa3307eec6d7faa2888f4a97615a68",
@@ -459,7 +461,7 @@ test("scripts/upgrade-check.ts passes on a 0.3.0 + R8 data file and reports the 
   const run = spawnSync(process.execPath, [join(root, "scripts", "upgrade-check.ts"), file, "--work", work], { encoding: "utf8" });
   assert.equal(run.status, 0, `${run.stdout}${run.stderr}`);
   const out = JSON.parse(run.stdout) as { applied: string[]; addedColumns: string[]; result: string };
-  assert.deepEqual(out.applied, ["0007_pipeline_contract.sql", "0008_free_target.sql"]);
+  assert.deepEqual(out.applied, files.filter((f) => f >= "0007_")); // 0007 and 0008, then the engine line (0009, 0010)
   assert.deepEqual(out.addedColumns.sort(), ["agent_names.in_directory", "agent_names.mode", "agent_names.status", "automations.target_mode"]);
   assert.equal(out.result, "pass");
 });
