@@ -112,7 +112,7 @@ test("example B runs with fakes up to the Gmail draft; that step is refused (cru
   const ask = t.apps.calls.find((c) => c.op === "inbox_ask") as unknown as { input: { title: string; context: string } };
   assert.equal(ask.input.title, "Draft reply to Acme Corp?");
   assert.match(ask.input.context, /Offer a call\nSend the price list\nCheck the contract/);
-  const brief = ((modelCalls[1] as { inputs: { brief: Record<string, unknown> } }).inputs).brief;
+  const brief = ((modelCalls[1] as unknown as { inputs: { brief: Record<string, unknown> } }).inputs).brief;
   assert.deepEqual(Object.keys(brief).sort(), ["ask", "crm", "email", "market", "notes"]);
   assert.deepEqual(brief.market, { sentiment: "positive", notes: "good press", sources: ["https://news.example/acme"] });
   assert.deepEqual(brief.crm, { company: "Acme Corp", tier: "gold" });
