@@ -7,7 +7,7 @@
 // edits, promotes or exports is a person op, so only the workspace owner can do it (SDK-API §5).
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { type AppDefinition, type Caller, type Db, defineApp, type HandlerSpec, type OpContext, type SdkAppDefinition, type SdkOpContext, TbError } from "@opt2-tealbrick/miniapp-sdk";
+import { type AppDefinition, type Caller, type Db, defineApp, type HandlerSpec, modelRole, type OpContext, type SdkAppDefinition, type SdkOpContext, TbError } from "@opt2-tealbrick/miniapp-sdk";
 import type * as K from "#kit";
 import { OP, type OpId } from "#kit";
 import { agentStepHandlers, defaultCompletion, wireAgentSteps } from "./agentsteps/index.ts";
@@ -16,6 +16,7 @@ import { DEFAULT_MIN_REPEATS, KANBAN } from "./detector.ts";
 import * as directory from "./directory.ts";
 import { startEngine, stopEngine } from "./engine/engine.ts";
 import { engineAttention, refreshEngineHealth, startEngineHealthWatch } from "./engine/health.ts";
+import { roleAttention, startRoleAttention, stopRoleAttention } from "./engine/role-attention.ts";
 import { engineHandlers } from "./engine/ops.ts";
 import { migrate, migrateHandlers } from "./migrate/index.ts";
 import { ALLOWLIST_NOTICE, allowedFromSteps, diffNotice, diffSnapshots, freeTargetNotice, ModelError, type Snapshot } from "./model.ts";
@@ -471,14 +472,18 @@ export const definition: SdkAppDefinition = {
     await startEngine({ db: ctx.db, callApp: ctx.callApp.bind(ctx), log: ctx.log, secrets: ctx.secrets, bridgeCaps: () => ctx.bridgeCaps() });
     // C367 WP1: tell the status push when the workflow engine goes down or comes back (never in /tb/v1/health).
     startEngineHealthWatch(() => ctx.statusChanged());
+    // `model_role_optional` only when an ACTIVE workflow uses a role that is not bound (the SDK never raises it for an unused role)
+    startRoleAttention({ db: ctx.db, modelRole: (role) => modelRole(role as never), bridgeCaps: () => ctx.bridgeCaps(), onChange: () => ctx.statusChanged() });
   },
   async onStop() {
+    stopRoleAttention();
     await stopEngine();
   },
   // C367 WP1: the Temporal companion unreachable -> readiness `degraded` with the reason; the app still serves.
   async attention() {
     await refreshEngineHealth();
-    return engineAttention();
+    // a fault outranks a model-role code (the SDK keeps ONE slot): the engine first, then the unset role
+    return engineAttention() ?? roleAttention();
   },
   events: {
     // Agent directory (manifest needsAgentDirectory): keep names so suggestion text can say who repeated the work.

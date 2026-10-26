@@ -10,6 +10,7 @@ import { type WorkflowContract, walkSteps } from "./contract.ts";
 import * as store from "./engine-store.ts";
 import { EngineError } from "./errors.ts";
 import { readStepIo } from "./history.ts";
+import { refreshRoleAttention } from "./role-attention.ts";
 import type { Json } from "./json.ts";
 import { deleteSchedule, describeSchedule, pauseSchedule, type ScheduleLive, syncAndRecord, triggerSchedule } from "./schedules.ts";
 import { startRun } from "./start-run.ts";
@@ -269,6 +270,7 @@ export function engineHandlers(manifest: { companions?: Companions }) {
         for (const u of uses) crud[u.product] = [...new Set([...(crud[u.product] ?? []), ...u.crud])].sort();
         const scopes = [...new Map(uses.filter((u) => u.scopeType).map((u) => [`${u.product}/${u.scopeType}`, { product: u.product, scopeType: u.scopeType as string }])).values()];
         const staleSchedules = await revalidateSchedules(ctx, d.workflowId);
+        void refreshRoleAttention().then(() => (ctx as Partial<OpContext>).statusChanged?.(), () => undefined);
         return { workflowId: d.workflowId, version: d.version, previousVersion: previous, activatedAt: activation.activatedAt, ops: uses, activeVersion: d.version, usage: usageRows(uses), crud, scopes, staleSchedules, warnings: r.warnings as ValidationIssue[], notice: GRANT_NOTICE } as unknown as K.WorkflowActivateOutput;
       },
     }),
@@ -276,6 +278,7 @@ export function engineHandlers(manifest: { companions?: Companions }) {
       redact: (i) => `Deactivated ${i.workflowId}`,
       async run(input, ctx) {
         const versions = store.deactivate(ctx.db, input.workflowId, Date.now());
+        void refreshRoleAttention().then(() => (ctx as Partial<OpContext>).statusChanged?.(), () => undefined);
         let paused = 0;
         const t = await getTemporal();
         for (const s of store.listSchedules(ctx.db, input.workflowId)) {
