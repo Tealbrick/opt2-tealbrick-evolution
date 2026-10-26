@@ -214,6 +214,11 @@ test("reconcile: Temporal wins. It closes runs the index still shows running, ad
   // 5. an orphan Temporal schedule
   await t.client.schedule.create({ scheduleId: "evo-sched:sch_orphan", spec: { intervals: [{ every: 3_600_000 }] }, action: { type: "startWorkflow", workflowType: "evolutionRun", taskQueue: "evolution", args: [] }, state: { paused: true } });
   t.apps.on["knowledge.recall"] = () => ({});
+  // schedule listing is eventually consistent (visibility): a pass cannot see a schedule before the list does; it sees it on the next pass
+  await waitFor(async () => {
+    for await (const x of t.client.schedule.list()) if (x.scheduleId === "evo-sched:sch_orphan") return true;
+    return false;
+  });
 
   const r = await reconcile(t.db, t.client, { boot: true });
   assert.ok(r.closed >= 1 && r.inserted >= 1 && r.lost === 1 && r.schedulesOrphaned >= 1, JSON.stringify(r));
