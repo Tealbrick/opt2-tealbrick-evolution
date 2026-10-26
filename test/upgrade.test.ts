@@ -148,7 +148,9 @@ test("the 0.2.13 code works on migrated 0.2.12 data", () => {
 });
 
 test("the migration files are gap-free and 0001-0005 are unchanged since their release (the SDK refuses a changed file)", () => {
-  assert.deepEqual(files, ["0001_init.sql", "0002_routines.sql", "0003_detector_state.sql", "0004_policy_stale_runs.sql", "0005_eval_runs.sql", "0006_run_metrics.sql", "0007_pipeline_contract.sql", "0008_free_target.sql"]);
+  assert.deepEqual(files.slice(0, 9), ["0001_init.sql", "0002_routines.sql", "0003_detector_state.sql", "0004_policy_stale_runs.sql", "0005_eval_runs.sql", "0006_run_metrics.sql", "0007_pipeline_contract.sql", "0008_free_target.sql", "0009_engine.sql"]);
+  // later migrations (WP3 adds 0010 ...) only have to stay gap-free
+  for (const [i, f] of files.entries()) assert.equal(Number(f.slice(0, 4)), i + 1, f);
   // sha256 of the files in tags v0.2.12 / v0.2.13 / v0.3.0 (the SDK stores these in tb_migrations and refuses a changed applied file)
   const RELEASED: Record<string, string> = {
     "0001_init.sql": "61853b592934920222d86bd1ec3d658822aa3307eec6d7faa2888f4a97615a68",
@@ -217,6 +219,7 @@ test("the ledger reads migrated 0.2.13 rows: version-less missed rows go to the 
   raw.exec(readFileSync(join(migrationsDir, "0005_eval_runs.sql"), "utf8"));
   raw.exec(readFileSync(join(migrationsDir, "0006_run_metrics.sql"), "utf8"));
   raw.exec(readFileSync(join(migrationsDir, "0007_pipeline_contract.sql"), "utf8")); // the code of today reads the R10 tables; the app always migrates all
+  raw.exec(readFileSync(join(migrationsDir, "0009_engine.sql"), "utf8")); // ... and the engine tables (C367): the ledger reads engine_runs
   const db = dbAt(raw);
   const now = T("2026-10-12T08:00:30Z");
   const [v1, v2] = cycles.workflowCycles(db, store.listWorkflows(db)[0]?.id as string, now);
@@ -294,6 +297,7 @@ test("the code works on migrated 0.3.0 data: a late report of an old uncertain r
   seed030(raw);
   raw.exec(readFileSync(join(migrationsDir, "0006_run_metrics.sql"), "utf8"));
   raw.exec(readFileSync(join(migrationsDir, "0007_pipeline_contract.sql"), "utf8")); // the code of today reads the R10 tables; the app always migrates all
+  raw.exec(readFileSync(join(migrationsDir, "0009_engine.sql"), "utf8")); // ... and the engine tables (C367): the ledger reads engine_runs
   const db = dbAt(raw);
   const now = T("2026-10-12T08:00:30Z");
   const uncertain = (raw.prepare("SELECT occurrence FROM routine_runs WHERE status = 'uncertain'").all() as { occurrence: string }[]).map((x) => x.occurrence)[0] as string;
@@ -459,7 +463,7 @@ test("scripts/upgrade-check.ts passes on a 0.3.0 + R8 data file and reports the 
   const run = spawnSync(process.execPath, [join(root, "scripts", "upgrade-check.ts"), file, "--work", work], { encoding: "utf8" });
   assert.equal(run.status, 0, `${run.stdout}${run.stderr}`);
   const out = JSON.parse(run.stdout) as { applied: string[]; addedColumns: string[]; result: string };
-  assert.deepEqual(out.applied, ["0007_pipeline_contract.sql", "0008_free_target.sql"]);
+  assert.deepEqual(out.applied, ["0007_pipeline_contract.sql", "0008_free_target.sql", "0009_engine.sql"]);
   assert.deepEqual(out.addedColumns.sort(), ["agent_names.in_directory", "agent_names.mode", "agent_names.status", "automations.target_mode"]);
   assert.equal(out.result, "pass");
 });

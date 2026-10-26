@@ -35,6 +35,30 @@ The UI build (`scripts/build-ui.ts`) copies these files into the app image.
 | `json-schema-traverse` (ajv) | 1.0.0 | MIT | https://github.com/epoberezkin/json-schema-traverse |
 | `require-from-string` (ajv) | 2.0.2 | MIT | https://github.com/floatdrop/require-from-string |
 
+## Workflow engine (C367, WP2): Temporal TypeScript SDK and its dependencies
+
+`@temporalio/client`, `@temporalio/worker`, `@temporalio/workflow` and `@temporalio/activity` are pinned to ONE exact version,
+**1.24.0** (published 2026-09-15; `@temporalio/testing` 1.24.0 is a development dependency). All are MIT
+(https://github.com/temporalio/sdk-typescript). The workflow code is bundled once at build time
+(`scripts/build-workflows.ts`) with the webpack and SWC that `@temporalio/worker` depends on; the image keeps them because
+the worker package declares them.
+
+| Name | Version | Licence | Source |
+|---|---|---|---|
+| `@temporalio/client`, `worker`, `workflow`, `activity` | 1.24.0 | MIT | https://github.com/temporalio/sdk-typescript |
+| `@temporalio/common`, `proto`, `core-bridge` (native Core SDK binary), `nexus` | 1.24.0 | MIT | https://github.com/temporalio/sdk-typescript |
+| `@grpc/grpc-js`, `@grpc/proto-loader`, `protobufjs`, `@protobufjs/*`, `long`, `rxjs` | 1.14.6 / 0.8.1 / 7.6.6 and 8.8.1 / - / 5.3.2 / 7.8.2 | Apache-2.0, BSD-3-Clause | https://github.com/grpc/grpc-node, https://github.com/protobufjs/protobuf.js |
+| `webpack`, `swc-loader`, `source-map-loader`, `terser` and their dependencies | 5.112.2 / 0.2.7 / 5.0.0 / 5.51.2 | MIT, BSD-2-Clause | https://github.com/webpack/webpack |
+| `@swc/core` (+ the platform binary) | 1.16.20 | Apache-2.0 (the binary: Apache-2.0 AND MIT) | https://github.com/swc-project/swc |
+| `memfs`, `unionfs`, `@jsonjoy.com/*`, `fs-monkey` | 4.80.0 / 4.6.0 / - / 1.1.0 | Apache-2.0, MIT (`unionfs`: Unlicense text in its `LICENSE`), Unlicense | https://github.com/streamich/memfs |
+| `caniuse-lite` (browser data used by `browserslist`) | 1.0.30001819 | CC-BY-4.0 | https://github.com/browserslist/caniuse-lite |
+| `tslib` | 2.8.1 | 0BSD | https://github.com/microsoft/tslib |
+
+The full list of the 155 production packages (`pnpm licenses list --prod`) has only these licence classes: MIT, Apache-2.0,
+BSD-2-Clause, BSD-3-Clause, ISC, 0BSD, Unlicense, CC-BY-4.0 (data only) and the Unlicense text of `unionfs`. No copyleft licence.
+
+The Temporal SERVER is not part of this app image: it runs as the companion service `temporal` (WP1; Temporal CLI, MIT).
+
 ## Base image
 
 `node:24-slim` (Dockerfile): Node.js (MIT, with bundled components under their own licences) on Debian (the licences of

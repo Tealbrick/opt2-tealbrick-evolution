@@ -36,6 +36,15 @@ Pipeline contract (C288 R10): `pipeline_import` maps a `tealbrick.agents/pipelin
 
 Run semantics: the primary key of `routine_runs` is the occurrence (sha256 of automation id, revision and due time), so claims are at most once. A misfire grace of 120 s collapses missed periods into one `missed` row (no catch-up burst). `claimed` over 10 minutes or `dispatched` over 30 minutes without a report becomes `uncertain` and is never re-offered. Nothing starts runs on a timer. The runner is external: `tealbrick agent serve` in routines mode. A caller sees and claims only schedules where the schedule agent is the caller AND the schedule mode is the caller mode (`mode_mismatch` otherwise); a Free agent never reaches another agent's runs. A paused or removed agent (the agent directory in `agent_names`, kept from `agentAdded` / `agentsChanged` / `agentRemoved`; `src/directory.ts`) gets no job and cannot claim; the SDK refuses it first, the handler checks again.
 
+## Workflow engine (C367, WP2)
+
+State: written 2026-10-26 on branch `feat/c367-wp2-engine`; verified by `test/engine/`.
+
+- **Moving parts**: contract + validator (`src/engine/contract*.ts`, `validate.ts`, `expr.ts`, `transform.ts`, `schema-types.ts`), the interpreter workflow (`workflow.ts`, bundled once into `dist/engine/workflow-bundle.js`), the activities (`activities.ts`: they call `ctx.callApp`, write the run index and enforce the activated op list), the Temporal bootstrap (`temporal.ts`: `getTemporal()` and the worker started from `onStart`, stopped in `onStop`), schedules (`schedules.ts`), the reconcile job (`reconcile.ts`), the owner ops (`ops.ts`) and the lifecycle (`engine.ts`).
+- **Data**: migration 0009 adds `engine_definitions` (immutable contract versions), `engine_activations` (the op list the owner activated; at most one `active` version per workflow), `engine_schedules`, `engine_runs`, `engine_steps`. Temporal history is the truth for progress; the index holds no body of another app's data.
+- **Target catalog**: the SDK gives an app no way to read an installed target manifest, so `src/engine/target-ops.json` is a stamped snapshot of the agent ops of Task Board, Knowledge, Inbox, Rules and Connect. The bridge still enforces the real manifest at call time.
+- **Honest label**: the bridge limits Evolving Workflows as a whole; each workflow's limit is enforced by the engine until per-workflow grants (P1).
+
 ## Operations (from `tealbrick.manifest.json`)
 
 32 operations.
