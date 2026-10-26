@@ -6,6 +6,10 @@
 //   run → version: by routine_runs.workflow_version; a run without one (0.2.x `missed` rows) belongs to the version that
 //   was active at its due time (the highest version promoted at or before due_at).
 //   claimed / dispatched runs past their timeout count as uncertain (the listRuns rule, routines.isStale), the others as open.
+//   C367 (engine): runs of contract workflows come from `engine_runs` (the Temporal run index, migrations/0009_engine.sql) and
+//   count like routine runs (completed, failed; a running one is open and never "uncertain": Temporal is its truth). Skipped
+//   polls and cancelled runs are not counted. A contract version that was never promoted through drafts is a cycle too
+//   (engine_definitions; its cycle starts when the version was activated). `Cycle.engine` adds the step metrics.
 //   C288 R8: the run metrics (run_metrics, written by routine_report) roll up per cycle in `runMetrics`; the lessons of one
 //   cycle are read with `cycleLessons` (cycle_get). Free text from agents: person ops only, never an agent op (C88 / L12).
 import { ulid } from "@opt2-tealbrick/manifest";
@@ -33,6 +37,8 @@ export interface LedgerRun {
   kanbanSync: string;
   /** the run's metrics (C288 R8), when its terminal report carried them */
   metrics?: (StoredMetrics & { occurrence: string; createdAt: number }) | null;
+  /** C367: a run of the workflow engine (engine_runs); its start and end are the run's own */
+  engine?: { durationMs: number | null; stepsDone: number; stepsFailed: number; heldWaits: number; heldWaitMs: number; modelTokens: number };
 }
 /** Per cycle: what the runners reported with metrics (runs without metrics are not counted here, they are in `counts`). */
 export interface MetricsRollup {
@@ -94,8 +100,21 @@ export interface StoredEval {
   appVersion: string;
   createdAt: string;
 }
+/** C367: what the workflow engine's runs of one cycle add (null when the cycle has no engine run). */
+export interface EngineRollup {
+  runs: number;
+  stepsDone: number;
+  stepsFailed: number;
+  /** failed / (done + failed) steps; null without steps */
+  stepFailureRatio: number | null;
+  heldWaits: number;
+  /** median (nearest rank) of the held-wait time per run that waited; null when no run waited */
+  heldWaitP50Ms: number | null;
+  modelTokens: number;
+}
 export interface Cycle extends RunStats {
   runMetrics: MetricsRollup;
+  engine: EngineRollup | null;
   /** The metric names the pipeline contract of this version declares, in contract order; null when it was not imported. Owner only. */
   declaredMetrics: string[] | null;
   workflowId: string;
@@ -162,8 +181,27 @@ export function metricsRollup(runs: readonly LedgerRun[]): MetricsRollup {
   };
 }
 
+/** Rollup of the engine runs of one cycle's runs. Pure. */
+export function engineRollup(runs: readonly LedgerRun[]): EngineRollup | null {
+  const e = runs.flatMap((r) => (r.engine ? [r.engine] : []));
+  if (e.length === 0) return null;
+  const done = e.reduce((a, x) => a + x.stepsDone, 0);
+  const failed = e.reduce((a, x) => a + x.stepsFailed, 0);
+  return {
+    runs: e.length,
+    stepsDone: done,
+    stepsFailed: failed,
+    stepFailureRatio: ratio(failed, done + failed),
+    heldWaits: e.reduce((a, x) => a + x.heldWaits, 0),
+    heldWaitP50Ms: p50(e.filter((x) => x.heldWaits > 0).map((x) => x.heldWaitMs)),
+    modelTokens: e.reduce((a, x) => a + x.modelTokens, 0),
+  };
+}
+
 /** The status the owner sees: stale claimed / dispatched runs are uncertain (routines.listRuns rule). */
 export function effectiveStatus(r: LedgerRun, now: number): RunStatus {
+  // an engine run that is still running is open: Temporal, not a timeout, says when it ended (a held wait can last days)
+  if (r.engine) return r.status;
   return isStale(r.status, r.updatedAt, now) ? "uncertain" : r.status;
 }
 
@@ -187,12 +225,13 @@ export function runStats(runs: readonly LedgerRun[], now: number): RunStats {
     else counts.open++;
     if (r.claimedAt !== null) latency.push(r.claimedAt - r.dueAt);
     if ((r.status === "completed" || r.status === "failed") && r.claimedAt !== null && r.reportedAt !== null) duration.push(r.reportedAt - r.claimedAt);
+    if (r.engine && (r.status === "completed" || r.status === "failed") && r.engine.durationMs !== null) duration.push(r.engine.durationMs);
     if (TERMINAL.has(s) && r.kanbanIssueId !== null) {
       kanbanTerminal++;
       if (r.kanbanSync === "done") kanbanDone++;
     }
     // a claimed run = any status but missed / policy_stale (those are never claimed)
-    if (r.status !== "missed" && r.status !== "policy_stale") {
+    if (!r.engine && r.status !== "missed" && r.status !== "policy_stale") {
       const k = JSON.stringify([r.automationId, r.dueAt]);
       claims.set(k, (claims.get(k) ?? 0) + 1);
     }
@@ -234,6 +273,34 @@ interface VersionRow {
 }
 
 function versionRows(db: Db, workflowId: string): VersionRow[] {
+  const promoted = promotedVersionRows(db, workflowId);
+  const have = new Set(promoted.map((v) => v.version));
+  // C367: contract versions saved through the engine (not through drafts); a cycle starts when the version was activated
+  const engineOnly = db
+    .prepare(
+      `SELECT d.workflow_id, d.version, d.title, d.created_at, a.activated_at
+         FROM engine_definitions d LEFT JOIN engine_activations a ON a.workflow_id = d.workflow_id AND a.version = d.version
+        WHERE d.workflow_id = ? ORDER BY d.version`,
+    )
+    .all(workflowId)
+    .filter((r) => !have.has(Number(r.version)))
+    .map(
+      (r): VersionRow => ({
+        workflowId: String(r.workflow_id),
+        workflowTitle: String(r.title),
+        version: Number(r.version),
+        snapshot: { title: String(r.title), summary: "", instruction: "", trigger: "", steps: [], allowed: [] },
+        draftRevision: 1,
+        promotedAt: Number(r.activated_at ?? r.created_at),
+        suggestionId: null,
+        evidenceCount: 0,
+        approvalDelayMs: null,
+      }),
+    );
+  return [...promoted, ...engineOnly].sort((a, b) => a.version - b.version);
+}
+
+function promotedVersionRows(db: Db, workflowId: string): VersionRow[] {
   return db
     .prepare(
       `SELECT v.workflow_id, w.title AS workflow_title, v.version, v.snapshot, v.draft_revision, v.promoted_at, d.suggestion_id,
@@ -261,7 +328,46 @@ function versionRows(db: Db, workflowId: string): VersionRow[] {
     }));
 }
 
+/** Engine runs as ledger rows: completed, failed (also timed out and terminated) and still running; skipped and cancelled do not count. */
+function engineRunsOf(db: Db, workflowId: string): LedgerRun[] {
+  return db
+    .prepare(
+      `SELECT run_id, version, status, started_at, ended_at, updated_at, steps_done, steps_failed, held_waits, held_wait_ms, model_tokens,
+              (SELECT count(*) FROM engine_steps s WHERE s.workflow_id = r.workflow_id AND s.run_id = r.run_id AND s.status = 'completed') AS n_done,
+              (SELECT count(*) FROM engine_steps s WHERE s.workflow_id = r.workflow_id AND s.run_id = r.run_id AND s.status = 'failed') AS n_failed
+         FROM engine_runs r WHERE r.workflow_id = ? AND r.status NOT IN ('skipped', 'cancelled') AND r.version IS NOT NULL`,
+    )
+    .all(workflowId)
+    .map((r): LedgerRun => {
+      const running = r.status === "running";
+      const ended = r.ended_at === null || r.ended_at === undefined ? null : Number(r.ended_at);
+      return {
+        automationId: String(r.run_id),
+        dueAt: Number(r.started_at),
+        status: running ? "dispatched" : r.status === "completed" ? "completed" : "failed",
+        workflowVersion: Number(r.version),
+        claimedAt: null,
+        updatedAt: Number(r.updated_at),
+        reportedAt: ended,
+        kanbanIssueId: null,
+        kanbanSync: "none",
+        engine: {
+          durationMs: ended === null ? null : ended - Number(r.started_at),
+          stepsDone: running ? Number(r.n_done) : Number(r.steps_done),
+          stepsFailed: running ? Number(r.n_failed) : Number(r.steps_failed),
+          heldWaits: Number(r.held_waits),
+          heldWaitMs: Number(r.held_wait_ms),
+          modelTokens: Number(r.model_tokens),
+        },
+      };
+    });
+}
+
 function runsOf(db: Db, workflowId: string): LedgerRun[] {
+  return [...routineRunsOf(db, workflowId), ...engineRunsOf(db, workflowId)];
+}
+
+function routineRunsOf(db: Db, workflowId: string): LedgerRun[] {
   const named = new Map<string, [string, number][]>();
   for (const v of db
     .prepare("SELECT v.occurrence, v.name, v.value FROM run_metric_values v JOIN routine_runs r ON r.occurrence = v.occurrence WHERE r.workflow_id = ? ORDER BY v.occurrence, v.name")
@@ -358,6 +464,7 @@ export function workflowCycles(db: Db, workflowId: string, now: number = Date.no
       widensAccess: parent ? diffSnapshots(parent.snapshot, v.snapshot).widensAccess : false,
       ...stats,
       runMetrics: metricsRollup(byVersion.get(v.version) ?? []),
+      engine: engineRollup(byVersion.get(v.version) ?? []),
       declaredMetrics: declared.get(v.version) ?? null,
       evalLive: { verdict: "insufficient", results: [] },
       evalStored: latestStored(db, v.workflowId, v.version),
@@ -372,8 +479,8 @@ export function workflowCycles(db: Db, workflowId: string, now: number = Date.no
 /** cycles_list: newest promotion first, at most CYCLES_MAX. */
 export function listCycles(db: Db, f: { workflowId?: string } = {}, now: number = Date.now()): Cycle[] {
   const ids = f.workflowId
-    ? db.prepare("SELECT id FROM workflows WHERE id = ?").all(f.workflowId)
-    : db.prepare("SELECT id FROM workflows").all();
+    ? db.prepare("SELECT id FROM workflows WHERE id = ? UNION SELECT DISTINCT workflow_id AS id FROM engine_definitions WHERE workflow_id = ?").all(f.workflowId, f.workflowId)
+    : db.prepare("SELECT id FROM workflows UNION SELECT DISTINCT workflow_id AS id FROM engine_definitions").all();
   return ids
     .flatMap((r) => workflowCycles(db, String(r.id), now))
     .sort((a, b) => b.promotedAt.localeCompare(a.promotedAt) || b.workflowId.localeCompare(a.workflowId) || b.version - a.version)

@@ -13,6 +13,8 @@ import { OP, type OpId } from "#kit";
 import * as cycles from "./cycles.ts";
 import { DEFAULT_MIN_REPEATS, KANBAN } from "./detector.ts";
 import * as directory from "./directory.ts";
+import { startEngine, stopEngine } from "./engine/engine.ts";
+import { engineHandlers } from "./engine/ops.ts";
 import { ALLOWLIST_NOTICE, allowedFromSteps, diffNotice, diffSnapshots, freeTargetNotice, ModelError, type Snapshot } from "./model.ts";
 import * as pipeline from "./pipeline.ts";
 import { buildRecipe } from "./recipe.ts";
@@ -429,6 +431,8 @@ export const handlers = {
       return ctx.db.transaction(() => cycles.storeEval(ctx.db, input.workflowId, input.version, "owner", Date.now(), ctx.idempotencyKey ?? null));
     },
   }),
+  // ── workflow engine (C367 WP2): contracts, activation, Temporal schedules, run index (src/engine/ops.ts) ──
+  ...engineHandlers(manifest),
 } satisfies Record<OpId, HandlerSpec>;
 
 function draftRow(d: store.Draft): K.DraftsListOutput["drafts"][number] {
@@ -445,6 +449,11 @@ export const definition: SdkAppDefinition = {
   // C85: the Kanban scan runs without an op call (app-initiated companion call with Evolution's own grant).
   async onStart(ctx) {
     detectorRefresh.start({ db: ctx.db, callApp: ctx.callApp.bind(ctx), log: ctx.log });
+    // C367: the Temporal worker + reconcile job (off while TEMPORAL_ADDRESS is not set)
+    startEngine({ db: ctx.db, callApp: ctx.callApp.bind(ctx), log: ctx.log });
+  },
+  async onStop() {
+    await stopEngine();
   },
   events: {
     // Agent directory (manifest needsAgentDirectory): keep names so suggestion text can say who repeated the work.
