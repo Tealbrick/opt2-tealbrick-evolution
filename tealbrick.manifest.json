@@ -40,8 +40,8 @@
     "port": 8080,
     "healthPath": "/tb/v1/health",
     "resources": {
-      "cpu": 0.25,
-      "memoryMb": 256
+      "cpu": 0.5,
+      "memoryMb": 768
     },
     "volumes": [
       {
@@ -55,6 +55,49 @@
         "mountPath": "/backup",
         "sizeGb": 2,
         "purpose": "backup"
+      }
+    ],
+    "env": [
+      {
+        "name": "TEMPORAL_ADDRESS",
+        "value": "{{services.temporal.host}}:7233"
+      }
+    ],
+    "services": [
+      {
+        "id": "temporal",
+        "title": "Workflow engine (Temporal)",
+        "build": {
+          "context": ".",
+          "dockerfile": "services/temporal/Dockerfile"
+        },
+        "port": 7233,
+        "resources": {
+          "cpu": 0.5,
+          "memoryMb": 768
+        },
+        "volumes": [
+          {
+            "id": "temporal_data",
+            "mountPath": "/data",
+            "sizeGb": 5,
+            "purpose": "data"
+          }
+        ],
+        "health": {
+          "kind": "tcp"
+        },
+        "startOrder": 0,
+        "dropPrivileges": true,
+        "backup": {
+          "dump": [
+            "/opt/temporal/temporal-dump"
+          ],
+          "restore": [
+            "/opt/temporal/temporal-restore"
+          ],
+          "extension": "sqlite"
+        }
       }
     ]
   },

@@ -14,6 +14,7 @@ import * as cycles from "./cycles.ts";
 import { DEFAULT_MIN_REPEATS, KANBAN } from "./detector.ts";
 import * as directory from "./directory.ts";
 import { startEngine, stopEngine } from "./engine/engine.ts";
+import { engineAttention, refreshEngineHealth, startEngineHealthWatch } from "./engine/health.ts";
 import { engineHandlers } from "./engine/ops.ts";
 import { ALLOWLIST_NOTICE, allowedFromSteps, diffNotice, diffSnapshots, freeTargetNotice, ModelError, type Snapshot } from "./model.ts";
 import * as pipeline from "./pipeline.ts";
@@ -451,9 +452,16 @@ export const definition: SdkAppDefinition = {
     detectorRefresh.start({ db: ctx.db, callApp: ctx.callApp.bind(ctx), log: ctx.log });
     // C367: the Temporal worker + reconcile job (off while TEMPORAL_ADDRESS is not set)
     startEngine({ db: ctx.db, callApp: ctx.callApp.bind(ctx), log: ctx.log });
+    // C367 WP1: tell the status push when the workflow engine goes down or comes back (never in /tb/v1/health).
+    startEngineHealthWatch(() => ctx.statusChanged());
   },
   async onStop() {
     await stopEngine();
+  },
+  // C367 WP1: the Temporal companion unreachable -> readiness `degraded` with the reason; the app still serves.
+  async attention() {
+    await refreshEngineHealth();
+    return engineAttention();
   },
   events: {
     // Agent directory (manifest needsAgentDirectory): keep names so suggestion text can say who repeated the work.

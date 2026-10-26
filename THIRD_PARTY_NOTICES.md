@@ -64,7 +64,16 @@ The Temporal SERVER is not part of this app image: it runs as the companion serv
 `node:24-slim` (Dockerfile): Node.js (MIT, with bundled components under their own licences) on Debian (the licences of
 its packages are in `/usr/share/doc/*/copyright` inside the image).
 
+## Companion service image `temporal` (`services/temporal/Dockerfile`)
+
+| Name | Version | Licence | Source |
+|---|---|---|---|
+| Temporal CLI (`temporal`, with the embedded Temporal server 1.32.0 and its dev-server SQLite persistence; the Web UI is not started) | 1.9.1 | MIT (`/usr/share/doc/temporal-cli/LICENSE` in the image) | https://github.com/temporalio/cli |
+| SQLite command-line shell (`sqlite3`, Debian package) | Debian bookworm | Public domain | https://www.sqlite.org |
+| `@opt2-tealbrick/miniapp-sdk` (the `tb-exec` entrypoint only) | 0.1.31 | Tealbrick Software Licence 1.1 | https://github.com/Tealbrick/opt2-tealbrick-dist |
+| Node.js and Debian base (`node:24.22.1-bookworm-slim`) | 24.22.1 | see "Base image" | https://hub.docker.com/_/node |
+
 ## Development only (not shipped)
 
 TypeScript, Biome, `@types/*`, happy-dom and `@opt2-tealbrick/conformance` are used to build and test the app and are
-not part of the image.
+not part of the image. The smoke and measurement scripts under `smoke/` use the Temporal TypeScript SDK (`@temporalio/client`, `worker`, `workflow`, `activity` 1.24.0, MIT, https://github.com/temporalio/sdk-typescript); WP2 ships the same version in the app.

@@ -162,13 +162,16 @@ New code is TypeScript (Node 24+).
 | `src/evals.ts` | pure eval of a cycle (gates, verdict); reads `eval/thresholds.json` |
 | `eval/` | T1 evals: `run.ts`, `thresholds.json`, `cases/detector/`, `cases/cycles/` |
 | `src/templates.ts` | seed workflow templates |
+| `src/engine/health.ts` | the Temporal reachability probe behind `defineApp({attention})` (C367 WP1; never in `/tb/v1/health`) |
+| `services/temporal/` | the `temporal` companion image: pinned Temporal CLI + tb-exec, `run.sh`, SQLite backup/restore scripts, schema guard (see ARCHITECTURE.md, "Temporal service") |
+| `smoke/` | `engine-smoke.ts` (service image smoke + backup/restore round trip) and `measure/` (24 h load, stats, cold start); run by hand with podman or docker |
 | `src/ui/` | owner UI in `<AppShell>`: Suggestions, Drafts, Workflows, Schedules, Cycles, Holds, Agents |
 | `migrations/` | 8 forward-only migrations: `0001_init.sql` (0.1), `0002_routines.sql` (0.2), `0003_detector_state.sql`, `0004_policy_stale_runs.sql` (0.2.13: rebuilds `routine_runs` to allow `policy_stale`), `0005_eval_runs.sql` (0.3.0: stored cycle evals, `routine_runs.reported_at`), `0006_run_metrics.sql` (C288 R8: the table `run_metrics`, nothing else changes), `0007_pipeline_contract.sql` (C288 R10: the tables `pipeline_sources` and `workflow_version_pipelines`, nothing else changes), `0008_free_target.sql` (C364a R1a: `automations.target_mode`, every old schedule stays `bound`; `agent_names.mode`, `.status`, `.in_directory`). Never edit a released file. |
 | `scripts/upgrade-check.ts` | upgrade check on a COPY of a real 0.2.12, 0.2.13, 0.3.0 or 0.3.0 + R8 / R10 `app.db`: applies the new migrations like the SDK and compares every row; prints counts only |
 | `skills/use-evolution/SKILL.md` | agent skill: when to suggest, Bound-agent behaviour |
 | `Dockerfile` | the one opt2 app Dockerfile pattern |
 | `.woodpecker/ci.yaml`, `.github/workflows/opt2-release.yml` | the opt2 CI template ci-v9.9, generated from `Tealbrick/opt2-tealbrick-platform`; do not edit |
-| `tealbrick-ci.json` | CI settings: kind `miniapp`, one image |
+| `tealbrick-ci.json` | CI settings: kind `miniapp`, the app image and the `temporal` service image |
 | `conformance.start.ts` | boots the app for `tb-conformance` |
 | `test/` | model, detector, recipe, routine, cycle ledger, eval and flow checks, upgrade, UI checks |
 
@@ -188,7 +191,7 @@ TB_STANDALONE=1 TB_DATA_DIR=.data TB_DATA_EPHEMERAL=1 pnpm start   # app-alone m
 
 ## Environment
 
-The SDK reads only `TB_*` variables (SDK API section 13). The Dockerfile defaults `TB_DATA_DIR=/data` (the `data` volume mount) and `TB_BACKUP_DIR=/data/backup` (one volume per service). The deploy recipe sets the rest: `TB_INSTANCE_ID`, `TB_ENROL_CODE`, `TB_BRIDGE_URL`, `TB_PORTAL_KEYS`, `TB_KEK`. Optional: `TB_LOG_LEVEL`, `TB_RESTORE_FROM`, `TB_STANDALONE`. The listen port is the manifest `runtime.port`. The app has no keys and no app-specific environment variables. `TB_DATA_EPHEMERAL=1` is for tests and local runs only; never set it in a deploy recipe.
+The SDK reads only `TB_*` variables (SDK API section 13). The Dockerfile defaults `TB_DATA_DIR=/data` (the `data` volume mount) and `TB_BACKUP_DIR=/data/backup` (one volume per service). The deploy recipe sets the rest: `TB_INSTANCE_ID`, `TB_ENROL_CODE`, `TB_BRIDGE_URL`, `TB_PORTAL_KEYS`, `TB_KEK`. Optional: `TB_LOG_LEVEL`, `TB_RESTORE_FROM`, `TB_STANDALONE`. The listen port is the manifest `runtime.port`. The app has no keys. One app-specific variable: `TEMPORAL_ADDRESS` (`host:7233`), set by the deploy recipe from the manifest (`{{services.temporal.host}}:7233`); without it the engine is not probed. `TB_DATA_EPHEMERAL=1` is for tests and local runs only; never set it in a deploy recipe.
 
 ## Release
 

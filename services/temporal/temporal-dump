@@ -1,0 +1,10 @@
+#!/bin/sh
+# SDK backup part: a consistent copy of the Temporal SQLite file (SQLite online backup) to stdout.
+set -eu
+DATA_DIR=${TEMPORAL_DATA_DIR:-/data}
+DB="$DATA_DIR/temporal.db"
+tmp=$(mktemp -d "$DATA_DIR/.dump.XXXXXX")
+trap 'rm -rf "$tmp"' EXIT
+sqlite3 "$DB" ".timeout 30000" ".backup '$tmp/temporal.sqlite'"
+[ "$(sqlite3 "$tmp/temporal.sqlite" 'PRAGMA quick_check;')" = "ok" ] || { echo "temporal-dump: the copy failed quick_check" >&2; exit 1; }
+cat "$tmp/temporal.sqlite"
