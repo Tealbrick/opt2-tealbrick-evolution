@@ -109,10 +109,10 @@ test("example B runs with fakes up to the Gmail draft; that step is refused (cru
   assert.deepEqual(modelCalls[0]?.inputs, { email: { from: "boss@acme.com", domain: "acme.com", subject: "Pricing?", text: "How much for 50 seats?", threadId: "th_1" } });
   assert.equal(offers.length, 1);
   assert.deepEqual([offers[0]?.agentId, offers[0]?.inputs, offers[0]?.timeoutSec], [AGENT, { company: "Acme Corp" }, 900]);
-  const ask = t.apps.calls.find((c) => c.op === "inbox_ask");
-  assert.equal((ask?.input as { title: string }).title, "Draft reply to Acme Corp?");
-  assert.match((ask?.input as { context: string }).context, /Offer a call\nSend the price list\nCheck the contract/);
-  const brief = (modelCalls[1]?.inputs as { brief: Record<string, unknown> }).brief;
+  const ask = t.apps.calls.find((c) => c.op === "inbox_ask") as unknown as { input: { title: string; context: string } };
+  assert.equal(ask.input.title, "Draft reply to Acme Corp?");
+  assert.match(ask.input.context, /Offer a call\nSend the price list\nCheck the contract/);
+  const brief = ((modelCalls[1] as { inputs: { brief: Record<string, unknown> } }).inputs).brief;
   assert.deepEqual(Object.keys(brief).sort(), ["ask", "crm", "email", "market", "notes"]);
   assert.deepEqual(brief.market, { sentiment: "positive", notes: "good press", sources: ["https://news.example/acme"] });
   assert.deepEqual(brief.crm, { company: "Acme Corp", tier: "gold" });

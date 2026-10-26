@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import { after, before, test } from "node:test";
-import { createModelPort, MAX_OUTPUT_TOKENS, ModelError, parseJsonReply, type RoleBinding } from "../../src/engine/models.ts";
+import { createModelPort, MAX_OUTPUT_TOKENS, type ModelError, parseJsonReply, type RoleBinding } from "../../src/engine/models.ts";
 
 interface Seen {
   url: string;
@@ -85,7 +85,7 @@ test("OpenAI itself gets max_completion_tokens; Anthropic and Google get their o
   assert.deepEqual([g.output, g.tokensIn, g.tokensOut], [{ bullets: ["g"] }, 4, 2]);
   assert.equal(seen[2]?.url, "/v1beta/models/gem-1:generateContent");
   assert.equal(seen[2]?.headers["x-goog-api-key"], "G-KEY");
-  assert.equal((seen[2]?.body.generationConfig as { temperature: number }).temperature, 0);
+  assert.equal(((seen[2] as Seen).body.generationConfig as { temperature: number }).temperature, 0);
   assert.equal("tools" in (seen[2]?.body ?? {}), false);
 });
 

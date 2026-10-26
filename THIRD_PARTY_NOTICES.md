@@ -13,7 +13,7 @@ The UI build (`scripts/build-ui.ts`) copies these files into the app image.
 | React DOM (`react-dom`) | 19.3.0 | MIT | https://github.com/facebook/react |
 | `scheduler` | 0.28.0 | MIT | https://github.com/facebook/react |
 | `@opt2-tealbrick/ui` (Tealbrick design system kit: tokens, components, CSS) | 0.2.4 | MIT | https://github.com/Martin-Atrin/opt2-tealbrick-packages |
-| `@opt2-tealbrick/miniapp-sdk/client`, `@opt2-tealbrick/spec/bridge` and `@opt2-tealbrick/spec/routes` (browser modules only) | 0.1.31 / 0.1.47 | Tealbrick Software Licence 1.1 | see the next section |
+| `@opt2-tealbrick/miniapp-sdk/client`, `@opt2-tealbrick/spec/bridge` and `@opt2-tealbrick/spec/routes` (browser modules only) | 0.1.40 / 0.1.64 | Tealbrick Software Licence 1.1 | see the next section |
 | Nunito (variable font, `vendor/@opt2-tealbrick/ui/dist/fonts/*.woff2`) | 5.3.0 (`@fontsource-variable/nunito`) | SIL Open Font License 1.1 | https://github.com/googlefonts/nunito |
 
 - Nunito is Copyright 2014 The Nunito Project Authors. Its licence text ships next to the font files as
@@ -26,9 +26,9 @@ The UI build (`scripts/build-ui.ts`) copies these files into the app image.
 
 | Name | Version | Licence | Source |
 |---|---|---|---|
-| `@opt2-tealbrick/miniapp-sdk` | 0.1.31 | Tealbrick Software Licence 1.1 (`LICENSE` in the package; earlier versions were MIT) | https://github.com/Tealbrick/opt2-tealbrick-dist |
-| `@opt2-tealbrick/manifest` | 0.1.25 | Tealbrick Software Licence 1.1 (`LICENSE` in the package; earlier versions were MIT) | https://github.com/Tealbrick/opt2-tealbrick-dist |
-| `@opt2-tealbrick/spec` (direct dependency; the manifest package also nests 0.1.46) | 0.1.47 | Tealbrick Software Licence 1.1 (`LICENSE` in the package; earlier versions were MIT) | https://github.com/Tealbrick/opt2-tealbrick-dist |
+| `@opt2-tealbrick/miniapp-sdk` | 0.1.40 | Tealbrick Software Licence 1.1 (`LICENSE` in the package; earlier versions were MIT) | https://github.com/Tealbrick/opt2-tealbrick-dist |
+| `@opt2-tealbrick/manifest` | 0.1.31 | Tealbrick Software Licence 1.1 (`LICENSE` in the package; earlier versions were MIT) | https://github.com/Tealbrick/opt2-tealbrick-dist |
+| `@opt2-tealbrick/spec` (direct dependency) | 0.1.64 | Tealbrick Software Licence 1.1 (`LICENSE` in the package; earlier versions were MIT) | https://github.com/Tealbrick/opt2-tealbrick-dist |
 | `ajv` (dependency of the manifest package) | 8.17.1 | MIT | https://github.com/ajv-validator/ajv |
 | `fast-deep-equal` (ajv) | 3.1.3 | MIT | https://github.com/epoberezkin/fast-deep-equal |
 | `fast-uri` (ajv) | 3.1.8 | BSD-3-Clause | https://github.com/fastify/fast-uri |
@@ -70,7 +70,7 @@ its packages are in `/usr/share/doc/*/copyright` inside the image).
 |---|---|---|---|
 | Temporal CLI (`temporal`, with the embedded Temporal server 1.32.0 and its dev-server SQLite persistence; the Web UI is not started) | 1.9.1 | MIT (`/usr/share/doc/temporal-cli/LICENSE` in the image) | https://github.com/temporalio/cli |
 | SQLite command-line shell (`sqlite3`, Debian package) | Debian bookworm | Public domain | https://www.sqlite.org |
-| `@opt2-tealbrick/miniapp-sdk` (the `tb-exec` entrypoint only) | 0.1.31 | Tealbrick Software Licence 1.1 | https://github.com/Tealbrick/opt2-tealbrick-dist |
+| `@opt2-tealbrick/miniapp-sdk` (the `tb-exec` entrypoint only) | 0.1.40 | Tealbrick Software Licence 1.1 | https://github.com/Tealbrick/opt2-tealbrick-dist |
 | Node.js and Debian base (`node:24.22.1-bookworm-slim`) | 24.22.1 | see "Base image" | https://hub.docker.com/_/node |
 
 ## Development only (not shipped)

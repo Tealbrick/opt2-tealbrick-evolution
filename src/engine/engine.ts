@@ -2,10 +2,10 @@
 // (SDK-API: 5 s stop timeout). Without TEMPORAL_ADDRESS the engine is off and the app behaves as 0.3.x.
 import { type Db, type Logger, modelRole } from "@opt2-tealbrick/miniapp-sdk";
 import { type CallApp, createActivities } from "./activities.ts";
-import { createModelPort } from "./models.ts";
-import { type Reconciler, startReconciler } from "./reconcile.ts";
 import { createSealCodec } from "./codec.ts";
 import { loadKeyRing, type SecretStore } from "./keystore.ts";
+import { createModelPort } from "./models.ts";
+import { type Reconciler, startReconciler } from "./reconcile.ts";
 import { newRunId, type StartRunInput, startRun } from "./start-run.ts";
 import { closeTemporal, getTemporal, setPayloadCodec, startWorker, temporalConfig, type WorkerHandle, type WorkerState } from "./temporal.ts";
 

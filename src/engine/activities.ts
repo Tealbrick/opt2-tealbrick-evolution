@@ -380,7 +380,7 @@ export function createActivities(deps: EngineDeps): Activities & LocalActivities
       if (a.child) {
         const v = a.child.version ?? store.activeActivation(db, a.child.workflowId)?.version ?? null;
         const ca = v === null ? null : store.getActivation(db, a.child.workflowId, v);
-        if (!ca || ca.state !== "active") throw permanent("child_not_active", `The workflow ${a.child.workflowId} is not active, so a workflow step cannot start it.`);
+        if (ca?.state !== "active") throw permanent("child_not_active", `The workflow ${a.child.workflowId} is not active, so a workflow step cannot start it.`);
       }
     },
 

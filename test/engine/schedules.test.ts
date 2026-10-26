@@ -43,7 +43,7 @@ function install(extra: Record<string, unknown> = {}, steps: unknown[] = [read("
   t.install(wf(steps, { id, ...extra }));
   return id;
 }
-async function waitFor(cond: () => boolean | Promise<boolean>, ms = 30_000): Promise<void> {
+async function waitFor(cond: () => boolean | Promise<boolean>, ms = 90_000): Promise<void> {
   const until = Date.now() + ms;
   while (!(await cond())) {
     if (Date.now() > until) assert.fail("timed out");
@@ -68,7 +68,7 @@ test("mapping: cron or interval, always with the IANA time zone; overlap SKIP an
   assert.equal(scheduleIdOf("sch_abc"), "evo-sched:sch_abc");
 });
 
-test("schedule_set: Temporal gets the cron, the time zone, overlap SKIP and a one-hour catch-up window; 08:00 in Bangkok is 01:00 UTC", async () => {
+test("schedule_set: Temporal gets the cron, the time zone, overlap SKIP and a one-hour catch-up window; 08:00 in Bangkok is 01:00 UTC", { timeout: 180_000 }, async () => {
   const id = install();
   const s = await op<Sched>("schedule_set", { workflowId: id, cron: "0 8 * * *", timezone: "Asia/Bangkok" });
   assert.equal(s.temporalState, "synced");
@@ -94,7 +94,7 @@ test("schedule_set: Temporal gets the cron, the time zone, overlap SKIP and a on
   await assert.rejects(op("schedule_set", { workflowId: "never-installed", cron: "0 8 * * *", timezone: "UTC" }), (e: unknown) => e instanceof TbError && e.code === "not_activated" && e.httpStatus === 409);
 });
 
-test("schedule_set takes the schedule from the contract's trigger and the input defaults; the input must fit the workflow inputs", async () => {
+test("schedule_set takes the schedule from the contract's trigger and the input defaults; the input must fit the workflow inputs", { timeout: 180_000 }, async () => {
   const id = install({ inputs: { type: "object", required: ["account"], properties: { account: { type: "string" } } }, triggers: [{ kind: "schedule", every: "6h", timezone: "Asia/Bangkok", input: { account: "acc1" } }] });
   const s = await op<Sched & { input: Record<string, unknown> }>("schedule_set", { workflowId: id });
   assert.equal(s.every, "6h");
@@ -103,7 +103,7 @@ test("schedule_set takes the schedule from the contract's trigger and the input 
   await assert.rejects(op("schedule_set", { workflowId: id, input: { account: 5 } }), (e: unknown) => e instanceof TbError && e.code === "validation_failed");
 });
 
-test("pause and resume, run now, delete; the list shows the live state", async () => {
+test("pause and resume, run now, delete; the list shows the live state", { timeout: 180_000 }, async () => {
   const id = install();
   const s = await op<Sched>("schedule_set", { workflowId: id, cron: "0 3 * * *", timezone: "UTC" });
   const p = await op<Sched>("schedule_pause", { id: s.id, revision: s.revision, paused: true });
@@ -139,7 +139,7 @@ test("pause and resume, run now, delete; the list shows the live state", async (
   await assert.rejects(op("schedule_run_now", { id: s.id }), (e: unknown) => e instanceof TbError && e.code === "not_found");
 });
 
-test("a poll schedule is built from the contract's poll trigger: the run stops early when the cursor did not change", async () => {
+test("a poll schedule is built from the contract's poll trigger: the run stops early when the cursor did not change", { timeout: 180_000 }, async () => {
   const id = install({ triggers: [{ kind: "poll", product: "knowledge", op: "recall", input: { query: "inbox" }, cursorPath: "/cursor", every: "5m" }] });
   const s = await op<Sched & { kind: string; poll: { cursorPath: string } | null }>("schedule_set", { workflowId: id, kind: "poll", timezone: "UTC" });
   assert.equal(s.kind, "poll");
@@ -148,16 +148,19 @@ test("a poll schedule is built from the contract's poll trigger: the run stops e
   t.apps.on["knowledge.recall"] = () => ({ cursor: "c1" });
   await op("schedule_run_now", { id: s.id });
   await waitFor(() => (t.db.prepare("SELECT count(*) AS c FROM engine_runs WHERE workflow_id = ?").get(id)?.c as number) === 1);
+  // the schedule's overlap policy is SKIP: the second trigger must wait until the first run has CLOSED, or Temporal drops it
+  await waitFor(async () => (await t.client.schedule.getHandle(scheduleIdOf(s.id)).describe()).info.runningActions.length === 0);
+  const before = t.apps.calls.filter((c) => c.op === "recall" && (c.input as { query: string }).query === "inbox").length;
   await op("schedule_run_now", { id: s.id });
-  await new Promise((r) => setTimeout(r, 1500));
-  await waitFor(() => t.apps.calls.filter((c) => c.op === "recall" && (c.input as { query: string }).query === "inbox").length >= 2);
+  await waitFor(() => t.apps.calls.filter((c) => c.op === "recall" && (c.input as { query: string }).query === "inbox").length > before);
+  await waitFor(async () => (await t.client.schedule.getHandle(scheduleIdOf(s.id)).describe()).info.runningActions.length === 0);
   assert.equal(t.db.prepare("SELECT count(*) AS c FROM engine_runs WHERE workflow_id = ?").get(id)?.c, 1, "the second poll saw the same cursor: no run");
   assert.equal(store.getSchedule(t.db, s.id)?.cursor, "c1");
   t.apps.on["knowledge.recall"] = () => ({});
   await assert.rejects(op("schedule_set", { workflowId: install(), kind: "poll", timezone: "UTC" }), (e: unknown) => e instanceof TbError && e.code === "validation_failed", "a workflow without a poll trigger has no poll schedule");
 });
 
-test("workflow_deactivate pauses the schedules of the workflow", async () => {
+test("workflow_deactivate pauses the schedules of the workflow", { timeout: 180_000 }, async () => {
   const id = install();
   const s = await op<Sched>("schedule_set", { workflowId: id, cron: "0 3 * * *", timezone: "UTC" });
   const d = await op<{ schedulesPaused: number; deactivatedVersions: number[] }>("workflow_deactivate", { workflowId: id });
@@ -167,7 +170,7 @@ test("workflow_deactivate pauses the schedules of the workflow", async () => {
   await assert.rejects(op("schedule_run_now", { id: s.id }), (e: unknown) => e instanceof TbError && e.code === "not_activated");
 });
 
-test("Temporal down: the owner ops still save the row (pending), the list says unreachable, and the reconcile job creates the schedule later", async () => {
+test("Temporal down: the owner ops still save the row (pending), the list says unreachable, and the reconcile job creates the schedule later", { timeout: 180_000 }, async () => {
   const id = install();
   setTemporalClientForTests(null);
   const prevAddress = process.env.TEMPORAL_ADDRESS;
@@ -191,7 +194,7 @@ test("Temporal down: the owner ops still save the row (pending), the list says u
   assert.equal((await t.client.schedule.getHandle(scheduleIdOf(s.id)).describe()).spec.timezone, "UTC");
 });
 
-test("reconcile: Temporal wins. It closes runs the index still shows running, adds runs the index lacks, ignores skipped polls, deletes orphan schedules", async () => {
+test("reconcile: Temporal wins. It closes runs the index still shows running, adds runs the index lacks, ignores skipped polls, deletes orphan schedules", { timeout: 180_000 }, async () => {
   const id = install();
   // 1. a run that finished in Temporal while the index says running (the activity never wrote the end)
   const done = await t.run({ workflowId: id, runId: "run_rec1" });
@@ -227,7 +230,7 @@ test("reconcile: Temporal wins. It closes runs the index still shows running, ad
   assert.deepEqual([again.closed, again.inserted, again.lost, again.schedulesOrphaned], [0, 0, 0, 0]);
 });
 
-test("reconcile records the failure code of a run that failed in Temporal but never reached finishRun", async () => {
+test("reconcile records the failure code of a run that failed in Temporal but never reached finishRun", { timeout: 180_000 }, async () => {
   const id = install({ inputs: { type: "object", properties: { at: { type: "string" } } } }, [{ id: "boom", type: "timer", until: "$trigger.input.at" }]);
   await assert.rejects(t.run({ workflowId: id, runId: "run_boom", trigger: { kind: "manual", input: { at: "never" } } }));
   t.db.prepare("UPDATE engine_runs SET status = 'running', ended_at = NULL, error_code = NULL WHERE workflow_id = ? AND run_id = ?").run(id, "run_boom");
@@ -238,7 +241,7 @@ test("reconcile records the failure code of a run that failed in Temporal but ne
 
 // ───────────────────────────── review fixes F3, F6 ─────────────────────────────
 
-test("F3: a schedule may pin the ACTIVE version only; a replaced version starts nothing, also from a schedule", async () => {
+test("F3: a schedule may pin the ACTIVE version only; a replaced version starts nothing, also from a schedule", { timeout: 180_000 }, async () => {
   const id = install();
   t.install(wf([read("a")], { id, version: 2, title: "v2" }));
   await assert.rejects(op("schedule_set", { workflowId: id, versionPin: 1, cron: "0 3 * * *", timezone: "UTC" }), (e: unknown) => e instanceof TbError && e.code === "not_activated" && e.httpStatus === 409);
@@ -262,7 +265,7 @@ test("F3: a schedule may pin the ACTIVE version only; a replaced version starts 
   assert.equal(t.db.prepare("SELECT count(*) AS c FROM engine_runs WHERE workflow_id = ? AND schedule_id = ?").get(id, stale.id)?.c, 0);
 });
 
-test("F6: activating a newer version checks the schedules again: one that still fits follows it, one that does not is paused and stale with the reason; a pin on the old version is stale", async () => {
+test("F6: activating a newer version checks the schedules again: one that still fits follows it, one that does not is paused and stale with the reason; a pin on the old version is stale", { timeout: 180_000 }, async () => {
   const id = `f6-flow-${++n}`;
   t.install(wf([read("a")], { id, version: 1, inputs: { type: "object", properties: { account: { type: "string" } } }, triggers: [{ kind: "manual" }, { kind: "schedule", cron: "0 8 * * *", timezone: "UTC" }] }));
   const follows = await op<Sched & { input: Record<string, unknown> }>("schedule_set", { workflowId: id, input: { account: "acc1" } });

@@ -2,7 +2,9 @@
 // app.db holds sizes, never bodies; the bodies live in Temporal history (the activity inputs and results), and this module
 // reads them on demand, for one run, when the owner opens it. Every value is capped; a bigger one is replaced by its size.
 import type { Client } from "@temporalio/client";
+import type { Payload } from "@temporalio/common";
 import type { Json } from "./json.ts";
+import { payloadCodec } from "./temporal.ts";
 
 export const IO_CAP_BYTES = 50_000;
 
@@ -28,17 +30,23 @@ interface PayloadLike {
 
 const id = (v: unknown): string => String(v ?? "");
 
-function decode(p: PayloadLike | undefined): Json | undefined {
+/** Opens one history payload with the app's codec (C371: the history holds sealed payloads) and reads its JSON. A payload the codec
+ *  refuses (not sealed, another key) is left out: nothing unsealed is ever shown as step data. */
+export type PayloadDecoder = (p: PayloadLike | undefined) => Promise<Json | undefined>;
+
+export const decodeSealed: PayloadDecoder = async (p) => {
   if (!p?.data) return undefined;
-  const enc = p.metadata?.encoding ? Buffer.from(p.metadata.encoding).toString("utf8") : "json/plain";
-  if (enc !== "json/plain") return undefined;
   try {
-    const text = typeof p.data === "string" ? Buffer.from(p.data, "base64").toString("utf8") : Buffer.from(p.data).toString("utf8");
-    return JSON.parse(text) as Json;
+    const raw: Payload = { metadata: p.metadata ?? {}, data: typeof p.data === "string" ? Buffer.from(p.data, "base64") : p.data };
+    const [open] = await payloadCodec.decode([raw]);
+    if (!open) return undefined;
+    const enc = open.metadata?.encoding ? Buffer.from(open.metadata.encoding).toString("utf8") : "json/plain";
+    if (enc !== "json/plain" || !open.data) return undefined;
+    return JSON.parse(Buffer.from(open.data).toString("utf8")) as Json;
   } catch {
     return undefined;
   }
-}
+};
 
 function cap(v: Json | undefined): Json | undefined {
   if (v === undefined) return undefined;
@@ -57,14 +65,14 @@ interface Args {
 }
 
 /** Per step key: the input and output of its activities. Pure: the events of every Temporal run of the chain, oldest first. */
-export function stepIoFromEvents(events: readonly HistoryEventLike[]): Record<string, StepIo> {
+export async function stepIoFromEvents(events: readonly HistoryEventLike[], decode: PayloadDecoder = decodeSealed): Promise<Record<string, StepIo>> {
   const scheduled = new Map<string, { type: string; args: Args }>();
   const out: Record<string, StepIo> = {};
   const slot = (key: string): StepIo => (out[key] ??= {});
   for (const e of events) {
     const s = e.activityTaskScheduledEventAttributes;
     if (s) {
-      const args = (decode(s.input?.payloads?.[0]) ?? {}) as Args;
+      const args = ((await decode(s.input?.payloads?.[0])) ?? {}) as Args;
       scheduled.set(id(e.eventId), { type: s.activityType?.name ?? "", args });
       continue;
     }
@@ -74,7 +82,7 @@ export function stepIoFromEvents(events: readonly HistoryEventLike[]): Record<st
     const sc = scheduled.get(sid);
     if (!sc?.args.stepKey) continue;
     const key = sc.args.stepKey;
-    const result = done ? decode(done.result?.payloads?.[0]) : undefined;
+    const result = done ? await decode(done.result?.payloads?.[0]) : undefined;
     if (sc.type === "appStep") {
       slot(key).input = cap(sc.args.input);
       if (done && result && typeof result === "object" && !Array.isArray(result) && (result as { status?: unknown }).status === "ok") slot(key).output = cap((result as { output?: Json }).output);
@@ -104,7 +112,7 @@ export async function readStepIo(client: Client, temporalWorkflowId: string, tim
       chain.unshift(events);
       runId = events[0]?.workflowExecutionStartedEventAttributes?.continuedExecutionRunId || undefined;
     }
-    return stepIoFromEvents(chain.flat());
+    return await stepIoFromEvents(chain.flat());
   })();
   work.catch(() => undefined);
   return Promise.race([work.catch(() => null), new Promise<null>((ok) => setTimeout(() => ok(null), timeoutMs))]);

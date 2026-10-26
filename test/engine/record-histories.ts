@@ -10,6 +10,7 @@ import { read, startEnv, wf } from "./harness.ts";
 
 const name = process.argv[2];
 const t = await startEnv({
+  codec: false,
   models: {
     async run() {
       return { output: { bullets: ["one", "two"], needsReply: ["Bob"] }, tokensIn: 10, tokensOut: 5 };

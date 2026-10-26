@@ -46,9 +46,27 @@ State: written 2026-10-26 on branch `feat/c367-wp2-engine`; verified by `test/en
 - **Honest label**: the bridge limits Evolving Workflows as a whole; each workflow's limit is enforced by the engine until per-workflow grants (P1).
 - **M1 wiring** (`onStart` in `src/app.ts`): `wireAgentSteps(db)` (the agent port and the Temporal completion client, `src/agentsteps/wire.ts`), `startEngine(...)` (worker + reconcile job), `startEngineHealthWatch(...)`; `defineApp({attention})` returns `engineAttention()` (WP1: degraded while Temporal is unreachable, never in `/tb/v1/health`). `test/integration-agent-steps.test.ts` runs an `ai` step with `by.agent` through the real interpreter, port, store and ops.
 
+### Engine M2: waits, model roles, history, security (C367)
+
+- **Held app step**: the bridge answers `held`; the interpreter waits durably (`sleep` 30 s, 60 s, 120 s, 240 s, then 5 min) and asks `tb.hold_status` when the bridge declares the cap `app_hold_status` (`ctx.bridgeCaps()`), else it reads the pending list `tb.holds_pending` (the wildcard companion, read only, owner consent). Approved (or left the list) -> the SAME call (same input, same key) is repeated once; a second `held` is `held_again`; denied, expired or unknown ends the step (`hold_denied`, `hold_expired`, `hold_gone`) and `onFail` decides. `tb.hold_status` is NOT in the manifest (the Core pin comes first).
+- **Approval step** and **`onFail: "ask"`**: `inbox_ask` (key `wfrun:...`, an app caller) then `inbox_status` on the same backoff. Only `answered` + `approve` is an approval. `ask` after a failed step: Approve = retry, Clarify = skip, Deny or no answer = stop; at most 5 questions per step; failures no answer can fix (`not_in_workflow`, ...) are not asked. The time the owner takes does not count against `maxRunMinutes`.
+- **Model role step** (`models.ts`): `modelRole(role)` of the SDK, then one provider call (OpenAI-compatible, Anthropic, Google): temperature 0, at most 4000 output tokens, no tools, the reply validated against `outputSchema` with ONE repair retry, tokens recorded in `engine_steps` / `engine_runs.model_tokens`, `limits.maxModelTokens` enforced between steps. No binding, no `model_roles` cap, or a role that is not a text role fails the step (`model_role_unavailable`, `model_role_unsupported`). The manifest declares four optional roles (`settings.modelRoles`: reasoning, utility, summarize, dreaming); an unbound optional role shows as attention, not as a failure.
+- **Call context**: behind the cap `app_call_context` every call also sends `{evolution.workflow, evolution.version, evolution.run, evolution.step}`; without the cap only the idempotency key.
+- **Run detail**: `engine_run_get` reads each step's input and output from the Temporal history, only for the owner (C88); app.db keeps sizes.
+- **Security review fixes (M1)**: values over 1.5 MB fail the step (`input_too_large`) and a run has a hard Temporal ceiling; a replaced version starts no new run (runs in flight finish, each call checked against that version's own activation); every step kind checks the activation; a workflow step needs the child ACTIVE and the child's ops are listed in the parent's activation (`via`); child run ids stay unique; schedules are checked again when a newer version is activated (stale = paused with a reason); a poll cursor moves only when its run completed (`0012_engine_m2.sql`).
+
+#### Payload codec (C371)
+
+Every Temporal payload (workflow arguments, activity inputs and results, memo) is sealed with AES-256-GCM in the app (`codec.ts`) before it leaves the process, with a key that only the app holds. Decode REFUSES a payload that is not sealed: a neighbour on the private network cannot read a history, cannot inject a forged step result (a plain start or a plain completion fails at the worker; the run takes nothing from it), and the data of other apps stays sealed in the Temporal database and in its backups. The client, the worker and the history reads of the run detail share the one codec (`temporal.ts`).
+
+- **Where the key lives**: the key ring `engine-payload-keys` is in the SDK secret store, sealed under `TB_KEK` (excluded from export, sealed inside backups; `keystore.ts`). It is NEVER in the env, the image, the volume or the backup of the `temporal` service (`test/engine/codec.test.ts` checks the manifest entry and the service files).
+- **Key rotation**: every sealed payload carries a key id in its metadata (`encryption-key-id`, also bound into the GCM tag). The ring holds the current key and the older ones. `rotateKey` adds a new key and makes it current; new writes use it; decode opens payloads of every key still in the ring, so history written before the rotation stays readable. `retireKey` removes an old key after the Temporal retention window (14 days) has passed; a payload still sealed with a retired key is refused, so a run that still needs it fails. There is no owner op for rotation yet: it is a deliberate maintenance step (release note).
+- **Key loss**: if the ring is lost (the secret store is wiped and there is no backup), it costs RUN PROGRESS ONLY. In-flight runs and the history in Temporal become unreadable and fail (the reconcile job closes their index rows). Workflow definitions, versions, activations, schedule metadata and the run index in `app.db` survive; schedules keep firing once a new key exists (the engine makes a new ring at the next start when none exists, and the old Temporal history stays unreadable). A stored value that is not a valid ring is never replaced silently: the engine stops with an error instead of orphaning history.
+- **Limits**: failure messages in the history carry a code and a status, never the text of another app. M1 runs in flight on a workspace are not readable after the codec ships: terminate them.
+
 ## Operations (from `tealbrick.manifest.json`)
 
-50 operations: the 32 of 0.3.0, the 13 owner ops of the engine (WP2), the 4 agent ops and `agent_steps_list` (WP3).
+52 operations: the 32 of 0.3.0, the 14 owner ops of the engine (WP2; M2 adds `workflow_run_now`), the 4 agent ops and `agent_steps_list` (WP3), `migration_status` (M3).
 - Agent write: `suggestion_create` (idempotency required), `routine_claim`, `routine_report`, `step_claim`, `step_report` (C367 WP3), `step_heartbeat`. Agent read: `suggestions_list`, `suggestion_get`, `workflow_get`, `routines_due`, `steps_due`.
 - Person read (agent steps): `agent_steps_list`.
 - Person read (15): `review_suggestions`, `review_suggestion`, `detector_status`, `templates_list`, `drafts_list`, `draft_get`, `workflows_list`, `workflow_versions`, `workflow_diff`, `recipe_export`, `automations_list`, `runs_list`, `cycles_list`, `cycle_get`, `pipeline_export`.
@@ -102,7 +120,7 @@ Port 8080. 0.5 cpu, 768 MB (C367 WP1; was 0.25 cpu / 256 MB). Data 1 GB plus bac
 
 ## Pinned packages
 
-miniapp-sdk 0.1.31, spec 0.1.47, manifest 0.1.25, conformance 0.1.22, ui 0.2.4. Cron maths come from `@opt2-tealbrick/manifest` (`cronDue`, `nextCronTime`).
+miniapp-sdk 0.1.40, spec 0.1.64, manifest 0.1.31, conformance 0.1.30, ui 0.2.4 (M2 moved from 0.1.31 / 0.1.47 / 0.1.25 / 0.1.22 for `modelRole()` and `ctx.bridgeCaps()`). Cron maths come from `@opt2-tealbrick/manifest` (`cronDue`, `nextCronTime`).
 
 All `@opt2-tealbrick/*` pins use dist-host tarball URLs. Upgrade safety (SDK 0.1.25 and later: pre-update snapshot, migration lock, failed mode) is in every release since 0.2.12 (stable since 2026-10-18). A failed update is rolled back by Core with the SDK pre-update snapshot; there are no down migrations.
 
@@ -142,4 +160,4 @@ The workflow engine runs on Temporal in the single-binary shape: one companion s
 
 ## Known gaps
 
-- Pins `@opt2-tealbrick/spec` 0.1.47 directly (the version miniapp-sdk 0.1.31 uses; `src/recipe.ts` and the UI import `spec/routes`).
+- Pins `@opt2-tealbrick/spec` 0.1.64 directly (the version miniapp-sdk 0.1.40 uses; `src/recipe.ts` and the UI import `spec/routes`).

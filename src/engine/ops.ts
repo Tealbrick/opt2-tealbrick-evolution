@@ -5,12 +5,13 @@ import { nextCronTime, validateAgainstSchema } from "@opt2-tealbrick/manifest";
 import { type HandlerSpec, type OpContext, TbError } from "@opt2-tealbrick/miniapp-sdk";
 import type * as K from "#kit";
 import { OP } from "#kit";
+import { UNASSIGNED_AGENT } from "../migrate/contract.ts";
 import { type WorkflowContract, walkSteps } from "./contract.ts";
 import * as store from "./engine-store.ts";
 import { EngineError } from "./errors.ts";
+import { readStepIo } from "./history.ts";
 import type { Json } from "./json.ts";
 import { deleteSchedule, describeSchedule, pauseSchedule, type ScheduleLive, syncAndRecord, triggerSchedule } from "./schedules.ts";
-import { readStepIo } from "./history.ts";
 import { startRun } from "./start-run.ts";
 import { getTemporal } from "./temporal.ts";
 import { type OpUse, type ValidationIssue, type ValidationResult, validateContract } from "./validate.ts";
@@ -159,7 +160,7 @@ export function engineHandlers(manifest: { companions?: Companions }) {
     if (versionPin !== null) {
       const a = store.getActivation(ctx.db, workflowId, versionPin);
       // F3: only the ACTIVE version starts runs, so a pin may name the active version only
-      if (!a || a.state !== "active") throw new EngineError("not_activated", `Version ${versionPin} of ${workflowId} is not the active version; a schedule can follow the active version or pin it.`, 409);
+      if (a?.state !== "active") throw new EngineError("not_activated", `Version ${versionPin} of ${workflowId} is not the active version; a schedule can follow the active version or pin it.`, 409);
     }
     const def = mustDefinition(ctx, workflowId, versionPin ?? act.version);
     const c: WorkflowContract = def.contract;
@@ -248,12 +249,16 @@ export function engineHandlers(manifest: { companions?: Companions }) {
         const d = mustDefinition(ctx, input.workflowId, input.version);
         const r = validate(ctx, d.contract);
         if (!r.ok) failValidation(r);
+        // M3 rule: a migrated 0.3.x workflow whose agent is the placeholder is never activated (the owner picks the agent first)
+        walkSteps(d.contract.steps, (s) => {
+          if (s.type === "ai" && "agent" in s.by && s.by.agent === UNASSIGNED_AGENT) throw new EngineError("agent_unassigned", `Step ${s.id} still names the placeholder agent. Choose the agent in the editor, save the new version and activate that.`, 422);
+        });
         // F4: a workflow step starts another workflow: the child must be ACTIVE now, and its ops are part of what the owner approves
         const uses: OpUse[] = [...r.uses];
         walkSteps(d.contract.steps, (s) => {
           if (s.type !== "workflow") return;
           const child = s.version !== undefined ? store.getActivation(ctx.db, s.workflow, s.version) : store.activeActivation(ctx.db, s.workflow);
-          if (!child || child.state !== "active") throw new EngineError("child_not_active", `The workflow ${s.workflow}${s.version !== undefined ? ` version ${s.version}` : ""} (step ${s.id}) is not active. Activate it first.`, 409);
+          if (child?.state !== "active") throw new EngineError("child_not_active", `The workflow ${s.workflow}${s.version !== undefined ? ` version ${s.version}` : ""} (step ${s.id}) is not active. Activate it first.`, 409);
           for (const u of child.uses) {
             const via = [...new Set([...(u.via ?? []), s.workflow])];
             if (!uses.some((x) => x.product === u.product && x.op === u.op && JSON.stringify(x.via ?? []) === JSON.stringify(via))) uses.push({ ...u, steps: [s.id], via });

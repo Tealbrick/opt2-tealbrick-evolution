@@ -20,6 +20,11 @@ async function freePort(): Promise<number> {
     });
   });
 }
+/** the SDK secret store, in memory */
+function memorySecrets(): { get(n: string): Promise<string | null>; put(n: string, v: string): Promise<void> } {
+  const m = new Map<string, string>();
+  return { get: async (n) => m.get(n) ?? null, put: async (n, v) => void m.set(n, v) };
+}
 const log = { debug() {}, info() {}, warn() {}, error() {} };
 async function waitFor(cond: () => boolean | Promise<boolean>, ms = 60_000): Promise<void> {
   const until = Date.now() + ms;
@@ -42,7 +47,7 @@ test("without TEMPORAL_ADDRESS the engine is off: getTemporal says not connected
     assert.equal(t.connected, false);
     assert.ok(t.client, "a client object exists so callers need no null check");
     const apps = fakeApps();
-    startEngine({ db: migratedDb(), callApp: apps.callApp, log: log as never });
+    await startEngine({ db: migratedDb(), callApp: apps.callApp, log: log as never, secrets: memorySecrets() });
     assert.deepEqual(engineState(), { worker: "disabled", lastError: null, configured: false });
     await stopEngine();
   } finally {
@@ -59,7 +64,7 @@ test("a dead address: connected is false within a few seconds, the worker keeps 
     assert.equal((await getTemporal()).connected, false);
     assert.ok(Date.now() - t0 < 6000, `probe took ${Date.now() - t0} ms`);
     const apps = fakeApps();
-    startEngine({ db: migratedDb(), callApp: apps.callApp, log: log as never });
+    await startEngine({ db: migratedDb(), callApp: apps.callApp, log: log as never, secrets: memorySecrets() });
     await new Promise((r) => setTimeout(r, 500));
     assert.equal(engineState().worker, "starting");
     const s0 = Date.now();
@@ -84,7 +89,7 @@ test("a real server: the worker comes up, a run started with startRun completes 
     const { validateContract } = await import("../../src/engine/validate.ts");
     store.saveDefinition(db, c, Date.now());
     store.activate(db, c.id, 1, validateContract(c, { companions: null }).uses, Date.now());
-    startEngine({ db, callApp: apps.callApp, log: log as never });
+    await startEngine({ db, callApp: apps.callApp, log: log as never, secrets: memorySecrets() });
     await waitFor(() => engineState().worker === "running");
     assert.equal((await getTemporal()).connected, true);
     const started = await startRun({ workflowId: "life-flow", runId: "run_life" });

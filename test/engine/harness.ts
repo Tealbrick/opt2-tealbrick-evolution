@@ -1,5 +1,7 @@
 // Test harness of the engine: a Temporal test environment, the real interpreter workflow (bundled once per test process),
 // the real activities over an in-memory app.db, and fakes for callApp / the model port / the agent port.
+
+import { randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import type { Db } from "@opt2-tealbrick/miniapp-sdk";
 import type { Client } from "@temporalio/client";
@@ -7,11 +9,12 @@ import { TestWorkflowEnvironment } from "@temporalio/testing";
 import { bundleWorkflowCode, DefaultLogger, Runtime, Worker } from "@temporalio/worker";
 import { type CallApp, createActivities } from "../../src/engine/activities.ts";
 import { currentCatalog, injectCatalog } from "../../src/engine/catalog.ts";
+import { createSealCodec, type KeyRing, keyIdOf } from "../../src/engine/codec.ts";
 import type { WorkflowContract } from "../../src/engine/contract.ts";
 import * as store from "../../src/engine/engine-store.ts";
 import type { Json } from "../../src/engine/json.ts";
 import { type RunInput, type RunResult, TASK_QUEUE } from "../../src/engine/run-types.ts";
-import { setTemporalClientForTests } from "../../src/engine/temporal.ts";
+import { dataConverter, setPayloadCodec, setTemporalClientForTests } from "../../src/engine/temporal.ts";
 import { validateContract } from "../../src/engine/validate.ts";
 import { evolutionRun } from "../../src/engine/workflow.ts";
 import { migratedDb } from "../helpers.ts";
@@ -86,17 +89,28 @@ export interface Env {
   install(c: WorkflowContract): void;
 }
 
+/** the key ring of the tests (one per process): every payload of the test servers is sealed with it, as in the app */
+const testKey = randomBytes(32);
+export const testRing: KeyRing = { current: keyIdOf(testKey), keys: { [keyIdOf(testKey)]: testKey } };
+
 export async function startEnv(opts: {
+  /** false: payloads are plain (only record-histories.ts, which records the replay fixtures) */
+  codec?: boolean;
   /** a real local dev server (schedules need it; the time-skipping server has none) */
-  local?: boolean; models?: import("../../src/engine/agent-port.ts").ModelPort; agentPort?: import("../../src/engine/agent-port.ts").AgentStepPort } = {}): Promise<Env> {
-  const env = opts.local ? await TestWorkflowEnvironment.createLocal() : await TestWorkflowEnvironment.createTimeSkipping();
+  local?: boolean;
+  /** local server only: keep its database in this file (the backup test reads it) */
+  dbFilename?: string; models?: import("../../src/engine/agent-port.ts").ModelPort; agentPort?: import("../../src/engine/agent-port.ts").AgentStepPort } = {}): Promise<Env> {
+  const sealed = opts.codec !== false;
+  setPayloadCodec(sealed ? createSealCodec(() => testRing) : null);
+  const clientOptions = sealed ? { dataConverter } : undefined;
+  const env = opts.local ? await TestWorkflowEnvironment.createLocal({ ...(clientOptions ? { client: clientOptions } : {}), ...(opts.dbFilename ? { server: { dbFilename: opts.dbFilename } } : {}) }) : await TestWorkflowEnvironment.createTimeSkipping(clientOptions ? { client: clientOptions } : {});
   setTemporalClientForTests(env.client);
   const db = migratedDb();
   const apps = fakeApps();
   apps.clock = () => env.currentTimeMs();
   const caps: string[] = [];
   const acts = createActivities({ db, callApp: apps.callApp, bridgeCaps: () => caps, log: console as never, ...(opts.models ? { models: () => opts.models as never } : {}), ...(opts.agentPort ? { agentPort: () => opts.agentPort as never } : {}) });
-  const worker = await Worker.create({ connection: env.nativeConnection, taskQueue: TASK_QUEUE, workflowBundle: await workflowBundle(), activities: acts as never });
+  const worker = await Worker.create({ connection: env.nativeConnection, taskQueue: TASK_QUEUE, workflowBundle: await workflowBundle(), activities: acts as never, ...(sealed ? { dataConverter } : {}) });
   const running = worker.run();
   const client = env.client;
   return {

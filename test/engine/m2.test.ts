@@ -196,7 +196,7 @@ test("engine_run_get returns what each step got and gave, read from the Temporal
   assert.deepEqual(find?.input, { query: "q-42" });
   assert.deepEqual(find?.output, { results: [{ title: "SECRET-BODY-777" }] });
   const sum = got.steps.find((s) => s.stepId === "sum");
-  assert.deepEqual((sum?.input as { inputs: unknown }).inputs, { found: [{ title: "SECRET-BODY-777" }] });
+  assert.deepEqual(((sum as { input: { inputs: unknown } }).input).inputs, { found: [{ title: "SECRET-BODY-777" }] });
   assert.deepEqual(sum?.output, { bullets: ["from model"] });
   assert.doesNotMatch(JSON.stringify([...t.db.prepare("SELECT * FROM engine_steps").all(), ...t.db.prepare("SELECT * FROM engine_runs").all()]), /SECRET-BODY-777|q-42/, "app.db keeps sizes only (C88)");
   // person op: an agent cannot reach it
@@ -220,11 +220,12 @@ test("engine_run_get with Temporal gone returns the index without inputs/outputs
   }
 });
 
-test("stepIoFromEvents: a value over the cap is replaced by its size; a failed attempt keeps its message; approvals show title and answer", () => {
+test("stepIoFromEvents: a value over the cap is replaced by its size; a failed attempt keeps its message; approvals show title and answer", async () => {
   const payload = (v: unknown) => ({ metadata: { encoding: new TextEncoder().encode("json/plain") }, data: new TextEncoder().encode(JSON.stringify(v)) });
   const sched = (eventId: number, type: string, args: unknown) => ({ eventId, activityTaskScheduledEventAttributes: { activityType: { name: type }, input: { payloads: [payload(args)] } } });
   const done = (scheduledEventId: number, result: unknown) => ({ eventId: scheduledEventId + 100, activityTaskCompletedEventAttributes: { scheduledEventId, result: { payloads: [payload(result)] } } });
-  const io = stepIoFromEvents([
+  const plain = async (p: { data?: Uint8Array | string | null } | undefined) => (p?.data ? (JSON.parse(Buffer.from(p.data as Uint8Array).toString("utf8")) as never) : undefined);
+  const io = await stepIoFromEvents([
     sched(1, "appStep", { stepKey: "big", input: { q: 1 } }),
     done(1, { status: "ok", output: { blob: "x".repeat(IO_CAP_BYTES + 10) } }),
     sched(2, "appStep", { stepKey: "bad", input: { q: 2 } }),
@@ -236,7 +237,7 @@ test("stepIoFromEvents: a value over the cap is replaced by its size; a failed a
     sched(5, "approvalAsk", { stepKey: "make", purpose: "on_fail", title: "failed", context: "x" }),
     sched(6, "holdCheck", { stepKey: "make" }),
     done(6, { state: "pending" }),
-  ]);
+  ], plain);
   assert.deepEqual(io.big?.input, { q: 1 });
   assert.deepEqual(io.big?.output, { truncated: true, bytes: JSON.stringify({ blob: "x".repeat(IO_CAP_BYTES + 10) }).length });
   assert.equal(io.bad?.error?.length, 300);
