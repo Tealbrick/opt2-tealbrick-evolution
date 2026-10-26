@@ -16,6 +16,7 @@ import { createHash } from "node:crypto";
 import { CronError, cronDue, nextCronTime, ulid } from "@opt2-tealbrick/manifest";
 import type { Db } from "@opt2-tealbrick/miniapp-sdk";
 import * as directory from "./directory.ts";
+import { getItem as migrationItem } from "./migrate/state.ts";
 import { diffSnapshots } from "./model.ts";
 import { getVersion, getWorkflow, StoreError, snapshotOf, type Version } from "./store.ts";
 
@@ -28,7 +29,7 @@ export type TargetMode = "bound" | "free";
  *  a due occurrence of one of the caller's own schedules, but that schedule targets the other mode (a Bound caller with a
  *  Free schedule, a Free caller with a Bound one). `agent_unavailable`: the directory says the caller is paused or removed.
  *  `paused` stays the schedule's own state. */
-export type ClaimReason = "already_claimed" | "missed" | "not_due" | "paused" | "not_bound" | "mode_mismatch" | "agent_unavailable" | "version_missing" | "policy_stale";
+export type ClaimReason = "already_claimed" | "missed" | "not_due" | "paused" | "not_bound" | "mode_mismatch" | "agent_unavailable" | "version_missing" | "policy_stale" | "migrated";
 
 export interface Automation {
   id: string;
@@ -287,7 +288,7 @@ export function settle(db: Db, a: Row, now: number): Settled {
   return { row: load(db, a.id), due: null };
 }
 
-export type WarningCode = "policy_stale" | "kanban_project_missing";
+export type WarningCode = "policy_stale" | "kanban_project_missing" | "migrated" | "legacy_bound";
 export interface AutomationWarning {
   code: WarningCode;
   message: string;
@@ -311,6 +312,18 @@ function warningsOf(db: Db, r: Row, kanbanLinked: boolean): AutomationWarning[] 
     w.push({
       code: "kanban_project_missing",
       message: "No Task Board project: run issues go to the own project of Evolving Workflows, which the Bound agent cannot see. Choose Edit and set a project that you share with the agent.",
+    });
+  // C367 M3, compatibility layer: what the move to the engine did with this schedule (src/migrate/run.ts)
+  const m = migrationItem(db, "schedule", r.id);
+  if (m?.status === "migrated")
+    w.push({
+      code: "migrated",
+      message: `Moved to the engine as schedule ${m.engineId}. This 0.3.x schedule is paused and kept only so you can go back: its agent now gets the work as workflow steps (steps_due). To go back, pause or delete the engine schedule first, then resume this one. Never run both.`,
+    });
+  if (m?.status === "legacy_bound")
+    w.push({
+      code: "legacy_bound",
+      message: "Stays on the 0.3.x runner (routines_due, routine_claim, routine_report): workflow steps go to Free agents only, and this schedule has a Bound agent. This path is deprecated and stays for one more release.",
     });
   return w;
 }
@@ -467,6 +480,8 @@ export function claim(db: Db, caller: { id: string; mode: string | null }, occur
       if (!r.due || r.missed || occurrenceOf(a.id, a.revision, r.due.getTime()) !== occurrence) continue;
       if (a.targetMode !== mode) return { claimed: false, reason: "mode_mismatch" };
       const s = { due: r.due.getTime(), next: r.nextDueAt?.getTime() ?? null };
+      // moved to the engine (C367 M3): this schedule hands out nothing any more; the agent takes the work as steps
+      if (migrationItem(db, "schedule", a.id)?.status === "migrated") return { claimed: false, reason: "migrated" };
       if (!a.enabled) return { claimed: false, reason: "paused" };
       const v = resolveVersion(db, a);
       if (!v) return { claimed: false, reason: "version_missing" };

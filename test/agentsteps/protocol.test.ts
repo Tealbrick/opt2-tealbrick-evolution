@@ -103,17 +103,48 @@ test("a paused or removed agent is offered and given nothing; resumed, it gets t
   assert.equal((await r.run<K.StepClaimOutput>("step_claim", { stepRunId: o.stepRunId })).claimed, true);
 });
 
-test("a double claim is refused: only one succeeds, the other answers already_claimed", async () => {
+test("a double claim claims once: the same agent asking again gets the same payload as a read, nobody else gets it (F8)", async () => {
   const r = rig();
   const o = await r.offer();
   const [first, second] = await Promise.all([r.run<K.StepClaimOutput>("step_claim", { stepRunId: o.stepRunId }), r.run<K.StepClaimOutput>("step_claim", { stepRunId: o.stepRunId })]);
-  assert.deepEqual([first.claimed, second.claimed].sort(), [false, true]);
-  assert.equal([first, second].find((x) => !x.claimed)?.reason, "already_claimed");
-  assert.equal([first, second].find((x) => !x.claimed)?.step, null, "the loser gets no instruction or inputs");
+  assert.deepEqual([first.claimed, second.claimed], [true, true], "a lost answer is asked again and answered again");
+  assert.deepEqual(first, second, "the same payload");
+  assert.equal(first.step?.inputs && JSON.stringify(first.step.inputs).includes("a@example.com"), true, "the inputs can still be read");
+  // at most once: one claim, one event, one heartbeat, the clock of the step did not move
   assert.equal(r.db.prepare("SELECT count(*) AS n FROM agent_step_events WHERE kind = 'claimed'").get()?.n, 1);
-  assert.equal(r.temporal.count("heartbeat"), 1, "one claim, one heartbeat");
-  // later, too
-  assert.equal((await r.run<K.StepClaimOutput>("step_claim", { stepRunId: o.stepRunId })).reason, "already_claimed");
+  assert.equal(r.temporal.count("heartbeat"), 1, "the replay tells Temporal nothing");
+  const before = steps.getRow(r.db, o.stepRunId);
+  r.clock.t += 30_000;
+  const again = await r.run<K.StepClaimOutput>("step_claim", { stepRunId: o.stepRunId });
+  assert.deepEqual(again, first);
+  const after = steps.getRow(r.db, o.stepRunId);
+  assert.deepEqual([after?.status, after?.claimedAt, after?.heartbeatAt, after?.updatedAt], [before?.status, before?.claimedAt, before?.heartbeatAt, before?.updatedAt], "a read changes no state");
+  // another agent, a Bound caller and the wrong mode get nothing, and learn nothing
+  for (const who of [FREE_B, BOUND_C]) {
+    const c = await r.run<K.StepClaimOutput>("step_claim", { stepRunId: o.stepRunId }, who);
+    assert.deepEqual([c.claimed, c.reason, c.step], [false, "not_found", null]);
+  }
+  const rebound = await r.run<K.StepClaimOutput>("step_claim", { stepRunId: o.stepRunId }, { ...FREE_A, mode: "bound" });
+  assert.deepEqual([rebound.claimed, rebound.reason], [false, "mode_mismatch"]);
+});
+
+test("the replay stops where the step stops: an ended, timed out or cancelled step is not served again, nor to a paused agent", async () => {
+  const r = rig();
+  const done = await r.offer();
+  await r.run("step_claim", { stepRunId: done.stepRunId });
+  await r.run("step_report", { stepRunId: done.stepRunId, status: "completed", output: GOOD_OUTPUT });
+  assert.equal((await r.run<K.StepClaimOutput>("step_claim", { stepRunId: done.stepRunId })).reason, "finished");
+  const late = await r.offer();
+  await r.run("step_claim", { stepRunId: late.stepRunId });
+  directory.recordAgent(r.db, { id: FREE_A.id as `agt_${string}`, name: FREE_A.name, mode: "free", status: "paused" }, T0);
+  assert.equal((await r.run<K.StepClaimOutput>("step_claim", { stepRunId: late.stepRunId })).reason, "agent_unavailable");
+  directory.recordAgent(r.db, { id: FREE_A.id as `agt_${string}`, name: FREE_A.name, mode: "free", status: "active" }, T0);
+  r.clock.t += 181_000;
+  assert.equal((await r.run<K.StepClaimOutput>("step_claim", { stepRunId: late.stepRunId })).reason, "timed_out");
+  const gone = await r.offer();
+  await r.run("step_claim", { stepRunId: gone.stepRunId });
+  await r.port.cancel(gone.stepRunId);
+  assert.equal((await r.run<K.StepClaimOutput>("step_claim", { stepRunId: gone.stepRunId })).reason, "cancelled");
 });
 
 test("a report with output that breaks the schema is 422 with a pointer; the step stays claimed and can be reported again", async () => {

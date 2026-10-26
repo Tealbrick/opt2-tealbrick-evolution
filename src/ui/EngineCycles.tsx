@@ -4,6 +4,7 @@
 import { Button, Notice, type Status, Table, Tag } from "@opt2-tealbrick/ui";
 import { useCallback, useEffect, useState } from "react";
 import { type EngineRun, type EngineRunStatus, engine } from "./engine-ops.ts";
+import { useMigration } from "./Migration.tsx";
 import { errorText, type Out } from "./ops.ts";
 
 type Cycle = Out<"cycles_list">["cycles"][number];
@@ -21,7 +22,8 @@ const FAILED = new Set<EngineRunStatus>(["failed", "timed_out"]);
 const OPEN = new Set<EngineRunStatus>(["running"]);
 
 /** Engine runs and legacy cycle counts per workflow version, newest workflow version first. Pure: the page and the tests use it. */
-export function sideBySide(runs: readonly EngineRun[], cycles: readonly Cycle[]): Side[] {
+/** `legacyOf`: the 0.3.x workflow an engine workflow came from (C367 M3), so the runs of the moved workflow join its legacy runs in one row. */
+export function sideBySide(runs: readonly EngineRun[], cycles: readonly Cycle[], legacyOf: (engineWorkflowId: string) => string | null = () => null): Side[] {
   const rows = new Map<string, Side>();
   const titles = new Map(cycles.map((c) => [c.workflowId, c.workflowTitle]));
   const row = (workflowId: string, workflowTitle: string, version: number): Side => {
@@ -41,7 +43,8 @@ export function sideBySide(runs: readonly EngineRun[], cycles: readonly Cycle[])
   // newest first, so the first ten seen per version are its last ten
   for (const run of [...runs].sort((a, b) => Date.parse(b.startedAt) - Date.parse(a.startedAt))) {
     // a run whose version the index does not know sits under version 0 (shown as a dash)
-    const e = row(run.workflowId, titles.get(run.workflowId) ?? run.workflowId, run.version ?? 0).engine;
+    const wf = legacyOf(run.workflowId) ?? run.workflowId;
+    const e = row(wf, titles.get(wf) ?? wf, run.version ?? 0).engine;
     e.total++;
     if (run.status === "completed") e.completed++;
     if (FAILED.has(run.status)) e.failed++;
@@ -66,6 +69,7 @@ const pct = (n: number, of: number): string => (of === 0 ? "–" : `${Math.round
 export function EngineCycles({ cycles }: { cycles: readonly Cycle[] }) {
   const [runs, setRuns] = useState<EngineRun[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const migration = useMigration();
   const load = useCallback(async () => {
     try {
       setRuns((await engine("engine_runs_list", { limit: 200 })).runs);
@@ -78,7 +82,7 @@ export function EngineCycles({ cycles }: { cycles: readonly Cycle[] }) {
     void load();
   }, [load]);
   // only versions the engine has run: a legacy-only version is already a row of the cycle table above
-  const rows = runs ? sideBySide(runs, cycles).filter((r) => r.engine.total > 0) : [];
+  const rows = runs ? sideBySide(runs, cycles, migration.legacyWorkflowOf).filter((r) => r.engine.total > 0) : [];
   return (
     <section className="tb-stack" aria-label="Engine runs next to legacy runs">
       <h2 className="tb-h2">Engine runs and legacy runs</h2>

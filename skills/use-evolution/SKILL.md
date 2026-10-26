@@ -35,6 +35,7 @@ description: When and how to suggest a workflow for repeated work, and how a Bou
 ## If you are a Free agent with a schedule
 - An owner can schedule a workflow for you without a recipe (R1a). You get and claim only runs of schedules that name you, with the same runner and the same three operations. You cannot see or claim another agent's runs.
 - You run with your own access. The operation list in `evolution__workflow_get` is guidance, not a limit: stay inside it. Its notice says: "Runs with <your name>'s own access. The operation list is guidance until per-run narrowing (C288 R2–R4)."
+- If the owner's setup moved your schedule to the engine (C367), `evolution__routines_due` gives you nothing and a claim answers `migrated`: take the work as workflow steps (`evolution__steps_due`, see below). A Bound agent keeps `routines_due`.
 - A claim can answer `mode_mismatch` (the schedule is for the other agent mode), `not_bound` (you have no Free schedule) or `agent_unavailable` (you are paused or removed). Do not retry; tell the owner.
 
 ## If you are offered a workflow step (Free agent)

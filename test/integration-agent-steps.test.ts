@@ -103,7 +103,8 @@ test("quiet: the agent claims the offered step, reports a valid output, and the 
   assert.deepEqual(claim.step?.inputs, { company: "Acme" });
   assert.deepEqual(claim.step?.outputSchema, SCHEMA);
   assert.equal(claim.step?.heartbeatSec, 0, "the contract asked for no heartbeat");
-  assert.equal((await op<K.StepClaimOutput>("step_claim", { stepRunId })).claimed, false, "at most once");
+  // F8: the same agent asking again (a lost answer) gets the same payload as a read; it is still ONE claim
+  assert.deepEqual(await op<K.StepClaimOutput>("step_claim", { stepRunId }), claim, "a lost answer is answered again");
 
   const report = await op<K.StepReportOutput>("step_report", { stepRunId, status: "completed", output: { bullets: ["one", "two"] }, summary: "two bullets" });
   assert.equal(report.status, "completed");

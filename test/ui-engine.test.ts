@@ -820,6 +820,7 @@ describe("Runs and run detail", () => {
     assert.match(block, /evolution__step_claim/);
     assert.match(block, /evolution__step_report/);
     assert.match(block, /"id": "stepRunId"/);
+    assert.match(block, /cannot claim or report steps with this configuration/, "the known gap of the CLI is said, not hidden");
     await m.unmount();
   });
 
@@ -954,5 +955,81 @@ describe("Cycles: engine runs next to legacy runs", () => {
     assert.match(text(m.host), /No engine runs yet/);
     assert.equal(m.host.querySelector("table"), null, "the legacy-only version is a row of the table above, not of this one");
     await m.unmount();
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+describe("Migrated from 0.3 (C367 M3)", () => {
+  const LEGACY = "wfl_01HZX3K8Q2V4N6P8R0S2T4V6W8";
+  const ENGINE = "wfl-01hzx3k8q2v4n6p8r0s2t4v6w8";
+  const counts = { workflowsMigrated: 1, workflowsFailed: 0, schedulesMigrated: 1, schedulesLegacyBound: 0, schedulesSkipped: 0, schedulesFailed: 0, deferred: 0 };
+  const migration = () => ({
+    done: true,
+    doneAt: "2026-10-26T10:00:00.000Z",
+    counts,
+    items: [
+      { kind: "workflow", legacyId: LEGACY, engineId: ENGINE, status: "migrated", reason: null, versions: 3 },
+      { kind: "schedule", legacyId: "aut_1", engineId: "sch_moved", status: "migrated", reason: null, versions: null },
+    ],
+  });
+  const sched = (id: string) => ({
+    id,
+    workflowId: ENGINE,
+    versionPin: 3,
+    kind: "schedule",
+    cron: "0 7 * * *",
+    every: null,
+    timezone: "UTC",
+    input: {},
+    poll: null,
+    overlap: "skip",
+    paused: false,
+    revision: 1,
+    cursor: null,
+    cursorAt: null,
+    temporalState: "synced",
+    temporalError: null,
+    createdAt: "2026-10-26T10:00:00.000Z",
+    updatedAt: "2026-10-26T10:00:00.000Z",
+    live: { state: "ok", paused: false, nextRunAt: "2026-10-27T07:00:00.000Z", lastRunAt: null, lastRunWorkflowId: null, runningCount: 0, timezone: "UTC", note: null },
+  });
+
+  it("an engine schedule that a 0.3.x schedule became has the badge; one the owner made has none", async () => {
+    reset();
+    stub.handlers.migration_status = migration;
+    stub.handlers.schedules_list = () => ({ schedules: [sched("sch_moved"), sched("sch_own")], temporalConnected: true });
+    stub.handlers.workflow_contracts_list = () => ({ contracts: [{ workflowId: ENGINE, version: 3, title: "Daily rollup", createdAt: "2026-10-26T04:00:00.000Z", state: "active" }] });
+    const m = await mount(h(schedules.EngineSchedules, {}));
+    const cards = [...m.host.querySelectorAll("article")].map((a) => text(a));
+    assert.equal(cards.length, 2);
+    assert.match(cards[0] ?? "", /Migrated from 0\.3/);
+    assert.doesNotMatch(cards[1] ?? "", /Migrated from 0\.3/);
+    await m.unmount();
+  });
+
+  it("the engine runs of a moved workflow join the legacy runs of the old workflow in Cycles", async () => {
+    reset();
+    stub.handlers.migration_status = migration;
+    stub.handlers.engine_runs_list = () => ({
+      runs: [
+        { workflowId: ENGINE, runId: "r1", version: 3, status: "completed", startedAt: "2026-10-26T12:00:00.000Z", modelTokens: 0 },
+        { workflowId: "other-flow", runId: "r2", version: 1, status: "completed", startedAt: "2026-10-26T11:00:00.000Z", modelTokens: 0 },
+      ],
+    });
+    const m = await mount(h(cycles.EngineCycles, { cycles: [{ workflowId: LEGACY, workflowTitle: "Daily rollup", version: 3, counts: { total: 6, completed: 4 } }] as never }));
+    const rows = [...m.host.querySelectorAll("tbody tr")].map((r) => text(r));
+    assert.equal(rows.length, 2);
+    assert.match(rows[0] ?? "", /^Daily rollup v3 6 \(67% completed\) 1 100%/, "one row: the 0.3.x runs and the engine run of the same version");
+    assert.match(rows[1] ?? "", /^other-flow v1 /);
+    await m.unmount();
+  });
+
+  it("sideBySide takes the alias: without it the moved workflow is two rows, with it one", () => {
+    const runs = [{ workflowId: ENGINE, runId: "r1", version: 3, status: "completed", startedAt: "2026-10-26T12:00:00Z", modelTokens: 0 }];
+    const legacy = [{ workflowId: LEGACY, workflowTitle: "Daily rollup", version: 3, counts: { total: 6, completed: 4 } }];
+    assert.equal(cycles.sideBySide(runs as never, legacy as never).length, 2);
+    const one = cycles.sideBySide(runs as never, legacy as never, (id) => (id === ENGINE ? LEGACY : null));
+    assert.equal(one.length, 1);
+    assert.deepEqual([one[0]?.legacy.total, one[0]?.engine.total], [6, 1]);
   });
 });

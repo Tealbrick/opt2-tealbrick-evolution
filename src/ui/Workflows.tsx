@@ -3,6 +3,7 @@ import { HARNESS_OPTION_IDS, type HarnessOptionId } from "@opt2-tealbrick/spec/r
 import { AppIcon, appArt, appName, Button, CopyBlock, EmptyState, Field, Ink, Notice, Select, Tag, TextInput } from "@opt2-tealbrick/ui";
 import { Fragment, useCallback, useEffect, useState } from "react";
 import { widens } from "./DraftBase.tsx";
+import { MigratedBadge, type Migration, MigrationSummary, useMigration } from "./Migration.tsx";
 import { ALLOWLIST_TEXT, day, errorText, type Out, person } from "./ops.ts";
 import { downloadJson, importedFrom } from "./Pipeline.tsx";
 
@@ -36,6 +37,7 @@ export function Workflows({ openId, stills }: { openId: string | null; stills: s
   }, []);
   useEffect(load, [load]);
   useEffect(() => setSelected(openId), [openId]);
+  const migration = useMigration();
   const current = selected ?? rows?.[0]?.id ?? null;
   return (
     <section className="app-page" aria-label="Workflows">
@@ -55,6 +57,7 @@ export function Workflows({ openId, stills }: { openId: string | null; stills: s
           </span>
         </Notice>
       ) : null}
+      <MigrationSummary migration={migration} titleOf={(legacyId, kind) => (kind === "workflow" ? (rows?.find((w) => w.id === legacyId)?.title ?? legacyId) : legacyId)} />
       {rows === null ? (
         error ? null : (
           <p className="tb-soft" role="status">
@@ -69,18 +72,21 @@ export function Workflows({ openId, stills }: { openId: string | null; stills: s
             {rows.map((w) => (
               <button type="button" key={w.id} className="pane-item tb-focusable" aria-current={current === w.id ? "true" : undefined} onClick={() => setSelected(w.id)}>
                 <Ink>{w.title}</Ink>
-                <Tag status="live">{`v${w.activeVersion}`}</Tag>
+                <span className="tb-row">
+                  {migration.engineWorkflowOf(w.id) ? <MigratedBadge /> : null}
+                  <Tag status="live">{`v${w.activeVersion}`}</Tag>
+                </span>
               </button>
             ))}
           </nav>
-          {current ? <Detail key={current} id={current} stills={stills} /> : null}
+          {current ? <Detail key={current} id={current} stills={stills} migration={migration} /> : null}
         </div>
       )}
     </section>
   );
 }
 
-function Detail({ id, stills }: { id: string; stills: string }) {
+function Detail({ id, stills, migration }: { id: string; stills: string; migration: Migration }) {
   const [data, setData] = useState<Out<"workflow_versions"> | null>(null);
   const [shown, setShown] = useState<number>(0);
   const [from, setFrom] = useState(1);
@@ -165,6 +171,7 @@ function Detail({ id, stills }: { id: string; stills: string }) {
     <article className="tb-card detail">
       <div className="detail-head">
         <h2>{data.workflow.title}</h2>
+        {migration.engineWorkflowOf(id) ? <MigratedBadge title={`Moved to the engine as ${migration.engineWorkflowOf(id)}. Its versions are in the Editor and under Activation.`} /> : null}
         <Field label="Version">
           <Select value={String(v.version)} onValueChange={(x) => setShown(Number(x))} options={options} />
         </Field>

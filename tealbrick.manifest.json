@@ -929,7 +929,7 @@
     {
       "id": "routines_due",
       "title": "Due workflow runs",
-      "description": "For a Bound or a Free agent: the scheduled runs due now on the schedules that name you and target your own mode (a Bound agent gets Bound schedules, a Free agent gets Free ones). A paused or removed agent gets none. Reading claims nothing (it only records runs whose due time passed the misfire grace as missed); claim a run with routine_claim before you start it. Your `tealbrick agent serve` routines mode calls this for you.",
+      "description": "For a Bound or a Free agent: the scheduled runs due now on the schedules that name you and target your own mode (a Bound agent gets Bound schedules, a Free agent gets Free ones). A paused or removed agent gets none. Reading claims nothing (it only records runs whose due time passed the misfire grace as missed); claim a run with routine_claim before you start it. Your `tealbrick agent serve` routines mode calls this for you. A schedule that moved to the engine gives nothing here: use steps_due. Deprecated; it stays for one release for Bound agents.",
       "input": {
         "type": "object",
         "additionalProperties": false,
@@ -991,7 +991,7 @@
     {
       "id": "routine_claim",
       "title": "Claim a due run",
-      "description": "Claim one due run by its occurrence. At most one claim per occurrence ever succeeds; a run that was claimed, missed or is not due answers claimed false with a reason. You can claim only an occurrence of your own schedule of your own mode: mode_mismatch (the schedule targets the other mode), agent_unavailable (you are paused or removed), not_bound (not an agent, or a Free agent with no Free schedule). The answer carries the reviewed workflow (instruction, steps, allowed operations).",
+      "description": "Claim one due run by its occurrence. At most one claim per occurrence ever succeeds; a run that was claimed, missed or is not due answers claimed false with a reason. You can claim only an occurrence of your own schedule of your own mode: mode_mismatch (the schedule targets the other mode), agent_unavailable (you are paused or removed), not_bound (not an agent, or a Free agent with no Free schedule). The answer carries the reviewed workflow (instruction, steps, allowed operations). migrated: the schedule moved to the engine (C367 M3); its agent takes the work as workflow steps (steps_due, step_claim, step_report). This path is deprecated and stays for one release.",
       "input": {
         "type": "object",
         "additionalProperties": false,
@@ -1032,7 +1032,8 @@
                   "mode_mismatch",
                   "agent_unavailable",
                   "version_missing",
-                  "policy_stale"
+                  "policy_stale",
+                  "migrated"
                 ]
               },
               {
@@ -1487,7 +1488,7 @@
     {
       "id": "step_claim",
       "title": "Claim a workflow step",
-      "description": "Claim one offered step by its stepRunId. At most one claim per step attempt ever succeeds; a step that is claimed, ended, timed out, cancelled, not yours or not for your mode answers claimed false with a reason (already_claimed, finished, timed_out, cancelled, not_found, mode_mismatch, agent_unavailable). The answer carries the instruction, the typed inputs, the outputSchema your answer must match, an allowedHint (guidance only: you act with your own access), the deadline and heartbeatSec. It says mode content: return the output only, do not act. The step is not a task to carry out; the engine runs every action itself. The claim takes no idempotency key on purpose: the SDK would keep a copy of the answer, and the inputs can hold data of other apps. A claim whose answer was lost is not repeated; the step times out and the engine offers it again.",
+      "description": "Claim one offered step by its stepRunId. At most one agent ever claims a step attempt, once; the same agent asking again for a step it claimed (its answer was lost) gets the same answer again, as a read that changes nothing; a step that is claimed, ended, timed out, cancelled, not yours or not for your mode answers claimed false with a reason (already_claimed, finished, timed_out, cancelled, not_found, mode_mismatch, agent_unavailable). The answer carries the instruction, the typed inputs, the outputSchema your answer must match, an allowedHint (guidance only: you act with your own access), the deadline and heartbeatSec. It says mode content: return the output only, do not act. The step is not a task to carry out; the engine runs every action itself. The claim takes no idempotency key on purpose: the SDK would keep a copy of the answer, and the inputs can hold data of other apps. That is why a lost answer is safe to ask again.",
       "input": {
         "type": "object",
         "additionalProperties": false,
@@ -2048,6 +2049,152 @@
                       }
                     }
                   }
+                }
+              }
+            }
+          }
+        }
+      },
+      "crud": [
+        "read"
+      ],
+      "effect": "read",
+      "idempotency": "none",
+      "receipt": false,
+      "audience": "person"
+    },
+    {
+      "id": "migration_status",
+      "title": "Move from 0.3.x",
+      "description": "What the one-time move of 0.3.x workflows to the engine did: how many workflows and schedules moved, how many stayed on the 0.3.x runner because their agent is Bound (legacy_bound), how many were skipped or failed and why, and what waits for the engine (deferred). Each item names the engine workflow or schedule it became. Owner only.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      },
+      "output": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "done",
+          "doneAt",
+          "counts",
+          "items"
+        ],
+        "properties": {
+          "done": {
+            "type": "boolean"
+          },
+          "doneAt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "counts": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "workflowsMigrated",
+              "workflowsFailed",
+              "schedulesMigrated",
+              "schedulesLegacyBound",
+              "schedulesSkipped",
+              "schedulesFailed",
+              "deferred"
+            ],
+            "properties": {
+              "workflowsMigrated": {
+                "type": "integer"
+              },
+              "workflowsFailed": {
+                "type": "integer"
+              },
+              "schedulesMigrated": {
+                "type": "integer"
+              },
+              "schedulesLegacyBound": {
+                "type": "integer"
+              },
+              "schedulesSkipped": {
+                "type": "integer"
+              },
+              "schedulesFailed": {
+                "type": "integer"
+              },
+              "deferred": {
+                "type": "integer"
+              }
+            }
+          },
+          "items": {
+            "type": "array",
+            "maxItems": 1000,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "kind",
+                "legacyId",
+                "engineId",
+                "status",
+                "reason",
+                "versions"
+              ],
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "workflow",
+                    "schedule"
+                  ]
+                },
+                "legacyId": {
+                  "type": "string"
+                },
+                "engineId": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "migrated",
+                    "legacy_bound",
+                    "skipped",
+                    "failed",
+                    "deferred"
+                  ]
+                },
+                "reason": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "versions": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
                 }
               }
             }
@@ -5811,7 +5958,9 @@
                   "type": "string",
                   "enum": [
                     "policy_stale",
-                    "kanban_project_missing"
+                    "kanban_project_missing",
+                    "migrated",
+                    "legacy_bound"
                   ]
                 },
                 "message": {
@@ -5974,7 +6123,9 @@
                   "type": "string",
                   "enum": [
                     "policy_stale",
-                    "kanban_project_missing"
+                    "kanban_project_missing",
+                    "migrated",
+                    "legacy_bound"
                   ]
                 },
                 "message": {
@@ -6178,7 +6329,9 @@
                         "type": "string",
                         "enum": [
                           "policy_stale",
-                          "kanban_project_missing"
+                          "kanban_project_missing",
+                          "migrated",
+                          "legacy_bound"
                         ]
                       },
                       "message": {
