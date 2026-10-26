@@ -118,6 +118,9 @@ globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) =>
   if (op === "automations_list") return json(200, { status: "ok", output: { automations: stub.automations, kanbanLinked: false } });
   if (op === "runs_list") return json(200, { status: "ok", output: { runs: [] } });
   if (op === "cycles_list") return json(200, { status: "ok", output: { cycles: stub.cycles } });
+  // the engine sections of Schedules and Cycles (C367 WP3): no engine data here; test/ui-engine.test.ts covers them
+  if (op === "engine_runs_list") return json(200, { status: "ok", output: { runs: [] } });
+  if (op === "schedules_list") return json(200, { status: "ok", output: { schedules: [] } });
   if (op === "cycle_get") {
     const { workflowId, version } = body.input as { workflowId: string; version: number };
     return json(200, { status: "ok", output: { cycle: stub.cycles.find((c) => c.workflowId === workflowId && c.version === version), evals: [], lessons: stub.lessons } });

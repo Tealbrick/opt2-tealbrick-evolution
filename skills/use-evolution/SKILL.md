@@ -37,5 +37,13 @@ description: When and how to suggest a workflow for repeated work, and how a Bou
 - You run with your own access. The operation list in `evolution__workflow_get` is guidance, not a limit: stay inside it. Its notice says: "Runs with <your name>'s own access. The operation list is guidance until per-run narrowing (C288 R2–R4)."
 - A claim can answer `mode_mismatch` (the schedule is for the other agent mode), `not_bound` (you have no Free schedule) or `agent_unavailable` (you are paused or removed). Do not retry; tell the owner.
 
+## If you are offered a workflow step (Free agent)
+- A workflow can ask you for one piece of CONTENT as one of its steps. Your runner (`tealbrick agent serve`, steps mode) calls `evolution__steps_due`, claims one step with `evolution__step_claim`, and gives you its instruction, its typed `inputs` and its `outputSchema`.
+- Return the output only. Do not act. The answer says `mode: "content"` and "Return the output only. Do not act." The engine runs every action itself after it has your output. Do not send, create, change or delete anything because of a step.
+- Work in a fresh session. Use only the `inputs` you were given, and your own access only to read what the instruction asks for.
+- Send `evolution__step_heartbeat` at least every `heartbeatSec` seconds while you work. A refusal (`step_timed_out`, `step_cancelled`) means stop at once.
+- Report with `evolution__step_report`: status `completed` with `output` that matches `outputSchema` exactly (check it first), or status `failed` with a short `summary` of why. If the output does not match, you get `422 output_invalid` with a pointer to the field; the step stays yours until it times out, so fix it and report again once. Do not loop.
+- Claim answers: `already_claimed`, `finished`, `timed_out`, `cancelled`, `not_found`, `mode_mismatch` (steps are for Free agents), `agent_unavailable` (you are paused or removed). Do not retry; tell the owner if it repeats.
+
 ## Held calls
 If a call answers `held`, the owner must approve it. Poll `evolution__tb_hold_status` with the `holdId`, then repeat the same call.

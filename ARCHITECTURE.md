@@ -38,8 +38,9 @@ Run semantics: the primary key of `routine_runs` is the occurrence (sha256 of au
 
 ## Operations (from `tealbrick.manifest.json`)
 
-32 operations.
-- Agent write: `suggestion_create` (idempotency required), `routine_claim`, `routine_report`. Agent read: `suggestions_list`, `suggestion_get`, `workflow_get`, `routines_due`.
+37 operations (the engine line adds the owner ops of WP2 on top).
+- Agent write: `suggestion_create` (idempotency required), `routine_claim`, `routine_report`, `step_claim`, `step_report` (C367 WP3), `step_heartbeat`. Agent read: `suggestions_list`, `suggestion_get`, `workflow_get`, `routines_due`, `steps_due`.
+- Person read (agent steps): `agent_steps_list`.
 - Person read (15): `review_suggestions`, `review_suggestion`, `detector_status`, `templates_list`, `drafts_list`, `draft_get`, `workflows_list`, `workflow_versions`, `workflow_diff`, `recipe_export`, `automations_list`, `runs_list`, `cycles_list`, `cycle_get`, `pipeline_export`.
 - Person write (9): `suggestion_decide`, `detector_scan`, `draft_create`, `draft_update`, `workflow_promote`, `automation_set`, `automation_pause`, `cycle_eval_run` (idempotency required), `pipeline_import` (idempotency required). Person destructive (held): `automation_delete`.
 
@@ -64,9 +65,20 @@ None. No keys. Default agent harness choice in the UI is "Other agent (MCP)".
 - **Background:** The Kanban detector: first scan 60 s after start, then every 15 minutes (`DETECTOR_REFRESH_MS`), and on demand.
 - **CI evals (T1):** `eval/run.ts` (`tealbrick-ci.json` `preReleaseChecks`): the detector corpus (every case must match; in the 3 known-miss cases only missing gold groups are tolerated, a full match fails; precision and recall 1.0, the measured baseline) and the cycle gate corpus, synthetic fixtures only, no model.
 
+## Agent steps (C367 WP3)
+
+An `ai` step with `by: {agent}` runs as an async Temporal activity (ENGINE-BUILD §5). `src/agentsteps/` is the app side:
+
+- **Port.** The engine's activity calls `AgentStepPort.offer` with the step, the typed inputs, the output schema, the timeouts and the base64 task token, then ends with `CompleteAsyncError`. `offer` stores the step for one Free agent (`agent_not_free` otherwise) and is idempotent per attempt; a higher attempt re-offers the same `stepRunId` (Temporal retry). `cancel` ends an open step.
+- **Ops.** `steps_due`, `step_claim`, `step_heartbeat`, `step_report` for the agent (`src/agentsteps/ops.ts`), `agent_steps_list` for the owner. R1a rules (agent = caller, mode = caller mode, available in the directory) as in `src/routines.ts`. The claim is one conditional `UPDATE ... WHERE status = 'offered'`: at most once.
+- **Completion.** `step_report` validates the output with the JSON Schema validator of `@opt2-tealbrick/manifest`, then calls `activity.complete(taskToken, output)`; `failed` calls `activity.fail`; `step_heartbeat` and the claim call `activity.heartbeat`. Errors are sorted by name: `ActivityNotFoundError` (Temporal no longer has it: the step becomes `timed_out`), `ActivityCancelledError` (`cancelled`), anything else is `503 engine_unavailable` and changes nothing. No `@temporalio` package is imported: the engine gives a client with the three calls (`ActivityCompletion`).
+- **Time.** Deadline = offered + `timeoutSec`; the heartbeat window = 3 x `heartbeatSec` from the claim or the last heartbeat. `sweep` ends expired steps as `timed_out` (it runs in every agent op and in the owner list). Temporal wins: a step that Temporal ended is ended here on the next contact.
+- **Data.** `agent_step_runs` keeps the open step's inputs, then NULL; the output body is never stored (size and sha256 only); `agent_step_events` has one row per offered, claimed, completed, failed, timed_out and cancelled, per attempt.
+- **Gap, stated:** the agent acts with its own grant during its turn, so "content only" is the instruction and the engine's check, not a hard limit until the C288 run token.
+
 ## Person UI
 
-Suggestions, Drafts, Workflows, Schedules, Cycles, Holds, Agents and scopes (`src/ui/App.tsx`). The largest UI of the small apps.
+Suggestions, Drafts, Workflows, Editor, Activation, Schedules, Runs, Cycles, Holds, Agents and scopes (`src/ui/App.tsx`). The largest UI of the small apps. The engine pages (C367 WP3): `Editor.tsx` with `StepForms.tsx` (a form per step kind), `Shape.tsx` (the canonical shape in six lanes), `Usage.tsx` (the check results and the operations a version uses, with the honest grant label), `Activation.tsx`, `EngineSchedules.tsx` (inside Schedules), `Runs.tsx` (list, step timeline, agent-step history) and `EngineCycles.tsx` (inside Cycles). `engine-ops.ts` (typed stubs of WP2's ops) and `engine-contract.ts` (a copy of the contract types and `validateContract()`) are TEMP until WP2's PR lands.
 
 ## Requirements and runtime hints
 
