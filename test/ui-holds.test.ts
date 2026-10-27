@@ -484,7 +484,7 @@ describe("Schedules: a Free agent as the target (C364a R1a)", () => {
     reset([]);
     stub.workflows = [{ id: "wfl_01HZX3K8Q2V4N6P8R0S2T4V6W8", title: "Morning rollup", activeVersion: 1 }];
     const m = await mount(h(sched.Schedules, { agents: agents as never, agentsLoading: false }));
-    await click(button(m.host, "New schedule"));
+    await click(button(m.host, "New agent schedule"));
     await flush();
     const options = () => [...document.querySelectorAll('li[role="option"]')].map((o) => o.textContent ?? "");
     const pick = (label: string) => act(async () => ([...document.querySelectorAll('li[role="option"]')].find((o) => o.textContent === label) as HTMLElement).click());

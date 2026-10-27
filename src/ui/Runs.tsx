@@ -52,7 +52,7 @@ const FILTERS: { id: Filter; label: string; has: (s: EngineRunStatus) => boolean
   { id: "done", label: "Completed", has: (s) => s === "completed" },
 ];
 
-export function Runs({ agents, openId, holdHref }: { agents: UseAgents["agents"]; openId?: string | null; holdHref: (holdId: string) => string }) {
+export function Runs({ agents, openId, holdHref, onActivation }: { agents: UseAgents["agents"]; openId?: string | null; holdHref: (holdId: string) => string; onActivation?: () => void }) {
   const [runs, setRuns] = useState<EngineRun[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<Filter>("all");
@@ -76,6 +76,13 @@ export function Runs({ agents, openId, holdHref }: { agents: UseAgents["agents"]
   useEffect(() => {
     if (openId) setOpen(openId);
   }, [openId]);
+  // a run that is still running changes: keep the list current while one is shown as running
+  const anyRunning = (runs ?? []).some((r) => r.status === "running");
+  useEffect(() => {
+    if (!anyRunning) return;
+    const t = setInterval(() => void load(), 15_000);
+    return () => clearInterval(t);
+  }, [anyRunning, load]);
   const accepts = FILTERS.find((f) => f.id === filter)?.has ?? (() => true);
   const shown = (runs ?? []).filter((r) => accepts(r.status));
   const current = open ?? shown[0]?.runId ?? null;
@@ -105,8 +112,17 @@ export function Runs({ agents, openId, holdHref }: { agents: UseAgents["agents"]
             Loading runs.
           </p>
         )
-      ) : runs.length === 0 ? (
-        <EmptyState title="No runs yet.">Use Run now on an engine schedule, or wait for a trigger.</EmptyState>
+      ) : runs.length === 0 && !open ? (
+        <EmptyState title="No runs yet.">
+          Activate a workflow and use Run now on the Activation page, or create a schedule; its runs show here.
+          {onActivation ? (
+            <div>
+              <Button variant="primary" onClick={onActivation}>
+                Go to Activation
+              </Button>
+            </div>
+          ) : null}
+        </EmptyState>
       ) : (
         <>
           <ChipGroup label="Show runs">
@@ -131,7 +147,7 @@ export function Runs({ agents, openId, holdHref }: { agents: UseAgents["agents"]
                 </button>
               ))}
             </nav>
-            {current ? <RunDetail key={current} runId={current} title={currentRun ? titles.get(currentRun.workflowId) : undefined} migrated={currentRun ? migration.legacyWorkflowOf(currentRun.workflowId) !== null : false} agents={agents} holdHref={holdHref} /> : <p className="tb-soft">Choose a run.</p>}
+            {current ? <RunDetail key={current} runId={current} title={currentRun ? titles.get(currentRun.workflowId) : undefined} migrated={currentRun ? migration.legacyWorkflowOf(currentRun.workflowId) !== null : false} agents={agents} holdHref={holdHref} fresh={current === openId} /> : <p className="tb-soft">Choose a run.</p>}
           </div>
         </>
       )}
@@ -155,16 +171,28 @@ export function Runs({ agents, openId, holdHref }: { agents: UseAgents["agents"]
 
 const nameOf = (agents: UseAgents["agents"], id: string | null): string => (id ? (agents.find((a) => a.id === id)?.name ?? id) : "an agent");
 
-export function RunDetail({ runId, title, migrated = false, agents, holdHref }: { runId: string; title?: string; migrated?: boolean; agents: UseAgents["agents"]; holdHref: (holdId: string) => string }) {
+/** `fresh`: the run was started a moment ago (Run now), so a missing index row means "starting", not "gone". */
+export function RunDetail({ runId, title, migrated = false, agents, holdHref, fresh = false }: { runId: string; title?: string; migrated?: boolean; agents: UseAgents["agents"]; holdHref: (holdId: string) => string; fresh?: boolean }) {
   const [data, setData] = useState<{ run: EngineRun; steps: EngineRunStep[]; outputs: Record<string, unknown> | null } | null>(null);
   const [agentSteps, setAgentSteps] = useState<AgentStep[]>([]);
   const [agentError, setAgentError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [starting, setStarting] = useState(0);
   const load = useCallback(async () => {
     try {
       setData(await engine("engine_run_get", { runId }));
       setError(null);
+      setStarting(0);
     } catch (e) {
+      // a run started a moment ago is in the index once its first activity ran: ask again a few times before saying it is missing
+      if (fresh && (e as { code?: unknown } | null)?.code === "not_found") {
+        setStarting((n) => {
+          if (n < 10) return n + 1;
+          setError(`The run could not be loaded. ${errorText(e)}`);
+          return n;
+        });
+        return;
+      }
       setError(`The run could not be loaded. ${errorText(e)}`);
     }
     try {
@@ -173,10 +201,15 @@ export function RunDetail({ runId, title, migrated = false, agents, holdHref }: 
     } catch (e) {
       setAgentError(`The agent steps of this run could not be loaded. ${errorText(e)}`);
     }
-  }, [runId]);
+  }, [runId, fresh]);
   useEffect(() => {
     void load();
   }, [load]);
+  useEffect(() => {
+    if (starting === 0 || data) return;
+    const t = setTimeout(() => void load(), 1_500);
+    return () => clearTimeout(t);
+  }, [starting, data, load]);
   const live = data?.run.status === "running";
   useEffect(() => {
     if (!live) return;
@@ -198,7 +231,7 @@ export function RunDetail({ runId, title, migrated = false, agents, holdHref }: 
   if (!data)
     return (
       <p className="tb-soft" role="status">
-        Loading the run.
+        {starting ? "The run is starting." : "Loading the run."}
       </p>
     );
   const { run, steps, outputs } = data;
@@ -260,7 +293,9 @@ export function RunDetail({ runId, title, migrated = false, agents, holdHref }: 
                   </div>
                 ) : null}
                 {s.errorCode ? <p className="tb-hint">{s.errorCode.replaceAll("_", " ")}</p> : null}
+                {s.error ? <p className="tb-hint">{s.error}</p> : null}
                 {s.holdOutcome ? <p className="tb-hint">{`Approval: ${s.holdOutcome.replaceAll("_", " ")}.`}</p> : null}
+                <StepIo step={s} />
               </li>
             );
           })}
@@ -274,6 +309,29 @@ export function RunDetail({ runId, title, migrated = false, agents, holdHref }: 
       ) : null}
       {steps.some((s) => s.kind === "ai" && s.agentId) ? <p className="tb-hint">{AGENT_STEP_LABEL}</p> : null}
     </article>
+  );
+}
+
+/** What a step got and gave (C88: owner only; the engine reads it from the Temporal history, never from app.db). */
+export function StepIo({ step }: { step: EngineRunStep }) {
+  const has = (v: unknown) => v !== undefined && v !== null;
+  if (!has(step.input) && !has(step.output)) return null;
+  return (
+    <details className="history step-io">
+      <summary>{has(step.output) ? "Input and output (owner only)" : "Input (owner only)"}</summary>
+      {has(step.input) ? (
+        <>
+          <p className="tb-label">Input</p>
+          <pre className="view">{JSON.stringify(step.input, null, 2)}</pre>
+        </>
+      ) : null}
+      {has(step.output) ? (
+        <>
+          <p className="tb-label">Output</p>
+          <pre className="view">{JSON.stringify(step.output, null, 2)}</pre>
+        </>
+      ) : null}
+    </details>
   );
 }
 

@@ -1,10 +1,19 @@
-// The workflow contract in the browser (C367 M1). The TYPES and the limits are WP2's (src/engine/contract.ts and
-// contract-schema.ts); nothing is copied. WP2's `validateContract()` is NOT imported here: it needs the installed apps'
+// The workflow contract in the browser (C367 M1). The TYPES are WP2's (src/engine/contract.ts, type-only imports, erased
+// at build). The VALUES (step types, stages, limits) are a copy of src/engine/contract-schema.ts: a value import from
+// outside src/ui is emitted as "../engine/..." and points outside the served asset directory, so the browser got the
+// index page instead of a module and the whole UI stayed blank. test/ui-contract.test.ts checks the copy equals the
+// engine's and that no src/ui file imports a value from outside src/ui. WP2's `validateContract()` is NOT imported here: it needs the installed apps'
 // catalog and `@opt2-tealbrick/manifest` (node:crypto), and scripts/build-ui.ts refuses a Node built-in in the browser
 // bundle. The server runs it (`workflow_contract_validate`, "Check with the engine"). `liveCheck()` below is the fast,
 // pure check of shape, ids, refs and bounds that the editor shows while you type; it uses WP2's limits and patterns.
 import type { AiStep, ApprovalStep, AppStep, ConditionStep, LoopStep, ParallelStep, Stage, Step, StepType, TimerStep, TransformStep, Trigger, WorkflowContract, WorkflowStep } from "../engine/contract.ts";
-import { STAGES as ENGINE_STAGES, LIMITS, STEP_TYPES } from "../engine/contract-schema.ts";
+
+/** = STEP_TYPES of src/engine/contract-schema.ts (checked by test/ui-contract.test.ts). */
+const STEP_TYPES = ["app", "ai", "approval", "transform", "timer", "condition", "loop", "parallel", "workflow"] as const satisfies readonly StepType[];
+/** = STAGES of src/engine/contract-schema.ts (checked by test/ui-contract.test.ts). */
+const ENGINE_STAGES = ["process", "enrichment", "concat", "intelligence", "result"] as const satisfies readonly Stage[];
+/** The limits the editor shows (= LIMITS of src/engine/contract-schema.ts, checked by test/ui-contract.test.ts). */
+export const LIMITS = { maxSteps: 200, maxLoop: 200, maxParallel: 8 } as const;
 
 export type { AiStep, ApprovalStep, AppStep, ConditionStep, LoopStep, ParallelStep, Stage, Step, TimerStep, TransformStep, Trigger, WorkflowContract, WorkflowStep };
 export type StepKind = StepType;
@@ -156,8 +165,10 @@ export function liveCheck(c: unknown): Validation {
     if (!ctx.loop && mentions(value, /\$loop\.item/)) err(pointer, "$loop.item can only be used inside a loop.");
     if (!ctx.loop && !ctx.item && mentions(value, /\$item\b/)) err(pointer, "$item can only be used in a map, filter or loop.");
   };
-  const checkList = (list: unknown, ptr: string, visible: Set<string>, ctx: { loop: boolean; item: boolean }) => {
+  // `empty`: what to say when the list has no step (the engine's schema needs at least one in then, a loop and each branch)
+  const checkList = (list: unknown, ptr: string, visible: Set<string>, ctx: { loop: boolean; item: boolean }, empty?: string) => {
     if (!Array.isArray(list)) return err(ptr, "steps must be a list.");
+    if (list.length === 0 && empty) err(ptr, empty);
     list.forEach((raw: unknown, i: number) => {
       const p = `${ptr}/${i}`;
       if (!isObj(raw)) {
@@ -187,6 +198,8 @@ export function liveCheck(c: unknown): Validation {
           const agent = typeof by.agent === "string" && by.agent !== "";
           if (role === agent) err(`${p}/by`, "An ai step is done by a model role (by.role) or by an agent card (by.agent), not both and not neither.");
           if (agent && !AGENT.test(by.agent as string)) err(`${p}/by/agent`, "by.agent must be an agent id (agt_…).");
+          // a workflow moved from 0.3.x names a placeholder until the owner picks the Free agent (the engine refuses to activate it)
+          else if (by.agent === "agt_unassigned") err(`${p}/by/agent`, "Choose the Free agent that does this step. This workflow came from 0.3.x without one.");
           if (typeof s.instruction !== "string" || !s.instruction.trim()) err(`${p}/instruction`, "instruction is required.");
           else refCheck(s.instruction, `${p}/instruction`, visible, ctx);
           if (s.inputs !== undefined && !isObj(s.inputs)) err(`${p}/inputs`, "inputs must map a name to a ref.");
@@ -226,7 +239,7 @@ export function liveCheck(c: unknown): Validation {
         case "condition": {
           if (s.if === undefined || s.if === null) err(`${p}/if`, "if is required.");
           else refCheck(s.if, `${p}/if`, visible, ctx);
-          checkList(s.then ?? [], `${p}/then`, new Set(visible), ctx);
+          checkList(s.then ?? [], `${p}/then`, new Set(visible), ctx, "Add at least one step to run when the condition is true.");
           if (s.else !== undefined) checkList(s.else, `${p}/else`, new Set(visible), ctx);
           for (const sub of [s.then, s.else]) if (Array.isArray(sub)) for (const x of allSteps(sub as Step[])) visible.add(x.step.id);
           break;
@@ -235,7 +248,7 @@ export function liveCheck(c: unknown): Validation {
           if (typeof s.forEach !== "string" || !s.forEach.startsWith("$")) err(`${p}/forEach`, "forEach must be a ref to a list.");
           else refCheck(s.forEach, `${p}/forEach`, visible, ctx);
           if (!Number.isInteger(s.max) || (s.max as number) < 1 || (s.max as number) > MAX_LOOP) err(`${p}/max`, `A loop must have a bound: max is 1 to ${MAX_LOOP}.`);
-          checkList(s.steps ?? [], `${p}/steps`, new Set(visible), { ...ctx, loop: true });
+          checkList(s.steps ?? [], `${p}/steps`, new Set(visible), { ...ctx, loop: true }, "Add at least one step to run for each item.");
           if (Array.isArray(s.steps)) for (const x of allSteps(s.steps as Step[])) visible.add(x.step.id);
           break;
         }
@@ -243,7 +256,7 @@ export function liveCheck(c: unknown): Validation {
           const names = isObj(s.branches) ? Object.keys(s.branches) : [];
           if (names.length === 0) err(`${p}/branches`, "Add at least one branch.");
           if (names.length > MAX_PARALLEL) err(`${p}/branches`, `At most ${MAX_PARALLEL} branches.`);
-          for (const name of names) checkList((s.branches as Record<string, unknown>)[name], `${p}/branches/${name}`, new Set(visible), ctx);
+          for (const name of names) checkList((s.branches as Record<string, unknown>)[name], `${p}/branches/${name}`, new Set(visible), ctx, `Add at least one step to branch ${name}, or remove the branch.`);
           for (const name of names) {
             const branch = (s.branches as Record<string, unknown>)[name];
             if (Array.isArray(branch)) for (const x of allSteps(branch as Step[])) visible.add(x.step.id);
@@ -267,7 +280,7 @@ export function liveCheck(c: unknown): Validation {
   if (!Array.isArray(c.steps)) err("/steps", "steps must be a list.");
   else {
     checkList(c.steps, "/steps", visible, { loop: false, item: false });
-    if (c.steps.length === 0) warn("/steps", "This workflow has no steps yet.");
+    if (c.steps.length === 0) err("/steps", "Add at least one step.");
   }
   if (count > limit) err("/steps", `At most ${limit} steps (this has ${count}).`);
   if (c.outputs !== undefined) {

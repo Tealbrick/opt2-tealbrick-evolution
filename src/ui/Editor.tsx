@@ -9,7 +9,9 @@ import type { JsonObject } from "../engine/json.ts";
 import { liveCheck, newContract, type Trigger, type WorkflowContract } from "./engine-contract.ts";
 import { type ContractVersion, engine, type ValidateOut } from "./engine-ops.ts";
 import { SAMPLES } from "./engine-samples.ts";
+import { CardIssues, IssuesProvider, PField, type PointedIssue, plainIssues, showIssue } from "./FieldIssues.tsx";
 import { errorText, TIME_ZONES } from "./ops.ts";
+import { SchemaFields } from "./SchemaForm.tsx";
 import { ShapeView } from "./Shape.tsx";
 import { idsOf, JsonField, RefMap, StepList } from "./StepForms.tsx";
 import { Issues, UsageTable } from "./Usage.tsx";
@@ -37,12 +39,30 @@ function remember(c: WorkflowContract): void {
 
 type Tab = "steps" | "shape" | "json";
 
-export function Editor({ agents }: { agents: UseAgents["agents"] }) {
+/** The problems of the live check and of the last engine check, each at its JSON pointer (the engine gives `path` and `pointer`). */
+export function pointedIssues(live: { errors: readonly { pointer: string; message: string }[]; warnings: readonly { pointer: string; message: string }[] }, server: ValidateOut | null): PointedIssue[] {
+  const at = (i: { pointer?: string; path?: string }) => i.pointer ?? i.path ?? "";
+  const all: PointedIssue[] = [...live.errors.map((i) => ({ pointer: i.pointer, message: i.message, level: "error" as const })), ...live.warnings.map((i) => ({ pointer: i.pointer, message: i.message, level: "warning" as const }))];
+  if (server) for (const [list, level] of [[server.errors, "error"], [server.warnings, "warning"]] as const) for (const i of plainIssues(list)) all.push({ pointer: at(i), message: i.message, level });
+  // the same problem from both checks is shown once
+  const seen = new Set<string>();
+  return all.filter((i) => {
+    const k = `${i.level}|${i.pointer}|${i.message.toLowerCase()}`;
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+}
+
+/** `onSaved`: go on to review and activate the version just saved (App opens the Activation page on it). */
+/** `openSaved`: a saved version to open on arrival (Activation and Move from 0.3 send the owner here to change one). */
+export function Editor({ agents, onSaved, openSaved = null }: { agents: UseAgents["agents"]; onSaved?: (workflowId: string, version: number) => void; openSaved?: { workflowId: string; version: number } | null }) {
   const [contract, setContractState] = useState<WorkflowContract>(remembered);
   const [tab, setTab] = useState<Tab>("steps");
   const [sample, setSample] = useState(SAMPLES[0]?.id ?? "");
   const [note, setNote] = useState<string | null>(null);
   const [server, setServer] = useState<{ busy: boolean; result: ValidateOut | null; error: string | null }>({ busy: false, result: null, error: null });
+  const [lastSaved, setLastSaved] = useState<{ workflowId: string; version: number } | null>(null);
   const [saved, setSaved] = useState<{ busy: boolean; list: ContractVersion[] | null; error: string | null }>({ busy: false, list: null, error: null });
   const file = useRef<HTMLInputElement>(null);
   const loadSaved = useCallback(async () => {
@@ -57,12 +77,23 @@ export function Editor({ agents }: { agents: UseAgents["agents"] }) {
   useEffect(() => {
     void loadSaved();
   }, [loadSaved]);
+  const wanted = openSaved ? `${openSaved.workflowId}@${openSaved.version}` : null;
+  // biome-ignore lint/correctness/useExhaustiveDependencies: open once per requested version, not on every render of `open`
+  useEffect(() => {
+    if (openSaved) void open(openSaved.workflowId, openSaved.version);
+  }, [wanted]);
   const setContract = (c: WorkflowContract) => {
     setContractState(c);
     remember(c);
     setServer((s) => (s.result ? { ...s, result: null } : s)); // an edit makes the last server answer stale
   };
   const live = useMemo(() => liveCheck(contract), [contract]);
+  const issues = useMemo(() => pointedIssues(live, server.result), [live, server.result]);
+  // a problem's Show button: the fields are on the Steps tab
+  const goTo = (pointer: string) => {
+    setTab("steps");
+    setTimeout(() => showIssue(pointer), 0);
+  };
   const taken = useMemo(() => idsOf(Array.isArray(contract.steps) ? contract.steps : []), [contract]);
   const set = <K extends keyof WorkflowContract>(k: K, v: WorkflowContract[K]) => setContract({ ...contract, [k]: v });
 
@@ -79,19 +110,26 @@ export function Editor({ agents }: { agents: UseAgents["agents"] }) {
     setSaved((s) => ({ ...s, busy: true, error: null }));
     try {
       const r = await engine("workflow_contract_save", { contract: contract as unknown as Record<string, unknown> });
-      setNote(r.created ? `Saved as version ${r.version} of ${r.workflowId}. A saved version never changes. Activate it on the Activation page to run it.` : `Version ${r.version} of ${r.workflowId} was saved before with exactly this content. Nothing changed.`);
+      setNote(r.created ? `Saved as version ${r.version} of ${r.workflowId}. A saved version never changes. Next: review what it uses and activate it.` : `Version ${r.version} of ${r.workflowId} was saved before with exactly this content. Nothing changed.`);
+      setLastSaved({ workflowId: r.workflowId, version: r.version });
       await loadSaved();
       setSaved((s) => ({ ...s, busy: false }));
     } catch (e) {
       setSaved((s) => ({ ...s, busy: false, error: `Not saved. ${errorText(e)}` }));
+      // a refused save names its problems like the engine check: show them next to their fields
+      const details = (e as { details?: { errors?: ValidateOut["errors"]; warnings?: ValidateOut["warnings"] } } | null)?.details;
+      if (details && Array.isArray(details.errors)) setServer({ busy: false, error: null, result: { ok: false, errors: details.errors, warnings: Array.isArray(details.warnings) ? details.warnings : [], usage: [], activeVersion: null } as unknown as ValidateOut });
     }
   };
   const open = async (workflowId: string, version: number) => {
     setSaved((s) => ({ ...s, busy: true, error: null }));
     try {
       const r = await engine("workflow_contract_get", { workflowId, version });
-      setContract(r.contract as unknown as WorkflowContract);
-      setNote(`Opened version ${r.version} of ${r.workflowId}. To change it, raise the contract version and save: a saved version never changes.`);
+      const all = await engine("workflow_contracts_list", { workflowId }).catch(() => ({ contracts: [] as ContractVersion[] }));
+      const next = Math.max(r.version, ...all.contracts.map((c) => c.version)) + 1;
+      // a saved version never changes: the copy opens as the next version, ready to edit and save
+      setContract({ ...(r.contract as unknown as WorkflowContract), version: next });
+      setNote(`Opened version ${r.version} of ${r.workflowId} as version ${next}. Change it and save: version ${r.version} stays as it is.`);
       setSaved((s) => ({ ...s, busy: false }));
     } catch (e) {
       setSaved((s) => ({ ...s, busy: false, error: `Version ${version} could not be opened. ${errorText(e)}` }));
@@ -126,6 +164,7 @@ export function Editor({ agents }: { agents: UseAgents["agents"] }) {
   };
 
   return (
+    <IssuesProvider value={issues}>
     <section className="app-page" aria-label="Workflow editor">
       <div className="page-head">
         <div className="tb-stack head-text">
@@ -161,7 +200,18 @@ export function Editor({ agents }: { agents: UseAgents["agents"] }) {
         <Notice role="status">
           <span className="tb-row">
             <span>{note}</span>
-            <Button size="sm" onClick={() => setNote(null)}>
+            {lastSaved && onSaved ? (
+              <Button size="sm" variant="primary" onClick={() => onSaved(lastSaved.workflowId, lastSaved.version)}>
+                {`Review and activate version ${lastSaved.version}`}
+              </Button>
+            ) : null}
+            <Button
+              size="sm"
+              onClick={() => {
+                setNote(null);
+                setLastSaved(null);
+              }}
+            >
               Dismiss
             </Button>
           </span>
@@ -198,7 +248,8 @@ export function Editor({ agents }: { agents: UseAgents["agents"] }) {
           {live.warnings.length ? <Tag status="idle">{live.warnings.length === 1 ? "1 note" : `${live.warnings.length} notes`}</Tag> : null}
           <span className="tb-soft">Checked as you type: shape, ids, refs, bounds. Whether an app accepts the inputs is checked by the engine against the installed apps.</span>
         </div>
-        <Issues errors={live.errors} warnings={live.warnings} />
+        <Issues errors={live.errors} warnings={live.warnings} onShow={goTo} />
+        {live.errors.length ? <p className="tb-hint">Each problem is also shown next to its field. Show takes you there.</p> : null}
       </section>
 
       <Tabs
@@ -215,26 +266,27 @@ export function Editor({ agents }: { agents: UseAgents["agents"] }) {
       <div id={`editor-${tab}`} role="tabpanel" className="tb-stack">
         {tab === "steps" ? (
           <>
+            <CardIssues at="" shown={CONTRACT_KEYS} />
             <div className="two">
-              <Field label="Workflow id" hint="Lower case letters, digits, hyphens.">
+              <PField at="/id" label="Workflow id" hint="3 to 40 characters: lower case letters, digits, hyphens. It never changes.">
                 <TextInput value={contract.id ?? ""} onChange={(e) => set("id", e.target.value)} />
-              </Field>
-              <Field label="Contract version" hint="Whole number from 1.">
+              </PField>
+              <PField at="/version" label="Contract version" hint="Whole number from 1. Raise it to save a changed workflow.">
                 <TextInput inputMode="numeric" value={String(contract.version ?? "")} onChange={(e) => set("version", Number(e.target.value) as number)} />
-              </Field>
+              </PField>
             </div>
-            <Field label="Title">
+            <PField at="/title" label="Title">
               <TextInput value={contract.title ?? ""} onChange={(e) => set("title", e.target.value)} />
-            </Field>
-            <Field label="Summary">
+            </PField>
+            <PField at="/summary" label="Summary">
               <TextInput value={contract.summary ?? ""} onChange={(e) => set("summary", e.target.value)} />
-            </Field>
-            <JsonField label="Inputs (JSON Schema)" hint="What a run needs, for example the account to read. Optional." value={contract.inputs} onChange={(v) => set("inputs", v as WorkflowContract["inputs"])} rows={4} />
+            </PField>
+            <SchemaFields at="/inputs" label="Inputs" hint="What a run needs, for example the account to read. Steps use them as $input.<name>. Optional." value={contract.inputs} onChange={(v) => set("inputs", v)} nameLabel="Input" optional />
             <Triggers triggers={Array.isArray(contract.triggers) ? contract.triggers : []} onChange={(t) => set("triggers", t)} />
             <h2 className="tb-h3">Steps</h2>
             <StepList steps={Array.isArray(contract.steps) ? contract.steps : []} onChange={(s) => set("steps", s)} taken={taken} agents={agents} />
-            <RefMap label="Outputs" hint="Name → ref. What the run hands back." value={contract.outputs} onChange={(o) => set("outputs", o)} nameLabel="Output" />
-            <Field label="Metrics" hint="Names of numbers this workflow reports, comma separated (at most 20).">
+            <RefMap at="/outputs" label="Outputs" hint="Name → ref. What the run hands back." value={contract.outputs} onChange={(o) => set("outputs", o)} nameLabel="Output" />
+            <PField at="/metrics" label="Metrics" hint="Names of numbers this workflow reports, comma separated (at most 20).">
               <TextInput
                 value={(contract.metrics ?? []).join(", ")}
                 onChange={(e) =>
@@ -247,10 +299,10 @@ export function Editor({ agents }: { agents: UseAgents["agents"] }) {
                   )
                 }
               />
-            </Field>
+            </PField>
           </>
         ) : null}
-        {tab === "shape" ? <ShapeView contract={contract} /> : null}
+        {tab === "shape" ? <ShapeView contract={contract} agents={agents} /> : null}
         {tab === "json" ? <JsonField label="Contract JSON" hint="Edit the whole contract. It applies while the text is valid JSON." value={contract} onChange={(v) => v && typeof v === "object" && !Array.isArray(v) && setContract(v as WorkflowContract)} rows={28} /> : null}
       </div>
 
@@ -271,14 +323,26 @@ export function Editor({ agents }: { agents: UseAgents["agents"] }) {
         {server.result ? (
           <div className="tb-stack" role="status">
             <Tag status={server.result.ok ? "live" : "needs-you"}>{server.result.ok ? "accepted by the engine" : "refused by the engine"}</Tag>
-            <Issues errors={server.result.errors} warnings={server.result.warnings} />
+            <Issues errors={server.result.errors} warnings={server.result.warnings} onShow={goTo} />
             <UsageTable rows={server.result.usage} />
           </div>
         ) : null}
       </section>
     </section>
+    </IssuesProvider>
   );
 }
+
+/** The keys of the contract that a field of the editor shows (a problem under any other key is listed above the fields). */
+const CONTRACT_KEYS: ReadonlySet<string> = new Set(["id", "version", "title", "summary", "inputs", "triggers", "steps", "outputs", "metrics"]);
+
+/** The honest line for an event trigger (ENGINE-BUILD §2: push needs P2). */
+export const EVENT_TRIGGER_TEXT = "Event triggers need app event subscriptions, which Teal Brick does not have yet. Until then this trigger does not start runs. Use a poll trigger for now: it checks the app every few minutes and runs the same steps.";
+
+/** The keys of a trigger that a field of its card shows. */
+const TRIGGER_KEYS: ReadonlySet<string> = new Set(["cron", "every", "timezone", "product", "op", "cursorPath", "input", "type", "filter"]);
+/** Below /triggers, every numbered trigger has its own card. */
+const NUMBERED = { has: (key: string) => /^[0-9]+$/.test(key) };
 
 function Triggers({ triggers, onChange }: { triggers: Trigger[]; onChange: (t: Trigger[]) => void }) {
   const [kind, setKind] = useState<Trigger["kind"]>("schedule");
@@ -296,12 +360,15 @@ function Triggers({ triggers, onChange }: { triggers: Trigger[]; onChange: (t: T
     }
   };
   return (
-    <section className="tb-stack" aria-label="Triggers">
+    <section className="tb-stack" aria-label="Triggers" data-pointer="/triggers">
       <h2 className="tb-h3">Triggers</h2>
+      <p className="tb-hint">What starts a run: a schedule, you (Run now), a poll of an app, or an app event.</p>
+      <CardIssues at="/triggers" shown={NUMBERED} />
+      {triggers.length === 0 ? <p className="tb-soft">No trigger yet. Add one below: manual is the simplest (you start each run).</p> : null}
       <ol className="plain">
         {triggers.map((t, i) => (
           // biome-ignore lint/suspicious/noArrayIndexKey: triggers have no id; they are edited in place
-          <li key={i} className="tb-card step-card">
+          <li key={i} className="tb-card step-card" data-pointer={`/triggers/${i}`}>
             <div className="card-head">
               <h4>
                 Trigger {i + 1} <Tag>{t.kind}</Tag>
@@ -310,9 +377,11 @@ function Triggers({ triggers, onChange }: { triggers: Trigger[]; onChange: (t: T
                 Delete
               </Button>
             </div>
+            {/* an event trigger shows the honest sentence itself, so the checks' notes about it are not repeated in the card */}
+            <CardIssues at={`/triggers/${i}`} shown={TRIGGER_KEYS} {...(t.kind === "event" ? { hide: /event subscriptions/i } : {})} />
             {t.kind === "schedule" ? (
               <div className="three">
-                <Field label={`When (trigger ${i + 1})`}>
+                <PField at={`/triggers/${i}/${t.cron !== undefined ? "cron" : "every"}`} label={`When (trigger ${i + 1})`}>
                   <NativeSelect
                     value={t.cron !== undefined ? "cron" : "every"}
                     onChange={(e) => {
@@ -324,48 +393,60 @@ function Triggers({ triggers, onChange }: { triggers: Trigger[]; onChange: (t: T
                       { value: "every", label: "every" },
                     ]}
                   />
-                </Field>
-                <Field label={t.cron !== undefined ? `Cron (trigger ${i + 1})` : `Every (trigger ${i + 1})`} hint={t.cron !== undefined ? "minute hour day month weekday" : "for example 15m, 6h, 1d"}>
+                </PField>
+                <Field label={t.cron !== undefined ? `Cron (trigger ${i + 1})` : `Every (trigger ${i + 1})`} hint={t.cron !== undefined ? "minute hour day month weekday, for example 0 8 * * 1-5" : "for example 15m, 6h, 1d"}>
                   <TextInput className="mono" value={t.cron ?? t.every ?? ""} onChange={(e) => put(i, t.cron !== undefined ? { ...t, cron: e.target.value } : { ...t, every: e.target.value })} />
                 </Field>
-                <Field label={`Time zone (trigger ${i + 1})`}>
-                  <NativeSelect value={t.timezone} onChange={(e) => put(i, { ...t, timezone: e.target.value })} options={(TIME_ZONES.includes(t.timezone) ? TIME_ZONES : [t.timezone, ...TIME_ZONES]).map((z) => ({ value: z, label: z }))} />
-                </Field>
+                <PField at={`/triggers/${i}/timezone`} label={`Time zone (trigger ${i + 1})`} hint="An IANA zone. Daylight saving follows the zone.">
+                  <NativeSelect value={t.timezone ?? ""} onChange={(e) => put(i, { ...t, timezone: e.target.value })} options={(TIME_ZONES.includes(t.timezone) ? TIME_ZONES : [t.timezone ?? "", ...TIME_ZONES]).map((z) => ({ value: z, label: z || "(choose a time zone)" }))} />
+                </PField>
               </div>
             ) : null}
+            {t.kind === "schedule" ? <p className="tb-hint">After you activate the workflow, create its schedule on the Schedules page: it starts with this cron and time zone.</p> : null}
             {t.kind === "poll" ? (
               <div className="tb-stack">
                 <div className="three">
-                  <Field label={`App (trigger ${i + 1})`}>
+                  <PField at={`/triggers/${i}/product`} label={`App (trigger ${i + 1})`} hint="The app to read, for example connect.">
                     <TextInput value={t.product} onChange={(e) => put(i, { ...t, product: e.target.value })} />
-                  </Field>
-                  <Field label={`Operation (trigger ${i + 1})`}>
+                  </PField>
+                  <PField at={`/triggers/${i}/op`} label={`Operation (trigger ${i + 1})`} hint="A read operation of that app.">
                     <TextInput value={t.op} onChange={(e) => put(i, { ...t, op: e.target.value })} />
-                  </Field>
-                  <Field label={`Every (trigger ${i + 1})`}>
+                  </PField>
+                  <PField at={`/triggers/${i}/every`} label={`Every (trigger ${i + 1})`} hint="for example 5m, 1h">
                     <TextInput value={t.every} onChange={(e) => put(i, { ...t, every: e.target.value })} />
-                  </Field>
+                  </PField>
                 </div>
-                <Field label={`Cursor path (trigger ${i + 1})`} hint="A JSON pointer into the answer that says what is new, for example /result/historyId.">
+                <PField at={`/triggers/${i}/cursorPath`} label={`Cursor path (trigger ${i + 1})`} hint="A JSON pointer into the answer that says what is new, for example /result/historyId. A run starts only when it changes.">
                   <TextInput className="mono" value={t.cursorPath} onChange={(e) => put(i, { ...t, cursorPath: e.target.value })} />
-                </Field>
-                <JsonField label={`Input (trigger ${i + 1})`} value={t.input} onChange={(v) => put(i, { ...t, input: (v ?? {}) as JsonObject })} rows={4} />
+                </PField>
+                <JsonField at={`/triggers/${i}/input`} label={`Input (trigger ${i + 1})`} hint="What the poll sends to the operation." value={t.input} onChange={(v) => put(i, { ...t, input: (v ?? {}) as JsonObject })} rows={4} />
+                <p className="tb-hint">After you activate the workflow, create its poll on the Schedules page (kind: poll).</p>
               </div>
             ) : null}
             {t.kind === "event" ? (
               <div className="tb-stack">
+                <Notice tone="needs-you" role="status">
+                  <span className="tb-row">
+                    <span>{EVENT_TRIGGER_TEXT}</span>
+                    {triggers.some((x) => x.kind === "poll") ? null : (
+                      <Button size="sm" onClick={() => onChange([...triggers, { kind: "poll", product: t.product, op: "", input: {}, cursorPath: "/", every: "5m" }])}>
+                        {`Add a poll trigger for ${t.product || "this app"}`}
+                      </Button>
+                    )}
+                  </span>
+                </Notice>
                 <div className="two">
-                  <Field label={`App (trigger ${i + 1})`}>
+                  <PField at={`/triggers/${i}/product`} label={`App (trigger ${i + 1})`}>
                     <TextInput value={t.product} onChange={(e) => put(i, { ...t, product: e.target.value })} />
-                  </Field>
-                  <Field label={`Event type (trigger ${i + 1})`}>
+                  </PField>
+                  <PField at={`/triggers/${i}/type`} label={`Event type (trigger ${i + 1})`}>
                     <TextInput value={t.type} onChange={(e) => put(i, { ...t, type: e.target.value })} />
-                  </Field>
+                  </PField>
                 </div>
-                <JsonField label={`Filter (trigger ${i + 1})`} value={t.filter} onChange={(v) => put(i, { ...t, filter: v as JsonObject | undefined })} rows={3} />
+                <JsonField at={`/triggers/${i}/filter`} label={`Filter (trigger ${i + 1})`} value={t.filter} onChange={(v) => put(i, { ...t, filter: v as JsonObject | undefined })} rows={3} />
               </div>
             ) : null}
-            {t.kind === "manual" ? <p className="tb-hint">The owner starts a run with Run now.</p> : null}
+            {t.kind === "manual" ? <p className="tb-hint">You start a run with Run now on the Activation page, after you activate the workflow.</p> : null}
           </li>
         ))}
       </ol>
