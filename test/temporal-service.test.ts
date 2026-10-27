@@ -81,7 +81,7 @@ test("the manifest declares the temporal service, its env on the app, and valida
   const svc = rt.services.find((s) => s.id === "temporal");
   assert.ok(svc, "service temporal");
   assert.equal(svc.port, 7233);
-  assert.deepEqual(svc.resources, { cpu: 0.5, memoryMb: 384 });
+  assert.deepEqual(svc.resources, { cpu: 1, memoryMb: 1024 });
   assert.deepEqual(svc.volumes, [{ id: "temporal_data", mountPath: "/data", sizeGb: 5, purpose: "data" }]);
   assert.deepEqual(svc.health, { kind: "tcp" });
   assert.equal(svc.startOrder, 0);
