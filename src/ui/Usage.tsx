@@ -1,7 +1,8 @@
 // What a workflow version uses: ops, CRUD and scopes, with the honest grant label (ENGINE-BUILD §4). Used by the editor's
 // "Check against installed apps" and by the activation review.
-import { Notice, Table, Tag } from "@opt2-tealbrick/ui";
+import { Button, Notice, Table, Tag } from "@opt2-tealbrick/ui";
 import { GRANT_LABEL, type UsageRow } from "./engine-ops.ts";
+import { plainIssues } from "./FieldIssues.tsx";
 
 /** A problem or note: the live check gives a `pointer`, the engine gives a `path` (the same JSON pointer) and also `pointer`. */
 export interface IssueView {
@@ -10,23 +11,39 @@ export interface IssueView {
   message: string;
 }
 
-export function Issues({ errors, warnings }: { errors: readonly IssueView[]; warnings: readonly IssueView[] }) {
+/** `onShow`: a Show button per problem that takes the owner to its field (the editor). */
+export function Issues({ errors, warnings, onShow }: { errors: readonly IssueView[]; warnings: readonly IssueView[]; onShow?: (pointer: string) => void }) {
   if (errors.length === 0 && warnings.length === 0) return null;
+  const shownErrors = plainIssues(errors);
+  const shownWarnings = plainIssues(warnings);
   return (
     <ul className="plain issues">
-      {errors.map((e, i) => (
+      {shownErrors.map((e, i) => (
         // biome-ignore lint/suspicious/noArrayIndexKey: a read-only list in the order the validator gave it
         <li key={`e${i}`} className="issue issue-error">
           <Tag status="needs-you">problem</Tag> <code className="code-ops">{e.pointer || e.path || "/"}</code> {e.message}
+          {onShow ? <ShowButton pointer={e.pointer ?? e.path ?? ""} onShow={onShow} /> : null}
         </li>
       ))}
-      {warnings.map((w, i) => (
+      {shownWarnings.map((w, i) => (
         // biome-ignore lint/suspicious/noArrayIndexKey: a read-only list in the order the validator gave it
         <li key={`w${i}`} className="issue issue-warning">
           <Tag status="idle">note</Tag> <code className="code-ops">{w.pointer || w.path || "/"}</code> {w.message}
+          {onShow ? <ShowButton pointer={w.pointer ?? w.path ?? ""} onShow={onShow} /> : null}
         </li>
       ))}
     </ul>
+  );
+}
+
+function ShowButton({ pointer, onShow }: { pointer: string; onShow: (pointer: string) => void }) {
+  return (
+    <>
+      {" "}
+      <Button size="sm" aria-label={`Show ${pointer || "/"}`} onClick={() => onShow(pointer)}>
+        Show
+      </Button>
+    </>
   );
 }
 
@@ -68,6 +85,7 @@ export function UsageTable({ rows }: { rows: UsageRow[] }) {
           </tbody>
         </Table>
       )}
+      {rows.some((r) => r.tools?.length) ? <p className="tb-hint">For an operation that calls tools by name (Connect tools), Access is what the app declares for the operation as a whole; a tool can still write (for example a draft tool). The engine refuses any tool not named here.</p> : null}
     </div>
   );
 }

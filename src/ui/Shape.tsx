@@ -24,15 +24,20 @@ export function triggerText(t: Trigger): string {
     case "poll":
       return `poll ${t.product}.${t.op} every ${t.every}`;
     case "event":
-      return `event ${t.type} from ${t.product}`;
+      return `event ${t.type} from ${t.product} (waits for app event subscriptions; a poll trigger runs it for now)`;
   }
 }
 
 const KIND_LABEL = { app: "app", ai: "ai", transform: "transform", approval: "approval", timer: "timer", condition: "condition", loop: "loop", parallel: "parallel", workflow: "workflow" } as const;
 
-function Chip({ p }: { p: Placed }) {
+/** An agent's name from the workspace directory (its id when it is not listed). */
+type Named = readonly { id: string; name: string }[];
+
+const agentText = (id: string, agents: Named): string => `agent ${agents.find((a) => a.id === id)?.name ?? id}`;
+
+function Chip({ p, agents }: { p: Placed; agents: Named }) {
   const s = p.step;
-  const who = s.type === "ai" ? ("role" in s.by ? `role ${s.by.role}` : `agent ${s.by.agent}`) : s.type === "app" ? `${s.product}.${s.op}` : s.type === "workflow" ? s.workflow : "";
+  const who = s.type === "ai" ? ("role" in s.by ? `role ${s.by.role}` : agentText(s.by.agent, agents)) : s.type === "app" ? `${s.product}.${s.op}` : s.type === "workflow" ? s.workflow : "";
   const where = p.within.join(" · ");
   return (
     <li className="lane-step" title={where || undefined}>
@@ -44,7 +49,7 @@ function Chip({ p }: { p: Placed }) {
   );
 }
 
-export function ShapeView({ contract }: { contract: WorkflowContract }) {
+export function ShapeView({ contract, agents = [] }: { contract: WorkflowContract; agents?: Named }) {
   const steps = Array.isArray(contract.steps) ? contract.steps : [];
   const placed = placeSteps(steps);
   const triggers = Array.isArray(contract.triggers) ? contract.triggers : [];
@@ -69,7 +74,7 @@ export function ShapeView({ contract }: { contract: WorkflowContract }) {
                     ))
                   : null}
                 {here.map((p) => (
-                  <Chip key={p.pointer} p={p} />
+                  <Chip key={p.pointer} p={p} agents={agents} />
                 ))}
                 {stage === "intelligence" && !hasAi ? <li className="tb-soft">None: this workflow is fully deterministic.</li> : null}
                 {stage !== "event" && stage !== "intelligence" && here.length === 0 ? <li className="tb-soft">–</li> : null}
@@ -85,7 +90,7 @@ export function ShapeView({ contract }: { contract: WorkflowContract }) {
           <p className="tb-hint">Waits and branches that have no stage label.</p>
           <ul className="plain">
             {flow.map((p) => (
-              <Chip key={p.pointer} p={p} />
+              <Chip key={p.pointer} p={p} agents={agents} />
             ))}
           </ul>
         </section>

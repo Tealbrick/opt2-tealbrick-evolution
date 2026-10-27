@@ -35,10 +35,13 @@ export function sideBySide(runs: readonly EngineRun[], cycles: readonly Cycle[],
     }
     return r;
   };
+  // C367: a cycle's counts include its engine runs (cycles_list rolls them up with the legacy ones, `engine.runs` says how many);
+  // the legacy column is what is left once the engine runs are taken out
+  const inCycle = new Map<string, { total: number; completed: number; engineRuns: number }>();
   for (const c of cycles) {
     if (c.counts.total === 0) continue;
-    const r = row(c.workflowId, c.workflowTitle, c.version);
-    r.legacy = { total: c.counts.total, completed: c.counts.completed };
+    inCycle.set(key(c.workflowId, c.version), { total: c.counts.total, completed: c.counts.completed, engineRuns: c.engine?.runs ?? 0 });
+    row(c.workflowId, c.workflowTitle, c.version);
   }
   // newest first, so the first ten seen per version are its last ten
   for (const run of [...runs].sort((a, b) => Date.parse(b.startedAt) - Date.parse(a.startedAt))) {
@@ -51,6 +54,11 @@ export function sideBySide(runs: readonly EngineRun[], cycles: readonly Cycle[],
     if (OPEN.has(run.status)) e.open++;
     e.tokens += run.modelTokens ?? 0;
     if (e.last10.length < 10) e.last10.push(run.status);
+  }
+  for (const [k, c] of inCycle) {
+    const r = rows.get(k) as Side;
+    const total = Math.max(0, c.total - c.engineRuns);
+    r.legacy = { total, completed: total === 0 ? 0 : Math.max(0, c.completed - (c.engineRuns > 0 ? r.engine.completed : 0)) };
   }
   return [...rows.values()].sort((a, b) => a.workflowTitle.localeCompare(b.workflowTitle) || b.version - a.version);
 }

@@ -113,3 +113,92 @@ export function MigrationSummary({ migration, titleOf }: { migration: Migration;
     </section>
   );
 }
+
+/** The Move from 0.3 page (C367 D9): what the one-time move did, every item with where it went, and the next action for each:
+ *  a moved workflow is reviewed and activated like any saved version; one whose agent step still names the placeholder agent
+ *  gets its agent in the editor first. */
+export function MigrationPage({ onOpenVersion, onEditor }: { onOpenVersion: (workflowId: string, version: number) => void; onEditor: () => void }) {
+  const migration = useMigration();
+  const [titles, setTitles] = useState<Map<string, string>>(new Map());
+  const [scheduleTitles, setScheduleTitles] = useState<Map<string, string>>(new Map());
+  const [latest, setLatest] = useState<Map<string, { version: number; state: string | null }>>(new Map());
+  useEffect(() => {
+    person("workflows_list", {})
+      .then((r) => setTitles(new Map(r.workflows.map((w) => [w.id, w.title]))))
+      .catch(() => {}); // the id is shown instead of a title
+    person("automations_list", {})
+      .then((r) => setScheduleTitles(new Map(r.automations.map((a) => [a.id, `${a.workflowTitle} (${a.cron})`]))))
+      .catch(() => {});
+    person("workflow_contracts_list", {})
+      .then((r) => {
+        const m = new Map<string, { version: number; state: string | null }>();
+        for (const c of r.contracts) if ((m.get(c.workflowId)?.version ?? 0) < c.version) m.set(c.workflowId, { version: c.version, state: c.state });
+        setLatest(m);
+      })
+      .catch(() => {});
+  }, []);
+  const { status } = migration;
+  const titleOf = (legacyId: string, kind: MigrationItem["kind"]) => (kind === "workflow" ? (titles.get(legacyId) ?? legacyId) : (scheduleTitles.get(legacyId) ?? legacyId));
+  return (
+    <section className="app-page" aria-label="Move from 0.3">
+      <div className="page-head">
+        <div className="tb-stack head-text">
+          <h1>Move from 0.3</h1>
+          <p className="tb-lede">When this version first started, it moved the agent workflows and schedules of 0.3.x to the workflow engine, once. This page shows what moved and what to do next.</p>
+        </div>
+      </div>
+      <MigrationSummary migration={migration} titleOf={titleOf} />
+      {status === null ? (
+        migration.error ? null : (
+          <p className="tb-soft" role="status">
+            Loading.
+          </p>
+        )
+      ) : status.items.length === 0 ? (
+        <div className="tb-empty tb-stack">
+          <h2 className="tb-h3">Nothing to move.</h2>
+          <p className="tb-hint">This workspace had no 0.3.x workflows or schedules. Build a workflow in the editor; you can start from one of the two examples there.</p>
+          <div>
+            <Button variant="primary" onClick={onEditor}>
+              Open the editor
+            </Button>
+          </div>
+        </div>
+      ) : (
+        <section className="tb-stack" aria-label="What moved">
+          <h2 className="tb-h3">Item by item</h2>
+          <ul className="plain migration-items">
+            {status.items.map((i) => {
+              const target = i.engineId && i.kind === "workflow" ? latest.get(i.engineId) : undefined;
+              return (
+                <li key={`${i.kind}-${i.legacyId}`} className="tb-row">
+                  <Tag status={i.status === "failed" ? "needs-you" : i.status === "migrated" ? "live" : "idle"}>{REASON_LABEL[i.status]}</Tag>
+                  <span>
+                    {i.kind === "workflow" ? "Workflow" : "Schedule"} <b>{titleOf(i.legacyId, i.kind)}</b>
+                    {i.engineId ? (
+                      <>
+                        {" "}
+                        → <code className="code-ops">{i.engineId}</code>
+                      </>
+                    ) : null}
+                    {target ? <span className="tb-soft">{` version ${target.version}${target.state ? `, ${target.state}` : ", not active yet"}`}</span> : null}
+                    {i.reason ? <span className="tb-soft">{` · ${i.reason}`}</span> : null}
+                  </span>
+                  {target && i.engineId ? (
+                    <Button size="sm" onClick={() => onOpenVersion(i.engineId as string, target.version)}>
+                      {target.state === "active" ? "Open" : "Review and activate"}
+                    </Button>
+                  ) : null}
+                </li>
+              );
+            })}
+          </ul>
+          <p className="tb-hint">A moved workflow whose agent step still names the placeholder agent cannot be activated: open it in the editor (Saved versions), choose the Free agent, raise the version and save. A moved schedule is created on the engine once its workflow is active.</p>
+          <div>
+            <Button onClick={onEditor}>Open the editor</Button>
+          </div>
+        </section>
+      )}
+    </section>
+  );
+}

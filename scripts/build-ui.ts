@@ -89,6 +89,9 @@ while (queue.length > 0) {
     if (spec.startsWith("./") || spec.startsWith("../")) {
       const target = resolve(dirname(file), spec);
       if (!existsSync(target)) fail(`${file} imports missing ${spec}`);
+      // the import keeps its relative path, so a file outside dist/ui would be requested outside the served asset directory
+      // (the browser gets the index page, not a module, and the UI stays blank); src/ui may import only TYPES from elsewhere
+      if (file.startsWith(out + sep) && !target.startsWith(out + sep)) fail(`${file} imports ${spec}, outside dist/ui; copy the value into src/ui or use an import type`);
       queue.push(target);
     } else if (spec in CJS) cjsNeeded.add(spec);
     else if (spec.startsWith("node:") || builtinModules.includes(spec)) fail(`${file} imports the Node built-in ${spec}; it cannot run in a browser`);

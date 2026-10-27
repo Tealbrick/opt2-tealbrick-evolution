@@ -89,7 +89,7 @@ test("fire: an ai step needs a role or an agent, not both, and a typed output", 
 });
 
 test("fire: a loop must have a bound, a transform exactly one operation, a timer one way to wait", () => {
-  const loop = (max: unknown): WorkflowContract => ({ ...clone(), outputs: {}, steps: [{ id: "each", type: "loop", forEach: "$input.account", max, steps: [] } as unknown as Step] });
+  const loop = (max: unknown): WorkflowContract => ({ ...clone(), outputs: {}, steps: [{ id: "each", type: "loop", forEach: "$input.account", max, steps: [{ id: "wait", type: "timer", seconds: 1 }] } as unknown as Step] });
   assert.ok(has(loop(undefined), "/steps/0/max", /bound/));
   assert.ok(has(loop(201), "/steps/0/max", /1 to 200/));
   assert.deepEqual(errorsOf(loop(200)), []);
@@ -223,4 +223,34 @@ test("quiet: the new engine shapes pass the quick check (a workflow step, the WP
   c.steps.push({ id: "clean", type: "transform", normalise: { from: "$steps.slim.output", fields: ["from"], ops: ["trim", "lowercase"] } });
   c.steps.push({ id: "a-b", type: "transform", template: "x" });
   assert.deepEqual(liveCheck(c).errors, []);
+});
+
+test("the browser copy of the step kinds, stages and limits equals the engine's (src/engine/contract-schema.ts)", async () => {
+  const engine = await import("../src/engine/contract-schema.ts");
+  const ui = await import("../src/ui/engine-contract.ts");
+  assert.deepEqual([...ui.STEP_KINDS], [...engine.STEP_TYPES]);
+  assert.deepEqual([...ui.STAGES], [...engine.STAGES]);
+  for (const k of Object.keys(ui.LIMITS) as (keyof typeof ui.LIMITS)[]) assert.equal(ui.LIMITS[k], engine.LIMITS[k], k);
+});
+
+/** The value imports of a module from outside src/ui (an `import type` is erased at build and is fine). */
+function valueImportsOutsideUi(source: string): string[] {
+  return [...source.matchAll(/^import\s+(?!type\b)[^;]*?from\s+"(\.\.\/[^"]+)"/gm)].map((m) => m[1] as string);
+}
+
+test("quiet: no src/ui module imports a value from outside src/ui (the browser could not load it: the UI stayed blank)", async () => {
+  const { readdirSync, readFileSync } = await import("node:fs");
+  const dir = new URL("../src/ui/", import.meta.url);
+  for (const f of readdirSync(dir).filter((x) => /\.tsx?$/.test(x))) assert.deepEqual(valueImportsOutsideUi(readFileSync(new URL(f, dir), "utf8")), [], f);
+});
+
+test("fire: the scan finds a value import from ../engine and passes a type-only one", () => {
+  assert.deepEqual(valueImportsOutsideUi('import { LIMITS } from "../engine/contract-schema.ts";\n'), ["../engine/contract-schema.ts"]);
+  assert.deepEqual(valueImportsOutsideUi('import type { Json } from "../engine/json.ts";\n'), []);
+});
+
+test("fire: a placeholder agent from the move of 0.3.x is a problem at its by/agent", () => {
+  const c = clone();
+  (c.steps[2] as unknown as { by: object }).by = { agent: "agt_unassigned" };
+  assert.ok(has(c, "/steps/2/by/agent", /Choose the Free agent/));
 });

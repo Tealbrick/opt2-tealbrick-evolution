@@ -66,11 +66,16 @@ export function Schedules({ agents, agentsLoading, onOpenRuns }: { agents: UseAg
       <div className="page-head">
         <div className="tb-stack head-text">
           <h1>Schedules</h1>
+          <p className="tb-lede">What starts workflows by themselves. Engine schedules come first; the 0.3.x agent schedules below them are the older path.</p>
+        </div>
+      </div>
+      <EngineSchedules onOpenRuns={onOpenRuns} />
+      <div className="page-head legacy-head">
+        <div className="tb-stack head-text">
+          <h2 className="tb-h2">0.3.x agent schedules</h2>
           <p className="tb-lede">A schedule runs a promoted workflow with one Bound agent, or with an existing Free agent that keeps its own access. Every run is a Task Board issue assigned to the agent. Times are UTC.</p>
         </div>
-        <Button variant="primary" onClick={() => setCreating(true)}>
-          New schedule
-        </Button>
+        <Button onClick={() => setCreating(true)}>New agent schedule</Button>
       </div>
       {workflowsError ? (
         <Notice tone="needs-you" role="alert">
@@ -94,7 +99,7 @@ export function Schedules({ agents, agentsLoading, onOpenRuns }: { agents: UseAg
           </p>
         )
       ) : rows.length === 0 ? (
-        <EmptyState title="No schedules yet.">Promote a draft, then schedule it with a Bound agent or a Free agent.</EmptyState>
+        <EmptyState title="No agent schedules.">For a new workflow, use an engine schedule above. This older path needs a promoted draft and a Bound agent or a Free agent.</EmptyState>
       ) : (
         <div className="cards">
           {rows.map((a) => (
@@ -149,7 +154,6 @@ export function Schedules({ agents, agentsLoading, onOpenRuns }: { agents: UseAg
           <CopyBlock text={JSON.stringify(SERVE_CONFIG, null, 2)} label="runner configuration" />
         </div>
       </details>
-      <EngineSchedules onOpenRuns={onOpenRuns} />
       {editing ? (
         <EditSchedule
           automation={editing}

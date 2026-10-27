@@ -3,12 +3,16 @@
 // These are not the 0.3.x schedules above them (a Bound or Free agent that claims a run): the engine starts these itself.
 import { Button, Dialog, EmptyState, Field, NativeSelect, Notice, Tag, TextInput } from "@opt2-tealbrick/ui";
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { JsonObject } from "../engine/json.ts";
+import type { WorkflowContract } from "./engine-contract.ts";
 import { type EngineSchedule, engine } from "./engine-ops.ts";
 import { MigratedBadge, useMigration } from "./Migration.tsx";
 import { errorText, TIME_ZONES, zoned } from "./ops.ts";
+import { missingInputs, ValuesForm } from "./SchemaForm.tsx";
 
-/** A saved workflow the schedule can run: one entry per workflow id, titled by its newest version (`workflow_contracts_list`). */
-type Workflow = { id: string; title: string };
+/** A saved workflow the schedule can run: one entry per workflow id, titled by its newest version, with its active version
+ *  (`workflow_contracts_list`; only an active workflow can be scheduled). */
+type Workflow = { id: string; title: string; activeVersion: number | null };
 // the unit letters of `every` ("15m", "6h", "1d")
 const UNITS = [
   { value: "m", label: "minutes" },
@@ -39,9 +43,7 @@ export function EngineSchedules({ onOpenRuns }: { onOpenRuns?: () => void }) {
     void load();
     engine("workflow_contracts_list", {})
       .then((r) => {
-        const seen = new Map<string, string>();
-        for (const c of [...r.contracts].sort((a, b) => b.version - a.version)) if (!seen.has(c.workflowId)) seen.set(c.workflowId, c.title);
-        setWorkflows([...seen].map(([id, title]) => ({ id, title })));
+        setWorkflows(workflowsOf(r.contracts));
       })
       .catch(() => {});
   }, [load]);
@@ -169,6 +171,17 @@ export function EngineSchedules({ onOpenRuns }: { onOpenRuns?: () => void }) {
   );
 }
 
+/** One entry per workflow id: the newest version's title and the active version (null = none is active). */
+export function workflowsOf(contracts: readonly { workflowId: string; version: number; title: string; state: string | null }[]): Workflow[] {
+  const seen = new Map<string, Workflow>();
+  for (const c of [...contracts].sort((a, b) => b.version - a.version)) {
+    const w = seen.get(c.workflowId) ?? { id: c.workflowId, title: c.title, activeVersion: null };
+    if (c.state === "active") w.activeVersion = c.version;
+    seen.set(c.workflowId, w);
+  }
+  return [...seen.values()];
+}
+
 /** "15m" → ["15", "m"]; anything else starts at 15 minutes. */
 export function splitEvery(every: string | null): [string, string] {
   const m = every ? /^([1-9][0-9]{0,3})([mhd])$/.exec(every) : null;
@@ -195,6 +208,7 @@ function ScheduleDialog({ schedule: s, workflows, onClose, onSaved }: { schedule
   const [form, setForm] = useState({
     workflowId: s?.workflowId ?? "",
     pin: s?.versionPin ? String(s.versionPin) : "",
+    kind: (s?.kind ?? "schedule") as "schedule" | "poll",
     mode: s ? (s.cron ? "cron" : "every") : "cron",
     cron: s?.cron ?? "0 8 * * *",
     every: every0,
@@ -202,19 +216,64 @@ function ScheduleDialog({ schedule: s, workflows, onClose, onSaved }: { schedule
     timezone: s?.timezone ?? "UTC",
     overlap: s?.overlap ?? "skip",
   });
+  const [inputs, setInputs] = useState<JsonObject>((s?.input ?? {}) as JsonObject);
+  // the contract of the version the schedule runs: its triggers fill the form, its inputs schema types the inputs
+  const [contract, setContract] = useState<WorkflowContract | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [working, setWorking] = useState(false);
+  const active = workflows.filter((w) => w.activeVersion !== null);
+  const chosen = workflows.find((w) => w.id === form.workflowId);
+  const runVersion = form.pin.trim() !== "" && Number.isInteger(Number(form.pin)) ? Number(form.pin) : (chosen?.activeVersion ?? null);
+  useEffect(() => {
+    if (!form.workflowId || runVersion === null) {
+      setContract(null);
+      return;
+    }
+    let gone = false;
+    engine("workflow_contract_get", { workflowId: form.workflowId, version: runVersion })
+      .then((r) => {
+        if (gone) return;
+        const c = r.contract as unknown as WorkflowContract;
+        setContract(c);
+        if (s) return; // an existing schedule keeps what it has
+        const triggers = Array.isArray(c.triggers) ? c.triggers : [];
+        const sched = triggers.find((t) => t.kind === "schedule");
+        const poll = triggers.find((t) => t.kind === "poll");
+        setForm((f) => {
+          if (sched?.kind === "schedule") {
+            const [n, u] = splitEvery(sched.every ?? null);
+            return { ...f, kind: "schedule", mode: sched.cron ? "cron" : "every", cron: sched.cron ?? f.cron, every: n, unit: u, timezone: sched.timezone || f.timezone };
+          }
+          if (poll?.kind === "poll") {
+            const [n, u] = splitEvery(poll.every);
+            return { ...f, kind: "poll", mode: "every", every: n, unit: u };
+          }
+          return f;
+        });
+      })
+      .catch(() => !gone && setContract(null));
+    return () => {
+      gone = true;
+    };
+  }, [form.workflowId, runVersion, s]);
+  const hasPoll = (contract?.triggers ?? []).some((t) => t.kind === "poll");
   const everyValue = `${Number(form.every)}${form.unit}`;
-  const problem =
-    !form.workflowId
-      ? "Choose a workflow."
-      : form.mode === "cron" && !CRON5.test(form.cron.trim())
-        ? "A cron has 5 fields: minute hour day month weekday."
-        : form.mode === "every" && !EVERY.test(everyValue)
-          ? "An interval is a whole number from 1 to 9999 of minutes, hours or days."
-          : form.pin.trim() !== "" && !(Number.isInteger(Number(form.pin)) && Number(form.pin) >= 1)
-            ? "A pinned version is a whole number from 1."
-            : null;
+  const missing = contract ? missingInputs(contract.inputs, inputs) : [];
+  const problem = !form.workflowId
+    ? "Choose a workflow."
+    : chosen && chosen.activeVersion === null
+      ? "This workflow has no active version. Activate one on the Activation page first."
+      : form.kind === "poll" && contract && !hasPoll
+        ? "This version has no poll trigger. Add one in the editor, or use a schedule."
+        : form.kind === "schedule" && form.mode === "cron" && !CRON5.test(form.cron.trim())
+          ? "A cron has 5 fields: minute hour day month weekday."
+          : (form.kind === "poll" || form.mode === "every") && !EVERY.test(everyValue)
+            ? "An interval is a whole number from 1 to 9999 of minutes, hours or days."
+            : form.pin.trim() !== "" && !(Number.isInteger(Number(form.pin)) && Number(form.pin) >= 1)
+              ? "A pinned version is a whole number from 1."
+              : missing.length
+                ? `Fill in ${missing.join(", ")}: every run of this schedule needs it.`
+                : null;
   const save = async () => {
     setWorking(true);
     try {
@@ -222,9 +281,11 @@ function ScheduleDialog({ schedule: s, workflows, onClose, onSaved }: { schedule
         ...(s ? { id: s.id, revision: s.revision } : {}),
         workflowId: form.workflowId,
         versionPin: form.pin.trim() === "" ? null : Number(form.pin),
-        ...(form.mode === "cron" ? { cron: form.cron.trim().replace(/\s+/g, " ") } : { every: everyValue }),
+        kind: form.kind,
+        ...(form.kind === "schedule" && form.mode === "cron" ? { cron: form.cron.trim().replace(/\s+/g, " ") } : { every: everyValue }),
         timezone: form.timezone,
         overlap: form.overlap,
+        input: inputs,
       });
       await onSaved();
     } catch (e) {
@@ -246,23 +307,42 @@ function ScheduleDialog({ schedule: s, workflows, onClose, onSaved }: { schedule
       }
     >
       <div className="tb-stack">
-        <Field label="Workflow">
-          <NativeSelect value={form.workflowId} onChange={(e) => setForm({ ...form, workflowId: e.target.value })} options={[{ value: "", label: "Choose a workflow" }, ...workflows.map((w) => ({ value: w.id, label: w.title }))]} />
+        {!s && active.length === 0 ? <Notice tone="needs-you">No workflow is active yet. Save one in the editor and activate it on the Activation page; then it can be scheduled here.</Notice> : null}
+        <Field label="Workflow" hint="Only active workflows run. The schedule takes its cron, interval and time zone from the workflow's trigger; you can change them.">
+          <NativeSelect
+            value={form.workflowId}
+            disabled={Boolean(s)}
+            onChange={(e) => setForm({ ...form, workflowId: e.target.value })}
+            options={[{ value: "", label: "Choose a workflow" }, ...workflows.filter((w) => w.activeVersion !== null || w.id === form.workflowId).map((w) => ({ value: w.id, label: w.activeVersion !== null ? `${w.title} (version ${w.activeVersion} active)` : `${w.title} (not active)` }))]}
+          />
+        </Field>
+        <Field label="Starts by">
+          <NativeSelect
+            value={form.kind}
+            disabled={Boolean(s)}
+            onChange={(e) => setForm({ ...form, kind: e.target.value as "schedule" | "poll", ...(e.target.value === "poll" ? { mode: "every" } : {}) })}
+            options={[
+              { value: "schedule", label: "Time: a cron or an interval" },
+              { value: "poll", label: "Poll: read the app, run when something is new", disabled: contract !== null && !hasPoll },
+            ]}
+          />
         </Field>
         <Field label="Pinned version" hint="Leave empty to follow the active version.">
           <TextInput inputMode="numeric" value={form.pin} onChange={(e) => setForm({ ...form, pin: e.target.value })} />
         </Field>
-        <Field label="Repeat">
-          <NativeSelect
-            value={form.mode}
-            onChange={(e) => setForm({ ...form, mode: e.target.value })}
-            options={[
-              { value: "cron", label: "On a cron" },
-              { value: "every", label: "Every so often" },
-            ]}
-          />
-        </Field>
-        {form.mode === "cron" ? (
+        {form.kind === "schedule" ? (
+          <Field label="Repeat">
+            <NativeSelect
+              value={form.mode}
+              onChange={(e) => setForm({ ...form, mode: e.target.value })}
+              options={[
+                { value: "cron", label: "On a cron" },
+                { value: "every", label: "Every so often" },
+              ]}
+            />
+          </Field>
+        ) : null}
+        {form.kind === "schedule" && form.mode === "cron" ? (
           <Field label="Cron" hint="minute hour day month weekday, for example 0 8 * * 1-5. It runs in the time zone below.">
             <TextInput className="mono" value={form.cron} onChange={(e) => setForm({ ...form, cron: e.target.value })} maxLength={120} />
           </Field>
@@ -289,6 +369,7 @@ function ScheduleDialog({ schedule: s, workflows, onClose, onSaved }: { schedule
             ]}
           />
         </Field>
+        {contract ? <ValuesForm label="Inputs for each run" schema={contract.inputs} value={inputs} onChange={setInputs} /> : null}
         {problem && (form.workflowId || s) ? <p className="tb-hint">{problem}</p> : null}
         {error ? (
           <Notice tone="needs-you" role="alert">
