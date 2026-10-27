@@ -73,8 +73,8 @@
         },
         "port": 7233,
         "resources": {
-          "cpu": 0.5,
-          "memoryMb": 768
+          "cpu": 1,
+          "memoryMb": 1024
         },
         "volumes": [
           {

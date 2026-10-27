@@ -45,7 +45,7 @@ for (const name of [...new Set(rows.map((r) => r.container))]) {
   if (d0 && d1 && d1.t > d0.t) {
     const hours = (d1.t - d0.t) / 3_600_000;
     const perHour = ((d1.b ?? 0) - (d0.b ?? 0)) / hours;
-    console.log(`  database: ${((d0.b ?? 0) / 1048576).toFixed(2)} MB -> ${((d1.b ?? 0) / 1048576).toFixed(2)} MB in ${hours.toFixed(1)} h = ${(perHour / 1048576).toFixed(3)} MB/h; at 14 days (336 h) ~ ${((perHour * 336) / 1048576).toFixed(0)} MB (restore limit 512 MB, volume 5 GB)`);
+    console.log(`  database: ${((d0.b ?? 0) / 1048576).toFixed(2)} MB -> ${((d1.b ?? 0) / 1048576).toFixed(2)} MB in ${hours.toFixed(1)} h = ${(perHour / 1048576).toFixed(3)} MB/h; at 5 days (120 h) ~ ${((perHour * 120) / 1048576).toFixed(0)} MB (restore limit 512 MB, volume 5 GB)`);
     console.log(`  workflows in the namespace: ${d0.w} -> ${d1.w}`);
   }
 }

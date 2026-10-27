@@ -142,16 +142,16 @@ async function smoke(): Promise<void> {
       const have = out(["exec", svc.name, "/opt/temporal/schema-hash", "/data/temporal.db"]);
       expect(have === want, `schema hash ${have} != ${want}`);
     });
-    await check("namespace evolution exists with 14 days retention", async () => {
+    await check("namespace evolution exists with 5 days retention", async () => {
       const c = await Connection.connect({ address: svc.address });
       try {
         let days = 0;
-        for (let i = 0; i < 40 && days !== 14; i++) {
+        for (let i = 0; i < 40 && days !== 5; i++) {
           const d = await c.workflowService.describeNamespace({ namespace });
           days = Number(d.config?.workflowExecutionRetentionTtl?.seconds ?? 0) / 86400;
-          if (days !== 14) await sleep(1000);
+          if (days !== 5) await sleep(1000);
         }
-        expect(days === 14, `retention is ${days} days`);
+        expect(days === 5, `retention is ${days} days`);
       } finally {
         await c.close();
       }
