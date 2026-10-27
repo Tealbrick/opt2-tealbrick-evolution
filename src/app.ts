@@ -16,6 +16,7 @@ import { DEFAULT_MIN_REPEATS, KANBAN } from "./detector.ts";
 import * as directory from "./directory.ts";
 import { startEngine, stopEngine } from "./engine/engine.ts";
 import { engineAttention, refreshEngineHealth, startEngineHealthWatch } from "./engine/health.ts";
+import { engineLoadAttention, startEngineLoadWatch } from "./engine/load.ts";
 import { engineHandlers } from "./engine/ops.ts";
 import { roleAttention, startRoleAttention, stopRoleAttention } from "./engine/role-attention.ts";
 import { migrate, migrateHandlers } from "./migrate/index.ts";
@@ -472,6 +473,8 @@ export const definition: SdkAppDefinition = {
     await startEngine({ db: ctx.db, callApp: ctx.callApp.bind(ctx), log: ctx.log, secrets: ctx.secrets, bridgeCaps: () => ctx.bridgeCaps() });
     // C367 WP1: tell the status push when the workflow engine goes down or comes back (never in /tb/v1/health).
     startEngineHealthWatch(() => ctx.statusChanged());
+    // C373a: the kept-run count estimates the size of the engine database; a warning near the 512 MB restore cap
+    startEngineLoadWatch(() => ctx.statusChanged());
     // `model_role_optional` only when an ACTIVE workflow uses a role that is not bound (the SDK never raises it for an unused role)
     startRoleAttention({ db: ctx.db, modelRole: (role) => modelRole(role as never), bridgeCaps: () => ctx.bridgeCaps(), onChange: () => ctx.statusChanged() });
   },
@@ -482,8 +485,8 @@ export const definition: SdkAppDefinition = {
   // C367 WP1: the Temporal companion unreachable -> readiness `degraded` with the reason; the app still serves.
   async attention() {
     await refreshEngineHealth();
-    // a fault outranks a model-role code (the SDK keeps ONE slot): the engine first, then the unset role
-    return engineAttention() ?? roleAttention();
+    // a fault outranks a model-role code (the SDK keeps ONE slot): the engine down first, then its size warning, then the unset role
+    return engineAttention() ?? engineLoadAttention() ?? roleAttention();
   },
   events: {
     // Agent directory (manifest needsAgentDirectory): keep names so suggestion text can say who repeated the work.

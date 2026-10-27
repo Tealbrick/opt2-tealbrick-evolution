@@ -159,6 +159,15 @@ The workflow engine runs on Temporal in the single-binary shape: one companion s
   2.78 MB/h (about 100 runs per hour) a 5-day (120 h) window is about 330 MB, below the 512 MB restore cap of tb-exec. The `temporal` service has 0.5 cpu and
   384 MB (measured over 11.7 h: anon RAM max 153 MB, cgroup peak 206 MB, CPU at most 1.7 % of one core). These are interim values; the final values follow the 24 h run.
   The key ring retires an old payload key `KEY_RETIRE_AFTER_HOURS` (retention + 1 day) after the rotation; a test keeps it above the retention in `run.sh`.
+- **Raising the limits (the 384 MB / 0.5 cpu values are a default, not a ceiling):** Core applies a service's `resources` only when it creates the
+  service (`serviceInstanceLimitsUpdate` in portal-core `src/providers/railway.ts`, `deploy`; a refused call is logged as advisory and the deploy goes on).
+  `update` (an app update with a new manifest value) does not touch the limits, so a changed `memoryMb` or `cpu` in a later release does NOT reach an existing
+  workspace, and a limit the owner sets by hand stays. Today the path to more room is the resource limit of the `temporal` service in the Railway project
+  of the workspace (the owner's own Railway), then a restart of the service. The manifest value only decides new workspaces. No Portal GUI or CLI control exists for this yet.
+  The tb-exec restore cap (512 MB) is a constant of the SDK (`RESTORE_MAX_BYTES`, `exec/servers.ts`); an app cannot raise it. Both are open items for Core and the SDK.
+- **Near-limit signal:** the app cannot read the memory or disk of the `temporal` service. `src/engine/load.ts` counts the kept workflow executions every
+  10 minutes (one visibility count), estimates the database at about 30 KB per run, and `attention()` reports `temporal_near_restore_cap` from 80 % of the 512 MB cap
+  (after `temporal_unreachable`, before a model-role code). The estimate is a lower bound (the file keeps its high-water mark). There is no memory signal; it needs a stats route in tb-exec or a metrics port read.
 - **Proof:** `smoke/engine-smoke.ts` (start the image, gRPC reachability, schema hash, retention, a workflow through an inline worker, a Schedule:
   create, fire, trigger, pause, unpause, delete; and the dump -> restore round trip with three workflows in flight) and `smoke/measure/` (24 h
   RAM/CPU run with about 100 runs per hour, cold start on a copy of the live file). They need a container CLI and are run by hand (podman on neuu), not in CI.
