@@ -15,6 +15,11 @@
 set -u
 
 DATA_DIR=${TEMPORAL_DATA_DIR:-/data}
+# tb-exec drops root privileges but HOME stays /root: the Temporal CLI then fails reading
+# $HOME/.config/temporalio/temporal.yaml ("permission denied") and the server exits at once (C373 DEV fresh install on
+# Railway; the 24 h WP1 run on neuu ran as root and never hit it). Give the CLI a writable HOME outside the data volume.
+export HOME=${TEMPORAL_HOME:-/tmp/temporal-home}
+mkdir -p "$HOME"
 DB="$DATA_DIR/temporal.db"
 RESTORE_DIR="$DATA_DIR/restore"
 PENDING="$RESTORE_DIR/pending.sqlite"
