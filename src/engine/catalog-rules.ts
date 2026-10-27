@@ -15,8 +15,24 @@ export interface TargetOp {
   idempotency: "none" | "supported" | "required";
   input?: JsonSchemaLike;
   output?: JsonSchemaLike;
-  /** a dynamic op (Connect `tools`): its input is `{tool, arguments}` and the real op is the tool */
-  dynamic?: { mode: string };
+  /** a dynamic op (Connect `tools`): its input is `{tool, arguments}` and the real op is the tool.
+   *  `crudCeiling`: the most the tools behind it may do (the app's own declaration). `tools`: the resolved crud of a tool by name,
+   *  when the snapshot carries it (today it does not: the SDK shows no installed tool list). */
+  dynamic?: { mode: string; crudCeiling?: CrudAction[]; tools?: Record<string, CrudAction[]> };
+}
+
+const CRUD_CANON: readonly CrudAction[] = ["read", "create", "update", "delete"];
+
+/**
+ * What a call of `op` may do with CRUD. A fixed op: its own `crud`. A dynamic op (Connect `tools`) is the tool the step names:
+ * that tool's resolved crud when the snapshot has it, else the op's `crudCeiling` (the most any tool may do), else the op's
+ * own `crud`. The op's `crud` alone ("read" for `tools`) is only the search part: a tool can still create or update.
+ */
+export function crudOfCall(op: TargetOp, tool?: string): CrudAction[] {
+  if (!op.dynamic) return [...op.crud];
+  const own = tool !== undefined && Object.hasOwn(op.dynamic.tools ?? {}, tool) ? op.dynamic.tools?.[tool] : undefined;
+  const crud = own?.length ? own : op.dynamic.crudCeiling?.length ? op.dynamic.crudCeiling : op.crud;
+  return CRUD_CANON.filter((c) => crud.includes(c));
 }
 export interface TargetApp {
   id: string;

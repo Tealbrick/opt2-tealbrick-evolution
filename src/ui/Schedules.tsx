@@ -17,7 +17,7 @@ const SERVE_CONFIG = {
   routines: [{ due: "evolution__routines_due", claim: "evolution__routine_claim", report: "evolution__routine_report", items: "jobs", id: "occurrence" }],
 };
 
-export function Schedules({ agents, agentsLoading, onOpenRuns }: { agents: UseAgents["agents"]; agentsLoading: boolean; onOpenRuns?: () => void }) {
+export function Schedules({ agents, agentsLoading, onOpenRuns, onOpenRun }: { agents: UseAgents["agents"]; agentsLoading: boolean; onOpenRuns?: () => void; onOpenRun?: (runId: string) => void }) {
   const [rows, setRows] = useState<Automation[] | null>(null);
   // null = not known yet (list not loaded): the New schedule form waits, so it never offers "no project" by mistake
   const [kanbanLinked, setKanbanLinked] = useState<boolean | null>(null);
@@ -69,7 +69,7 @@ export function Schedules({ agents, agentsLoading, onOpenRuns }: { agents: UseAg
           <p className="tb-lede">What starts workflows by themselves. Engine schedules come first; the 0.3.x agent schedules below them are the older path.</p>
         </div>
       </div>
-      <EngineSchedules onOpenRuns={onOpenRuns} />
+      <EngineSchedules onOpenRuns={onOpenRuns} onOpenRun={onOpenRun} />
       <div className="page-head legacy-head">
         <div className="tb-stack head-text">
           <h2 className="tb-h2">0.3.x agent schedules</h2>

@@ -9,7 +9,8 @@ import { bundledCatalog, injectCatalog, type TargetCatalog } from "../../src/eng
 import { COMPANION_PRODUCTS, companionBlock } from "../../src/engine/catalog-rules.ts";
 import { CONTRACT_SCHEMA, type Step, type WorkflowContract } from "../../src/engine/contract.ts";
 import { MODEL_ROLES } from "../../src/engine/model-roles.ts";
-import { type ValidationResult, validateContract } from "../../src/engine/validate.ts";
+import { UNASSIGNED_AGENT } from "../../src/migrate/contract.ts";
+import { dropSchemaNoise, type ValidationResult, validateContract } from "../../src/engine/validate.ts";
 import { read, wf } from "./harness.ts";
 
 const fixture = (n: string): WorkflowContract => JSON.parse(readFileSync(new URL(`./fixtures/${n}.json`, import.meta.url), "utf8")) as WorkflowContract;
@@ -239,4 +240,92 @@ test("M-CP-2: the superset companion block equals the union of its ops' crud, ch
 test("steps typed as Step are what the validator reads (type check only)", () => {
   const s: Step = { id: "a", type: "timer", seconds: 1 };
   assert.equal(s.type, "timer");
+});
+
+// ───────────────────────────── C373 fix batch: F-G1, F-G3, F-G4 ─────────────────────────────
+
+const connectTool = (tool: string, id = "t") => ({ id, type: "app", product: "connect", op: "tools", input: { tool, arguments: {} } });
+const crudOf = (r: ValidationResult, product: string, op: string): string[] | undefined => r.uses.find((u) => u.product === product && u.op === op)?.crud;
+
+test("F-G1 quiet: a read op and a poll trigger stay read; a dynamic tool the catalog says is read stays read", () => {
+  assert.deepEqual(crudOf(validateContract(wf([read("a")]), { companions }), "knowledge", "recall"), ["read"]);
+  const poll = validateContract({ ...wf([read("a")]), triggers: [{ kind: "poll", product: "connect", op: "tools", input: { tool: "gmail_fetch_emails" }, cursorPath: "/x", every: "5m" }] } as unknown as WorkflowContract, { companions });
+  assert.equal(poll.ok, true, JSON.stringify(poll.errors));
+  assert.deepEqual(crudOf(poll, "connect", "tools"), ["read"], "a poll reads whichever tool it names");
+  const cat = structuredClone(bundledCatalog()) as TargetCatalog;
+  const tools = cat.connect?.operations.find((o) => o.id === "tools");
+  assert.ok(tools?.dynamic);
+  tools.dynamic.tools = { gmail_fetch_emails: ["read"], gmail_create_email_draft: ["create"], gmail_update_label: ["update"] };
+  injectCatalog(cat);
+  assert.deepEqual(crudOf(validateContract(wf([connectTool("gmail_fetch_emails")]), { companions }), "connect", "tools"), ["read"], "the snapshot's own crud of the tool");
+});
+
+test("F-G1 fire: a Connect tool is not shown as read-only: the op's crud ceiling when the catalog has no crud for the tool, the tool's own crud when it has", () => {
+  const unknown = validateContract(wf([connectTool("gmail_create_email_draft")]), { companions });
+  assert.equal(unknown.ok, true, JSON.stringify(unknown.errors));
+  assert.deepEqual(crudOf(unknown, "connect", "tools"), ["read", "create", "update", "delete"], "no per-tool crud in the snapshot: the ceiling (what the app lets a tool do)");
+  const cat = structuredClone(bundledCatalog()) as TargetCatalog;
+  const tools = cat.connect?.operations.find((o) => o.id === "tools");
+  assert.ok(tools?.dynamic);
+  tools.dynamic.tools = { gmail_fetch_emails: ["read"], gmail_create_email_draft: ["create"], gmail_update_label: ["update"] };
+  injectCatalog(cat);
+  assert.deepEqual(crudOf(validateContract(wf([connectTool("gmail_fetch_emails", "a"), connectTool("gmail_create_email_draft", "b")]), { companions }), "connect", "tools"), ["read", "create"], "the union over the tools the workflow names");
+  assert.deepEqual(crudOf(validateContract(wf([connectTool("gmail_update_label")]), { companions }), "connect", "tools"), ["update"]);
+  assert.deepEqual(crudOf(validateContract(wf([connectTool("some_new_tool")]), { companions }), "connect", "tools"), ["read", "create", "update", "delete"], "a tool the snapshot does not list gets the ceiling, never read");
+  // a prototype key is not a tool entry
+  assert.deepEqual(crudOf(validateContract(wf([connectTool("constructor")]), { companions }), "connect", "tools"), ["read", "create", "update", "delete"]);
+});
+
+const placeholder = { id: "ask", type: "ai", by: { agent: UNASSIGNED_AGENT }, instruction: "x", inputs: {}, outputSchema: { type: "object" }, timeoutSec: 600 };
+
+test("F-G3 quiet: a real agent passes, and so does the placeholder for the migration (no option)", () => {
+  assert.equal(validateContract(wf([{ ...placeholder, by: { agent: "agt_01M5BDHMN8ZQJPS4YQ4EWH8W85" } }]), { companions, refusePlaceholderAgent: true }).ok, true);
+  assert.equal(validateContract(wf([placeholder]), { companions }).ok, true, "the 0.3.x migration validates its own contracts with the placeholder");
+});
+
+test("F-G3 fire: the placeholder agent is an error with a pointer to the field and a plain way out", () => {
+  const r = validateContract(wf([placeholder]), { companions, refusePlaceholderAgent: true });
+  must(r, "agent_unassigned", /choose the agent for this step.*save a new version/i);
+  assert.equal(r.errors.find((e) => e.code === "agent_unassigned")?.path, "/steps/0/by/agent");
+  // inside a condition too
+  const nested = validateContract(wf([{ id: "c", type: "condition", if: { exists: "$input.x" }, then: [placeholder] }], { inputs: { type: "object", properties: { x: { type: "string" } } } }), { companions, refusePlaceholderAgent: true });
+  assert.equal(nested.errors.find((e) => e.code === "agent_unassigned")?.path, "/steps/0/then/0/by/agent");
+});
+
+test("F-G4 quiet: a misspelt field alone is reported once; a good contract has no schema message", () => {
+  const r = validateContract({ ...wf([read("a")]), steps: [{ ...read("a"), bogus: 1 }] }, { companions });
+  assert.deepEqual(
+    r.errors.map((e) => [e.path, e.message]),
+    [["/steps/0", "must NOT have unevaluated properties"]],
+    "nothing more precise exists, so the message stays (once, not three times)",
+  );
+  assert.equal(validateContract(fixture("example-a"), { companions }).errors.length, 0);
+});
+
+test("F-G4 fire: with a precise problem the follow-on messages are dropped", () => {
+  const bad = wf([{ id: "c", type: "condition", if: { exists: "$input.x" }, then: [{ id: "b", type: "app", product: "knowledge" }] }]);
+  const r = validateContract(bad, { companions });
+  assert.equal(r.ok, false);
+  const msgs = r.errors.map((e) => e.message);
+  assert.ok(msgs.includes("must have required property 'op'"), JSON.stringify(msgs));
+  assert.deepEqual(msgs.filter((m) => /must match "[^"]*" schema|unevaluated|oneOf|anyOf/.test(m)), [], "no follow-on noise");
+  // the same rule as the editor's (src/ui/FieldIssues.tsx plainIssues): test/ui-engine.test.ts compares them on one list
+  const list = [
+    { path: "/steps/0/then/0/op", message: "must have required property 'op'" },
+    { path: "/steps/0/then/0", message: 'must match "then" schema' },
+    { path: "/steps/0/then/0", message: "must NOT have unevaluated properties" },
+    { path: "/steps/0", message: 'must match "then" schema' },
+    { path: "/steps/1", message: "must NOT have unevaluated properties" },
+    { path: "/steps/1", message: "must NOT have unevaluated properties" },
+  ];
+  assert.deepEqual(
+    dropSchemaNoise(list).map((i) => `${i.path} ${i.message}`),
+    ["/steps/0/then/0/op must have required property 'op'", "/steps/1 must NOT have unevaluated properties"],
+  );
+});
+
+test("a loop with max 0 or 201 reports the precise limit; only a missing max is 'unbounded'", () => {
+  const lp = (max: number) => validateContract(wf([{ id: "lp", type: "loop", forEach: "$input.xs", max, steps: [read("i")] }], { inputs: { type: "object", properties: { xs: { type: "array" } } } }), { companions });
+  assert.deepEqual(lp(0).errors.map((e) => [e.code, e.message]), [["schema_invalid", "must be >= 1"]]);
+  assert.deepEqual(lp(201).errors.map((e) => [e.code, e.message]), [["schema_invalid", "must be <= 200"]]);
 });

@@ -22,11 +22,13 @@ const UNITS = [
 const EVERY = /^[1-9][0-9]{0,3}[mhd]$/;
 const CRON5 = /^\S+(\s+\S+){4}$/;
 
-export function EngineSchedules({ onOpenRuns }: { onOpenRuns?: () => void }) {
+export function EngineSchedules({ onOpenRuns, onOpenRun }: { onOpenRuns?: () => void; onOpenRun?: (runId: string) => void }) {
   const [rows, setRows] = useState<EngineSchedule[] | null>(null);
   const [workflows, setWorkflows] = useState<Workflow[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  // the run that "Run now" started (its id comes back from the engine): the notice offers to open it
+  const [noticeRun, setNoticeRun] = useState<string | null>(null);
   const [editing, setEditing] = useState<EngineSchedule | "new" | null>(null);
   const migration = useMigration();
   const busy = useRef(new Set<string>()); // C8: one call at a time per schedule, even for two clicks before React re-renders
@@ -90,6 +92,11 @@ export function EngineSchedules({ onOpenRuns }: { onOpenRuns?: () => void }) {
         <Notice tone="live" role="status">
           <span className="tb-row">
             <span>{notice}</span>
+            {noticeRun && onOpenRun ? (
+              <Button size="sm" onClick={() => onOpenRun(noticeRun)}>
+                Open the run
+              </Button>
+            ) : null}
             {onOpenRuns ? (
               <Button size="sm" onClick={onOpenRuns}>
                 See runs
@@ -125,8 +132,9 @@ export function EngineSchedules({ onOpenRuns }: { onOpenRuns?: () => void }) {
                     onClick={() =>
                       void act(s.id, async () => {
                         const r = await engine("schedule_run_now", { id: s.id });
-                        // the engine starts the run through the Temporal Schedule, so there is no run id to show yet
-                        setNotice(r.triggered ? "Run started." : "The engine did not start a run. Try again in a moment.");
+                        setNoticeRun(r.triggered ? r.runId : null);
+                        // a poll schedule starts a run only when its read found a change; the run row exists a moment after the start
+                        setNotice(r.triggered ? `Run ${r.runId} started.${s.kind === "poll" ? " A poll leaves no run when nothing changed." : ""}` : "The engine did not start a run. Try again in a moment.");
                       })
                     }
                   >

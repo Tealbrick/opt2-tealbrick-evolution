@@ -133,19 +133,21 @@ test("pause and resume, run now, delete; the list shows the live state", { timeo
   await assert.rejects(op("schedule_pause", { id: s.id, revision: s.revision, paused: true }), (e: unknown) => e instanceof TbError && e.code === "revision_conflict");
 
   t.apps.calls.length = 0;
-  const run = await op<{ triggered: boolean }>("schedule_run_now", { id: s.id });
+  const run = await op<{ triggered: boolean; runId: string; workflowId: string }>("schedule_run_now", { id: s.id });
   assert.equal(run.triggered, true);
+  assert.equal(run.workflowId, id);
+  assert.match(run.runId, new RegExp(`^${s.id}-rn[0-9a-f]{20}$`), "F-G6: the answer names the run that was started");
   await waitFor("the run of the schedule is completed in the index", () => t.db.prepare("SELECT status FROM engine_runs WHERE workflow_id = ? AND status = 'completed'").get(id) !== undefined);
   const row = t.db.prepare("SELECT * FROM engine_runs WHERE workflow_id = ?").get(id) as Record<string, unknown>;
   assert.equal(row.status, "completed");
+  assert.equal(row.run_id, run.runId, "the index row is the run the answer named");
   assert.equal(row.schedule_id, s.id);
   assert.equal(row.trigger_kind, "schedule");
-  assert.match(String(row.temporal_workflow_id), new RegExp(`^evo:${id}:${s.id}-`), "the Schedule start id is evo:<workflow>:<schedule>-<time>");
-  assert.match(String(row.run_id), new RegExp(`^${s.id}-`));
+  assert.equal(row.temporal_workflow_id, `evo:${id}:${run.runId}`);
   assert.match(t.apps.calls[0]?.key ?? "", new RegExp(`^wfrun:${id}:${s.id}-`));
 
-  // the schedule records its action a moment after the run it started has ended: poll the owner list until it shows it
-  await waitFor("schedules_list shows the live state ok and the run in the schedule's recent actions (lastRunAt)", async () => {
+  // a run now is started directly, so the list takes its last run from the run index
+  await waitFor("schedules_list shows the live state ok and the run (lastRunAt)", async () => {
     const list = await op<{ schedules: Sched[]; temporalConnected: boolean }>("schedules_list", { workflowId: id });
     assert.equal(list.temporalConnected, true);
     assert.equal(list.schedules[0]?.live?.state, "ok");
@@ -167,15 +169,15 @@ test("a poll schedule is built from the contract's poll trigger: the run stops e
   assert.equal(s.every, "5m");
   assert.equal(s.poll?.cursorPath, "/cursor");
   t.apps.on["knowledge.recall"] = () => ({ cursor: "c1" });
-  await op("schedule_run_now", { id: s.id });
+  const first = await op<{ runId: string }>("schedule_run_now", { id: s.id });
   await waitFor("the first poll run is in the index", () => (t.db.prepare("SELECT count(*) AS c FROM engine_runs WHERE workflow_id = ?").get(id)?.c as number) === 1);
-  // the schedule's overlap policy is SKIP: the second trigger must wait until the first run has CLOSED, or Temporal drops it
-  await waitFor("the schedule has recorded the first action and that run has closed", () => actionsSettled(s.id, 1));
+  await t.client.workflow.getHandle(`evo:${id}:${first.runId}`).result();
   const before = t.apps.calls.filter((c) => c.op === "recall" && (c.input as { query: string }).query === "inbox").length;
-  await waitForNextSecond(s.id);
-  await op("schedule_run_now", { id: s.id });
-  await waitFor("the second poll ran (the recall call arrived)", () => t.apps.calls.filter((c) => c.op === "recall" && (c.input as { query: string }).query === "inbox").length > before);
-  await waitFor("the schedule has recorded the second action and that run has closed", () => actionsSettled(s.id, 2));
+  const second = await op<{ runId: string }>("schedule_run_now", { id: s.id });
+  assert.notEqual(second.runId, first.runId);
+  const res = (await t.client.workflow.getHandle(`evo:${id}:${second.runId}`).result()) as { status: string };
+  assert.ok(t.apps.calls.filter((c) => c.op === "recall" && (c.input as { query: string }).query === "inbox").length > before, "the second poll ran (the recall call arrived)");
+  assert.equal(res.status, "skipped");
   assert.equal(t.db.prepare("SELECT count(*) AS c FROM engine_runs WHERE workflow_id = ?").get(id)?.c, 1, "the second poll saw the same cursor: no run");
   assert.equal(store.getSchedule(t.db, s.id)?.cursor, "c1");
   t.apps.on["knowledge.recall"] = () => ({});

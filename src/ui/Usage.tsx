@@ -50,6 +50,10 @@ function ShowButton({ pointer, onShow }: { pointer: string; onShow: (pointer: st
 // the engine reports the effect as a string; anything but a plain read or write needs the owner's eye
 const EFFECT: Record<string, "default" | "needs-you"> = { read: "default", write: "default" };
 
+/** F-P5: Connect `tools` is scoped by account, so a step that may create or update through it needs write access to the account it uses. */
+export const CONNECT_WRITE_ACCESS = "On Connect's accounts page, give Evolving Workflows write access to the account this step uses.";
+const writesThroughConnect = (r: UsageRow): boolean => r.product === "connect" && r.op === "tools" && !r.via && r.crud.some((c) => c === "create" || c === "update");
+
 export function UsageTable({ rows }: { rows: UsageRow[] }) {
   return (
     <div className="tb-stack">
@@ -85,7 +89,12 @@ export function UsageTable({ rows }: { rows: UsageRow[] }) {
           </tbody>
         </Table>
       )}
-      {rows.some((r) => r.tools?.length) ? <p className="tb-hint">For an operation that calls tools by name (Connect tools), Access is what the app declares for the operation as a whole; a tool can still write (for example a draft tool). The engine refuses any tool not named here.</p> : null}
+      {rows.some((r) => r.tools?.length) ? <p className="tb-hint">For an operation that calls tools by name (Connect tools), Access is the most the app lets such a tool do, because the engine does not know what each tool does. The engine refuses any tool not named here.</p> : null}
+      {rows.filter(writesThroughConnect).map((r) => (
+        <Notice key={`${r.product}.${r.op}.write`} tone="needs-you" role="status">
+          {`${r.tools?.length ? `${r.tools.join(", ")}: ` : ""}${CONNECT_WRITE_ACCESS}`}
+        </Notice>
+      ))}
     </div>
   );
 }

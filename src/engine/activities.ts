@@ -49,14 +49,48 @@ export function idempotencyKey(workflowId: string, runId: string, stepId: string
   return key.length <= 128 ? key : `wfrun:${createHash("sha256").update(key).digest("hex").slice(0, 60)}`;
 }
 
+/** The one bridge code whose message the engine keeps: a Rules hook refused the call and says why, for the owner (F-R1). */
+export const HOOK_DENIED = "hook_denied";
+const DENIAL_MAX = 200;
+/** "... (rule rul_<ULID>)" at the end of the message: the Rules rule that decided. */
+const RULE_ID = /\(rule (rul_[0-9A-HJKMNP-TV-Z]{26})\)$/;
+
+export interface Denial {
+  /** "Rules: <reason> (rule rul_<ULID>)" or "denied by <product>/<hookId>", cut to 200 characters */
+  message: string;
+  ruleId: string | null;
+}
+
+/** The kept part of a `hook_denied` refusal; null for any other error (those keep the code and the status only). */
+export function denialOf(e: unknown): Denial | null {
+  if (!(e instanceof TbError) || e.code !== HOOK_DENIED) return null;
+  const full = e.message.replace(/[\p{Cc}\p{Cf}]+/gu, " ").trim();
+  // the rule id is read from the whole text: the cut below may remove it
+  const ruleId = RULE_ID.exec(full)?.[1] ?? null;
+  return { message: full.slice(0, DENIAL_MAX), ruleId };
+}
+
 function classify(e: unknown): ApplicationFailure {
   if (e instanceof TbError) {
     const transient = e.httpStatus >= 500 || e.httpStatus === 429 || e.httpStatus === 408 || e.code === "rate_limited" || e.code === "timeout";
-    // the code and the status only: the text of another app may hold its data, and a failure is stored in Temporal history
-    return ApplicationFailure.create({ message: `${e.code} (HTTP ${e.httpStatus})`, type: e.code, nonRetryable: !transient });
+    // the code and the status only: the text of another app may hold its data, and a failure is stored in Temporal history.
+    // The one exception is a Rules denial (hook_denied): its text is written for the owner, so it is kept, cut to 200 characters.
+    const denial = denialOf(e);
+    return ApplicationFailure.create({ message: denial ? denial.message : `${e.code} (HTTP ${e.httpStatus})`, type: e.code, nonRetryable: !transient });
   }
   if (e instanceof ApplicationFailure) return e;
   return ApplicationFailure.create({ message: (e instanceof Error ? e.message : String(e)).slice(0, 300), type: "call_failed", nonRetryable: false });
+}
+
+const REASON_CODE = /^[A-Za-z][A-Za-z0-9_]{1,63}$/;
+
+/** The reason code of a failed `port.offer`: the `code` of the error (`agent_not_found`, `ERR_SQLITE_ERROR` -> `err_sqlite_error`), or an
+ *  Error whose whole message IS a code; "unknown" otherwise. Never free text: a message may hold data. */
+export function offerReason(e: unknown): string {
+  const code = (e as { code?: unknown } | null)?.code;
+  if (typeof code === "string" && REASON_CODE.test(code)) return code.toLowerCase();
+  if (e instanceof Error && REASON_CODE.test(e.message)) return e.message.toLowerCase();
+  return "unknown";
 }
 
 function attemptNo(): number {
@@ -212,8 +246,9 @@ export function createActivities(deps: EngineDeps): Activities & LocalActivities
         r = await invoke(a.product, a.op, a.input, idempotencyKey(a.workflowId, a.runId, a.stepId, a.loopPath), a);
       } catch (e) {
         const f = classify(e);
+        const denial = denialOf(e);
         // the last attempt (or a refusal that no retry changes) closes the step row; an earlier one leaves it `running`
-        if (f.nonRetryable || attempts >= a.maxAttempts) store.writeStep(db, { ...base, status: "failed", endedAt: now(), attempts, errorCode: f.type ?? "call_failed" }, now());
+        if (f.nonRetryable || attempts >= a.maxAttempts) store.writeStep(db, { ...base, status: "failed", endedAt: now(), attempts, errorCode: f.type ?? "call_failed", ...(denial ? { errorMessage: denial.message, ruleId: denial.ruleId } : {}) }, now());
         throw f;
       }
       if (r.status === "held") {
@@ -263,8 +298,10 @@ export function createActivities(deps: EngineDeps): Activities & LocalActivities
           });
         } catch (e) {
           const code = e instanceof Error && e.message === "agent_port_unavailable" ? "agent_port_unavailable" : "offer_failed";
-          store.writeStep(db, { ...base, status: "failed", endedAt: now(), attempts, errorCode: code }, now());
-          throw permanent(code, code === "agent_port_unavailable" ? "Agent steps are not available in this build." : "The agent step could not be offered.");
+          // F-G5: the reason code of the refusal (the port's own code, e.g. `agent_not_found`); never its text
+          const message = code === "agent_port_unavailable" ? "Agent steps are not available in this build." : `The agent step could not be offered: ${offerReason(e)}.`;
+          store.writeStep(db, { ...base, status: "failed", endedAt: now(), attempts, errorCode: code, errorMessage: message }, now());
+          throw permanent(code, message);
         }
         store.writeStep(db, { ...base, status: "waiting_agent", attempts, agent: { stepRunId, agentId: a.by.agent } }, now());
         if ((a.heartbeatSec ?? 0) > 0) Context.current().heartbeat();

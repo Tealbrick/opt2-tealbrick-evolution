@@ -7913,6 +7913,12 @@
                   "items": {
                     "type": "string"
                   }
+                },
+                "via": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
                 }
               },
               "required": [
@@ -9039,7 +9045,7 @@
     {
       "id": "schedule_run_now",
       "title": "Run a workflow schedule now",
-      "description": "Start one run of a schedule at once (the schedule's overlap rule still applies). Owner only.",
+      "description": "Start one run of a schedule at once and return its run id. Each request starts its own run, whatever else is running; the same request sent again (same idempotency key) returns the same run. Owner only.",
       "input": {
         "type": "object",
         "additionalProperties": false,
@@ -9064,11 +9070,19 @@
           },
           "triggered": {
             "type": "boolean"
+          },
+          "runId": {
+            "type": "string"
+          },
+          "workflowId": {
+            "type": "string"
           }
         },
         "required": [
           "id",
-          "triggered"
+          "triggered",
+          "runId",
+          "workflowId"
         ]
       },
       "crud": [
@@ -9842,6 +9856,20 @@
                     "string",
                     "null"
                   ]
+                },
+                "errorMessage": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "A short reason the owner may read: the Rules denial text (200 characters at most) of a hook_denied step, or the reason code of an agent step that could not be offered. Null otherwise."
+                },
+                "ruleId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The Rules rule that denied the call (rul_<ULID>), when the denial names it."
                 },
                 "input": {},
                 "output": {},

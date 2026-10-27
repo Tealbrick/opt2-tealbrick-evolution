@@ -2,7 +2,7 @@
 // All are person ops (the workspace owner only, C88): they return inputs/outputs-adjacent data of other apps' calls only in
 // the run detail, never to an agent. `engineHandlers(manifest)` is spread into the handler map of src/app.ts.
 import { nextCronTime, validateAgainstSchema } from "@opt2-tealbrick/manifest";
-import { type HandlerSpec, type OpContext, TbError } from "@opt2-tealbrick/miniapp-sdk";
+import { type Db, type HandlerSpec, type OpContext, TbError } from "@opt2-tealbrick/miniapp-sdk";
 import type * as K from "#kit";
 import { OP } from "#kit";
 import { UNASSIGNED_AGENT } from "../migrate/contract.ts";
@@ -12,7 +12,7 @@ import { EngineError } from "./errors.ts";
 import { readStepIo } from "./history.ts";
 import type { Json } from "./json.ts";
 import { refreshRoleAttention } from "./role-attention.ts";
-import { deleteSchedule, describeSchedule, pauseSchedule, type ScheduleLive, syncAndRecord, triggerSchedule } from "./schedules.ts";
+import { deleteSchedule, describeSchedule, pauseSchedule, runNowId, runScheduleNow, type ScheduleLive, scheduleTimeoutMs, syncAndRecord } from "./schedules.ts";
 import { startRun } from "./start-run.ts";
 import { getTemporal } from "./temporal.ts";
 import { type OpUse, type ValidationIssue, type ValidationResult, validateContract } from "./validate.ts";
@@ -43,12 +43,37 @@ export function usageRows(uses: readonly OpUse[]) {
   return uses.map((u) => ({ product: u.product, op: u.op, crud: u.crud, effect: u.effect, scope: u.scopeType ?? null, held: u.holdFamily !== undefined, ...(u.tools ? { tools: u.tools } : {}), ...(u.via ? { via: u.via } : {}) }));
 }
 
+/**
+ * F4 / F-G2: a `workflow` step starts another workflow, and the child's ops are part of what the owner approves (listed with `via`).
+ * Check and activation both read the list from here, so they agree. A child that is not ACTIVE cannot be started: activation refuses
+ * (`inactive[0]`), the check lists it as a dependency warning.
+ */
+export function withChildUses(db: Db, contract: WorkflowContract, own: readonly OpUse[]): { uses: OpUse[]; inactive: { stepId: string; path: string; workflow: string; version?: number }[] } {
+  const uses: OpUse[] = [...own];
+  const inactive: { stepId: string; path: string; workflow: string; version?: number }[] = [];
+  walkSteps(contract.steps, (s, info) => {
+    if (s.type !== "workflow") return;
+    const child = s.version !== undefined ? store.getActivation(db, s.workflow, s.version) : store.activeActivation(db, s.workflow);
+    if (child?.state !== "active") {
+      inactive.push({ stepId: s.id, path: info.path, workflow: s.workflow, ...(s.version !== undefined ? { version: s.version } : {}) });
+      return;
+    }
+    for (const u of child.uses) {
+      const via = [...new Set([...(u.via ?? []), s.workflow])];
+      if (!uses.some((x) => x.product === u.product && x.op === u.op && JSON.stringify(x.via ?? []) === JSON.stringify(via))) uses.push({ ...u, steps: [s.id], via });
+    }
+  });
+  return { uses, inactive };
+}
+
 export function engineHandlers(manifest: { companions?: Companions }) {
   const companions: Companions = manifest.companions ?? [];
 
   function validate(ctx: OpContext, contract: unknown): ValidationResult {
     return validateContract(contract, {
       companions,
+      // F-G3: the 0.3.x placeholder agent is refused when the owner checks, saves or activates (the migration itself still validates with it)
+      refusePlaceholderAgent: true,
       lookupWorkflow: (id, version) => {
         const v = version ?? store.latestVersion(ctx.db, id);
         return v === null ? null : (store.getDefinition(ctx.db, id, v)?.contract ?? null);
@@ -74,11 +99,16 @@ export function engineHandlers(manifest: { companions?: Companions }) {
 
   const cronOf = (spec: store.ScheduleSpecRow): string | null => spec.cron ?? null;
 
-  async function viewOf(row: store.ScheduleRow, live?: ScheduleLive | null): Promise<K.ScheduleSetOutput> {
+  async function viewOf(db: Db, row: store.ScheduleRow, live?: ScheduleLive | null): Promise<K.ScheduleSetOutput> {
     let l: ScheduleLive | null = live ?? null;
     if (l === null && live === undefined) {
       const t = await getTemporal();
       l = t.connected ? await describeSchedule(t.client, row.id) : { state: "unreachable", paused: null, nextRunAt: null, lastRunAt: null, lastRunWorkflowId: null, runningCount: 0, timezone: null, note: null };
+    }
+    // a "run now" starts its run directly, so the Temporal Schedule does not list it among its actions: the run index knows it
+    if (l && l.state === "ok") {
+      const last = store.lastScheduleRun(db, row.id);
+      if (last && (l.lastRunAt === null || Date.parse(l.lastRunAt) < Date.parse(last.startedAt))) l = { ...l, lastRunAt: last.startedAt, lastRunWorkflowId: last.temporalWorkflowId };
     }
     return {
       id: row.id,
@@ -216,7 +246,19 @@ export function engineHandlers(manifest: { companions?: Companions }) {
           if (!input.workflowId || input.version === undefined) throw new EngineError("validation_failed", "Give the contract, or workflowId and version of a saved one.", 422);
           contract = mustDefinition(ctx, input.workflowId, input.version).contract;
         }
-        const r = validate(ctx, contract);
+        let r = validate(ctx, contract);
+        // F-G2: the ops of the child workflows count here as they do at activation; a child that is not active is listed as a dependency
+        if (r.ok) {
+          const dep = withChildUses(ctx.db, contract as WorkflowContract, r.uses);
+          const notes: ValidationIssue[] = dep.inactive.map((d) => ({
+            severity: "warning",
+            code: "child_not_active",
+            path: `${d.path}/workflow`,
+            message: `Step ${d.stepId} starts the workflow ${d.workflow}${d.version !== undefined ? ` version ${d.version}` : ""}, which is not active. Its operations are not in this list yet; activate it first, or activation of this version is refused.`,
+            stepId: d.stepId,
+          }));
+          r = { ...r, uses: dep.uses, warnings: [...r.warnings, ...notes] };
+        }
         const id = (contract as { id?: unknown } | null)?.id;
         const active = typeof id === "string" ? (store.activeActivation(ctx.db, id)?.version ?? null) : null;
         return withAliases(r, active) as unknown as K.WorkflowContractValidateOutput;
@@ -248,23 +290,17 @@ export function engineHandlers(manifest: { companions?: Companions }) {
       redact: (i, o) => `Activated ${i.workflowId} v${i.version}${o ? ` (${o.ops.length} operation(s))` : ""}`,
       async run(input, ctx) {
         const d = mustDefinition(ctx, input.workflowId, input.version);
-        const r = validate(ctx, d.contract);
-        if (!r.ok) failValidation(r);
         // M3 rule: a migrated 0.3.x workflow whose agent is the placeholder is never activated (the owner picks the agent first)
         walkSteps(d.contract.steps, (s) => {
           if (s.type === "ai" && "agent" in s.by && s.by.agent === UNASSIGNED_AGENT) throw new EngineError("agent_unassigned", `Step ${s.id} still names the placeholder agent. Choose the agent in the editor, save the new version and activate that.`, 422);
         });
+        const r = validate(ctx, d.contract);
+        if (!r.ok) failValidation(r);
         // F4: a workflow step starts another workflow: the child must be ACTIVE now, and its ops are part of what the owner approves
-        const uses: OpUse[] = [...r.uses];
-        walkSteps(d.contract.steps, (s) => {
-          if (s.type !== "workflow") return;
-          const child = s.version !== undefined ? store.getActivation(ctx.db, s.workflow, s.version) : store.activeActivation(ctx.db, s.workflow);
-          if (child?.state !== "active") throw new EngineError("child_not_active", `The workflow ${s.workflow}${s.version !== undefined ? ` version ${s.version}` : ""} (step ${s.id}) is not active. Activate it first.`, 409);
-          for (const u of child.uses) {
-            const via = [...new Set([...(u.via ?? []), s.workflow])];
-            if (!uses.some((x) => x.product === u.product && x.op === u.op && JSON.stringify(x.via ?? []) === JSON.stringify(via))) uses.push({ ...u, steps: [s.id], via });
-          }
-        });
+        const dep = withChildUses(ctx.db, d.contract, r.uses);
+        const first = dep.inactive[0];
+        if (first) throw new EngineError("child_not_active", `The workflow ${first.workflow}${first.version !== undefined ? ` version ${first.version}` : ""} (step ${first.stepId}) is not active. Activate it first.`, 409);
+        const uses = dep.uses;
         const { activation, previous } = store.activate(ctx.db, d.workflowId, d.version, uses, Date.now());
         const crud: Record<string, string[]> = {};
         for (const u of uses) crud[u.product] = [...new Set([...(crud[u.product] ?? []), ...u.crud])].sort();
@@ -312,7 +348,7 @@ export function engineHandlers(manifest: { companions?: Companions }) {
           row = store.insertSchedule(ctx.db, { id: store.newScheduleId(now), ...n }, now);
         }
         if (row.staleReason) store.setStale(ctx.db, row.id, null, now);
-        return viewOf(await pushToTemporal(ctx, store.getSchedule(ctx.db, row.id) as store.ScheduleRow));
+        return viewOf(ctx.db, await pushToTemporal(ctx, store.getSchedule(ctx.db, row.id) as store.ScheduleRow));
       },
     }),
     [OP.schedulePause]: eop<K.SchedulePauseInput, K.SchedulePauseOutput>({
@@ -330,7 +366,7 @@ export function engineHandlers(manifest: { companions?: Companions }) {
             await pushToTemporal(ctx, row);
           }
         } else store.setScheduleSync(ctx.db, row.id, "pending", "Temporal does not answer; the state is applied when it does.", Date.now());
-        return viewOf(store.getSchedule(ctx.db, row.id) as store.ScheduleRow);
+        return viewOf(ctx.db, store.getSchedule(ctx.db, row.id) as store.ScheduleRow);
       },
     }),
     [OP.scheduleRunNow]: eop<K.ScheduleRunNowInput, K.ScheduleRunNowOutput>({
@@ -340,18 +376,14 @@ export function engineHandlers(manifest: { companions?: Companions }) {
         if (!row) throw new EngineError("not_found", "No schedule with this id.", 404);
         if (!store.activeActivation(ctx.db, row.workflowId)) throw new EngineError("not_activated", `${row.workflowId} has no active version.`, 409);
         const t = await mustTemporal();
+        // S3 / F-G6: a deliberate click starts its own run (the id comes from the request's idempotency key) and the answer names it
+        const runId = runNowId(row.id, ctx.idempotencyKey ?? null);
         try {
-          await triggerSchedule(t.client, row.id);
-        } catch (first) {
-          // the schedule may be missing in Temporal (a restored database): create it from the row and try once more
-          try {
-            await syncAndRecord(ctx.db, t.client, row, Date.now());
-            await triggerSchedule(t.client, row.id);
-          } catch (e) {
-            throw new EngineError("temporal_failed", `Temporal refused the run: ${e instanceof Error ? e.message : String(first)}`, 502);
-          }
+          await runScheduleNow(t.client, row, runId, scheduleTimeoutMs(ctx.db, row));
+        } catch (e) {
+          throw new EngineError("temporal_failed", `Temporal refused the run: ${e instanceof Error ? e.message : String(e)}`, 502);
         }
-        return { id: row.id, triggered: true };
+        return { id: row.id, triggered: true, runId, workflowId: row.workflowId };
       },
     }),
     [OP.scheduleDelete]: eop<K.ScheduleDeleteInput, K.ScheduleDeleteOutput>({
@@ -372,7 +404,7 @@ export function engineHandlers(manifest: { companions?: Companions }) {
         const rows = store.listSchedules(ctx.db, input.workflowId).slice(0, 500);
         const t = await getTemporal();
         const lives = await Promise.all(rows.map((r) => (t.connected ? describeSchedule(t.client, r.id) : Promise.resolve<ScheduleLive>({ state: "unreachable", paused: null, nextRunAt: null, lastRunAt: null, lastRunWorkflowId: null, runningCount: 0, timezone: null, note: null }))));
-        return { schedules: await Promise.all(rows.map((r, i) => viewOf(r, lives[i] ?? null))), temporalConnected: t.connected } as unknown as K.SchedulesListOutput;
+        return { schedules: await Promise.all(rows.map((r, i) => viewOf(ctx.db, r, lives[i] ?? null))), temporalConnected: t.connected } as unknown as K.SchedulesListOutput;
       },
     }),
     [OP.workflowRunNow]: eop<K.WorkflowRunNowInput, K.WorkflowRunNowOutput>({

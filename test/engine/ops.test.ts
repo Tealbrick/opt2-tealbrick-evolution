@@ -41,7 +41,7 @@ test("validate: a good contract lists its operations (usage); a bad one lists ev
   assert.equal(good.ok, true);
   assert.deepEqual(
     good.usage.map((u) => [u.product, u.op, u.crud, u.scope, u.held, u.tools]),
-    [["connect", "tools", ["read"], "account", false, ["gmail_create_email_draft", "gmail_fetch_emails"]]],
+    [["connect", "tools", ["read", "create", "update", "delete"], "account", false, ["gmail_create_email_draft", "gmail_fetch_emails"]]],
   );
   assert.equal(good.activeVersion, null);
   assert.equal(good.uses.length, 1, "uses and usage are the same list");
@@ -89,7 +89,7 @@ test("activate: the owner sees the ops, CRUD and scopes; the engine stores that 
   const a = await op<{ activeVersion: number; previousVersion: number | null; ops: { product: string; op: string; tools: string[] }[]; crud: Record<string, string[]>; scopes: { product: string; scopeType: string }[]; notice: string; usage: unknown[] }>("workflow_activate", { workflowId: "daily-email-summary", version: 1 });
   assert.equal(a.activeVersion, 1);
   assert.equal(a.previousVersion, null);
-  assert.deepEqual(a.crud, { connect: ["read"] });
+  assert.deepEqual(a.crud, { connect: ["create", "delete", "read", "update"] }, "F-G1: a Connect tool is not only read: the catalog gives no per-tool crud, so the op's ceiling is shown");
   assert.deepEqual(a.scopes, [{ product: "connect", scopeType: "account" }]);
   assert.equal(a.ops[0]?.tools.join(), "gmail_create_email_draft,gmail_fetch_emails");
   assert.equal(a.usage.length, 1);

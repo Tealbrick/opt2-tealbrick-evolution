@@ -107,6 +107,10 @@ export function App() {
             agents={directory.agents}
             agentsLoading={directory.loading}
             onOpenRuns={() => nav.go("runs")}
+            onOpenRun={(runId) => {
+              setOpenRun(runId);
+              nav.go("runs");
+            }}
           />
         );
       case "runs":

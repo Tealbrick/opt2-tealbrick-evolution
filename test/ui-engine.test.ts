@@ -585,17 +585,19 @@ describe("Engine schedules", () => {
     await m.unmount();
   });
 
-  it("Run now says the run started (the engine gives no run id); Pause and Delete send the revision", async () => {
+  it("Run now names the run the engine started and opens it on request; Pause and Delete send the revision", async () => {
     setup([sched()]);
-    stub.handlers.schedule_run_now = () => ({ id: "sch_1", triggered: true });
+    stub.handlers.schedule_run_now = () => ({ id: "sch_1", triggered: true, runId: "sch_1-rn0123456789abcdef0123", workflowId: "daily-email-summary" });
     stub.handlers.schedule_pause = () => sched({ paused: true, revision: 4 });
     stub.handlers.schedule_delete = () => ({ id: "sch_1", deleted: true });
     let seeRuns = 0;
-    const m = await mount(h(schedules.EngineSchedules, { onOpenRuns: () => seeRuns++ }));
+    const opened: string[] = [];
+    const m = await mount(h(schedules.EngineSchedules, { onOpenRuns: () => seeRuns++, onOpenRun: (id: string) => opened.push(id) }));
     await click(button(m.host, "Run now"));
     assert.deepEqual(callsOf("schedule_run_now"), [{ id: "sch_1" }]);
-    assert.match(text(m.host), /Run started\./);
-    assert.doesNotMatch(text(m.host), /evo:|run_/, "no run id is shown");
+    assert.match(text(m.host), /Run sch_1-rn0123456789abcdef0123 started\./, "F-G6: the run id the engine returned is shown");
+    await click(button(m.host, "Open the run"));
+    assert.deepEqual(opened, ["sch_1-rn0123456789abcdef0123"], "the button opens that run");
     await click(button(m.host, "See runs"));
     assert.equal(seeRuns, 1);
     await click(button(m.host, "Pause"));

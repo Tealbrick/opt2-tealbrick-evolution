@@ -293,7 +293,18 @@ export function RunDetail({ runId, title, migrated = false, agents, holdHref, fr
                   </div>
                 ) : null}
                 {s.errorCode ? <p className="tb-hint">{s.errorCode.replaceAll("_", " ")}</p> : null}
-                {s.error ? <p className="tb-hint">{s.error}</p> : null}
+                {s.errorMessage ? (
+                  <p className="tb-hint step-reason" data-step-reason={s.stepId}>
+                    {s.errorMessage}
+                    {s.ruleId ? (
+                      <>
+                        {" "}
+                        Rule <code className="code-ops">{s.ruleId}</code> decided this.
+                      </>
+                    ) : null}
+                  </p>
+                ) : null}
+                {s.error && s.error !== s.errorMessage ? <p className="tb-hint">{s.error}</p> : null}
                 {s.holdOutcome ? <p className="tb-hint">{`Approval: ${s.holdOutcome.replaceAll("_", " ")}.`}</p> : null}
                 <StepIo step={s} />
               </li>

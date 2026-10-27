@@ -256,6 +256,10 @@ export interface StepRow {
   tokensIn: number | null;
   tokensOut: number | null;
   errorCode: string | null;
+  /** short reason, kept only for `hook_denied` (bridge message, 200 characters at most) and a failed agent offer (reason code) */
+  errorMessage: string | null;
+  /** the Rules rule that denied the call (`rul_<ULID>`), parsed from a `hook_denied` message */
+  ruleId: string | null;
 }
 
 const RUN_SELECT = `SELECT r.*,
@@ -318,6 +322,8 @@ function toStep(r: Record<string, unknown>): StepRow {
     tokensIn: num(r.tokens_in),
     tokensOut: num(r.tokens_out),
     errorCode: str(r.error_code),
+    errorMessage: str(r.error_message),
+    ruleId: str(r.rule_id),
   };
 }
 
@@ -369,6 +375,8 @@ export interface StepWrite {
   op?: string | null;
   attempts?: number;
   errorCode?: string | null;
+  errorMessage?: string | null;
+  ruleId?: string | null;
   inBytes?: number | null;
   outBytes?: number | null;
   tokensIn?: number | null;
@@ -381,8 +389,8 @@ export function writeStep(db: Db, w: StepWrite, now: number): void {
   // the run row may be missing in a unit test of one activity; a step without a run is not indexed
   if (!db.prepare("SELECT 1 AS x FROM engine_runs WHERE workflow_id = ? AND run_id = ?").get(w.workflowId, w.runId)) return;
   db.prepare(
-    `INSERT INTO engine_steps (workflow_id, run_id, step_key, step_id, loop_path, kind, product, op, status, attempts, started_at, ended_at, hold_id, hold_started_at, step_run_id, agent_id, in_bytes, out_bytes, tokens_in, tokens_out, error_code, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `INSERT INTO engine_steps (workflow_id, run_id, step_key, step_id, loop_path, kind, product, op, status, attempts, started_at, ended_at, hold_id, hold_started_at, step_run_id, agent_id, in_bytes, out_bytes, tokens_in, tokens_out, error_code, error_message, rule_id, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT (workflow_id, run_id, step_key) DO UPDATE SET
        status = excluded.status,
        attempts = max(engine_steps.attempts, excluded.attempts),
@@ -398,12 +406,21 @@ export function writeStep(db: Db, w: StepWrite, now: number): void {
        tokens_in = coalesce(excluded.tokens_in, engine_steps.tokens_in),
        tokens_out = coalesce(excluded.tokens_out, engine_steps.tokens_out),
        error_code = excluded.error_code,
+       -- the workflow's own failed write (code only) must not erase the reason the activity stored for the same failure
+       error_message = CASE WHEN excluded.status = 'failed' AND excluded.error_code IS engine_steps.error_code THEN coalesce(excluded.error_message, engine_steps.error_message) ELSE excluded.error_message END,
+       rule_id = CASE WHEN excluded.status = 'failed' AND excluded.error_code IS engine_steps.error_code THEN coalesce(excluded.rule_id, engine_steps.rule_id) ELSE excluded.rule_id END,
        updated_at = excluded.updated_at`,
-  ).run(w.workflowId, w.runId, w.stepKey, w.stepId, w.loopPath.length ? w.loopPath.join(".") : null, w.kind, w.product ?? null, w.op ?? null, w.status, w.attempts ?? 0, w.startedAt, w.endedAt ?? null, w.hold?.id ?? null, w.hold?.startedAt ?? null, w.agent?.stepRunId ?? null, w.agent?.agentId ?? null, w.inBytes ?? null, w.outBytes ?? null, w.tokensIn ?? null, w.tokensOut ?? null, w.errorCode ?? null, now);
+  ).run(w.workflowId, w.runId, w.stepKey, w.stepId, w.loopPath.length ? w.loopPath.join(".") : null, w.kind, w.product ?? null, w.op ?? null, w.status, w.attempts ?? 0, w.startedAt, w.endedAt ?? null, w.hold?.id ?? null, w.hold?.startedAt ?? null, w.agent?.stepRunId ?? null, w.agent?.agentId ?? null, w.inBytes ?? null, w.outBytes ?? null, w.tokensIn ?? null, w.tokensOut ?? null, w.errorCode ?? null, w.errorMessage ?? null, w.ruleId ?? null, now);
 }
 
 export function endHold(db: Db, workflowId: string, runId: string, stepKey: string, outcome: string, now: number): void {
   db.prepare("UPDATE engine_steps SET hold_ended_at = ?, hold_outcome = ?, updated_at = ? WHERE workflow_id = ? AND run_id = ? AND step_key = ?").run(now, outcome, now, workflowId, runId, stepKey);
+}
+
+/** The newest run the index holds for a schedule (a poll that found no change leaves none). */
+export function lastScheduleRun(db: Db, scheduleId: string): { startedAt: string; temporalWorkflowId: string } | null {
+  const r = db.prepare("SELECT started_at, temporal_workflow_id FROM engine_runs WHERE schedule_id = ? ORDER BY started_at DESC LIMIT 1").get(scheduleId);
+  return r ? { startedAt: iso(Number(r.started_at)) as string, temporalWorkflowId: String(r.temporal_workflow_id) } : null;
 }
 
 export function getRun(db: Db, workflowId: string, runId: string): { run: RunRow; steps: StepRow[] } | null {

@@ -4,8 +4,9 @@
 //   first activity (v1 embedded the steps in the Schedule: a bug).
 //   A `poll` schedule starts a run that begins with a read and stops early when the cursor did not change.
 
+import { createHash, randomBytes } from "node:crypto";
 import type { Db } from "@opt2-tealbrick/miniapp-sdk";
-import { type Client, type ScheduleDescription, ScheduleNotFoundError, type ScheduleOptions, ScheduleOverlapPolicy, type ScheduleSpec } from "@temporalio/client";
+import { type Client, type ScheduleDescription, ScheduleNotFoundError, type ScheduleOptions, ScheduleOverlapPolicy, type ScheduleSpec, WorkflowExecutionAlreadyStartedError, WorkflowIdReusePolicy } from "@temporalio/client";
 import * as store from "./engine-store.ts";
 import type { RunInput } from "./run-types.ts";
 import { executionCeilingMs, TASK_QUEUE, WORKFLOW_TYPE } from "./run-types.ts";
@@ -28,14 +29,19 @@ export function toScheduleSpec(spec: store.ScheduleSpecRow): ScheduleSpec {
   throw new Error("a schedule needs cron or every");
 }
 
-export function scheduleAction(row: store.ScheduleRow, executionTimeoutMs?: number): NonNullable<ScheduleOptions["action"]> {
-  const args: RunInput = {
+/** The start input of a run of this schedule (the same for a Temporal Schedule action and for a "run now"). `runId` empty = the interpreter derives it from the workflow id. */
+export function scheduleRunInput(row: store.ScheduleRow, runId = ""): RunInput {
+  return {
     workflowId: row.workflowId,
     version: row.versionPin,
-    // empty: the interpreter derives the run id from the Temporal workflow id (`evo:<workflowId>:<scheduleId>-<time>`)
-    runId: "",
+    runId,
     trigger: { kind: row.kind === "poll" ? "poll" : "schedule", timezone: row.spec.timezone, input: row.input as never, scheduleId: row.id },
   };
+}
+
+export function scheduleAction(row: store.ScheduleRow, executionTimeoutMs?: number): NonNullable<ScheduleOptions["action"]> {
+  // empty runId: the interpreter derives it from the Temporal workflow id (`evo:<workflowId>:<scheduleId>-<time>`)
+  const args = scheduleRunInput(row);
   return {
     type: "startWorkflow",
     workflowType: WORKFLOW_TYPE,
@@ -87,9 +93,46 @@ export async function pauseSchedule(client: Client, id: string, paused: boolean,
   else await h.unpause(note ?? "Resumed by the owner.");
 }
 
-/** Run now: one action immediately (the schedule's overlap policy still applies). */
-export async function triggerSchedule(client: Client, id: string): Promise<void> {
-  await client.schedule.getHandle(scheduleIdOf(id)).trigger();
+/** The run id of a "run now": `<scheduleId>-rn<20 hex>`. The same request (same idempotency key) always gets the same id; another request, or a call without a key, gets its own. */
+export function runNowId(scheduleId: string, idempotencyKey: string | null): string {
+  const hex = idempotencyKey ? createHash("sha256").update(`run-now:${scheduleId}:${idempotencyKey}`).digest("hex").slice(0, 20) : randomBytes(10).toString("hex");
+  return `${scheduleId}-rn${hex}`;
+}
+
+/** The hard ceiling of a run of this schedule (F2): maxRunMinutes of the version it would run, as for the Temporal Schedule. */
+export function scheduleTimeoutMs(db: Db, row: store.ScheduleRow): number {
+  const version = row.versionPin ?? store.activeActivation(db, row.workflowId)?.version ?? store.latestVersion(db, row.workflowId);
+  const def = version === null ? null : store.getDefinition(db, row.workflowId, version);
+  return executionCeilingMs(def?.contract.limits?.maxRunMinutes);
+}
+
+/**
+ * Run now: starts ONE run of the schedule's workflow at once and returns its run id.
+ *
+ * It does not go through the Temporal Schedule's `trigger()`: the Schedule names every run it starts `<scheduleId>-<time to the
+ * SECOND>`, so two "run now" in one second got the same workflow id and the second was lost, and its overlap policy dropped a
+ * second one while the first was still running (S3). A deliberate click starts its own run; the Schedule keeps its own timing and
+ * its overlap rule for the runs it starts itself.
+ *
+ * Idempotent per request: the run id comes from the idempotency key and the start refuses a duplicate id even after that run has
+ * closed, so the same request sent again returns the same run (`started: false`) and never a second one.
+ */
+export async function runScheduleNow(client: Client, row: store.ScheduleRow, runId: string, executionTimeoutMs: number): Promise<{ runId: string; temporalWorkflowId: string; started: boolean }> {
+  const temporalWorkflowId = `evo:${row.workflowId}:${runId}`;
+  try {
+    await client.workflow.start(WORKFLOW_TYPE, {
+      taskQueue: TASK_QUEUE,
+      workflowId: temporalWorkflowId,
+      args: [scheduleRunInput(row, runId)],
+      workflowExecutionTimeout: executionTimeoutMs,
+      workflowIdReusePolicy: WorkflowIdReusePolicy.REJECT_DUPLICATE,
+      memo: { scheduleId: row.id, evolutionWorkflowId: row.workflowId },
+    });
+    return { runId, temporalWorkflowId, started: true };
+  } catch (e) {
+    if (e instanceof WorkflowExecutionAlreadyStartedError) return { runId, temporalWorkflowId, started: false };
+    throw e;
+  }
 }
 
 export async function deleteSchedule(client: Client, id: string): Promise<boolean> {
@@ -139,9 +182,7 @@ export async function describeSchedule(client: Client, id: string): Promise<Sche
 /** Marks a row `synced` or `error` after a sync attempt. */
 export async function syncAndRecord(db: Db, client: Client, row: store.ScheduleRow, now: number): Promise<void> {
   try {
-    const version = row.versionPin ?? store.activeActivation(db, row.workflowId)?.version ?? store.latestVersion(db, row.workflowId);
-    const def = version === null ? null : store.getDefinition(db, row.workflowId, version);
-    await syncSchedule(client, row, executionCeilingMs(def?.contract.limits?.maxRunMinutes));
+    await syncSchedule(client, row, scheduleTimeoutMs(db, row));
     store.setScheduleSync(db, row.id, "synced", null, now);
   } catch (e) {
     store.setScheduleSync(db, row.id, "error", e instanceof Error ? e.message : String(e), now);

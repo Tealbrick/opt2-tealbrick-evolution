@@ -9,8 +9,10 @@
 // The result lists every problem (errors stop activation; warnings do not) and, when there is no error, the list of
 // operations the workflow uses (`uses`), which is what activation shows the owner and stores for the engine's narrowing.
 import { nextCronTime, validateAgainstSchema } from "@opt2-tealbrick/manifest";
+import { UNASSIGNED_AGENT } from "../migrate/contract.ts";
 import type { TargetCatalog, TargetOp } from "./catalog.ts";
 import { currentCatalog, findOp } from "./catalog.ts";
+import { crudOfCall } from "./catalog-rules.ts";
 import { type AiStep, type ApprovalStep, type AppStep, type ConditionStep, type JsonSchemaObject, type LoopStep, type ParallelStep, type Step, type TimerStep, type TransformStep, type WorkflowContract, type WorkflowStep, walkSteps } from "./contract.ts";
 import { CONTRACT_SCHEMA, LIMITS } from "./contract-schema.ts";
 import { checkExpr, ExprError, exprRefs, hasTemplate, type PathSeg, parseRef, parseTemplate, type Ref, type ValueExpr } from "./expr.ts";
@@ -65,6 +67,32 @@ export interface ValidateOptions {
   lookupWorkflow?: (id: string, version?: number) => WorkflowContract | null;
   /** model roles; default MODEL_ROLES */
   modelRoles?: readonly string[];
+  /** the owner ops (check, save, activate) set this: an ai step that still names the 0.3.x placeholder agent is an error (`agent_unassigned`).
+   *  Default false: the 0.3.x migration validates the contracts it makes, and those carry the placeholder until the owner picks an agent. */
+  refusePlaceholderAgent?: boolean;
+}
+
+// ajv follow-on messages of a step-kind schema: when a precise problem exists at or under the same pointer they only add noise.
+// The editor drops them too (src/ui/FieldIssues.tsx `plainIssues`); keep the two rules the same (test/engine/validate.test.ts compares them).
+const CASCADE = [/^must match "[^"]*" schema$/, /^must match exactly one schema in oneOf$/, /^must match a schema in anyOf$/];
+const UNEVALUATED = /^must NOT have unevaluated properties$/;
+const coversPath = (at: string, path: string): boolean => path === at || path.startsWith(`${at}/`);
+
+/** The schema problems without their follow-on noise ("must match "then" schema", "must NOT have unevaluated properties") when a
+ *  more precise problem at or under the same pointer says what is wrong; a repeated problem is listed once. */
+export function dropSchemaNoise<T extends { path: string; message: string }>(list: readonly T[]): T[] {
+  const noise = (m: string): boolean => CASCADE.some((r) => r.test(m)) || UNEVALUATED.test(m);
+  const seen = new Set<string>();
+  const out: T[] = [];
+  for (const i of list) {
+    if (noise(i.message) && list.some((o) => o !== i && !noise(o.message) && coversPath(i.path, o.path))) continue;
+    if (CASCADE.some((r) => r.test(i.message)) && list.some((o) => o !== i && UNEVALUATED.test(o.message) && o.path === i.path)) continue;
+    const key = `${i.path}|${i.message}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(i);
+  }
+  return out;
 }
 
 interface SScope {
@@ -103,8 +131,9 @@ export function validateContract(contract: unknown, opts: ValidateOptions = {}):
   }
   const structural = validateAgainstSchema(CONTRACT_SCHEMA as never, contract as never);
   if (!structural.ok) {
-    for (const e of structural.errors) {
-      const unbounded = e.path.endsWith("/max") && /required|must be/.test(e.message) ? "loop_unbounded" : "schema_invalid";
+    for (const e of dropSchemaNoise(structural.errors)) {
+      // only a MISSING max is "unbounded"; max 0 or 201 keeps its precise message ("must be >= 1")
+      const unbounded = e.path.endsWith("/max") && /required/.test(e.message) ? "loop_unbounded" : "schema_invalid";
       err(unbounded, e.path, unbounded === "loop_unbounded" ? "a loop needs a bound: set max (1 to 200)" : e.message);
     }
     return done();
@@ -167,7 +196,8 @@ export function validateContract(contract: unknown, opts: ValidateOptions = {}):
           const r = validateAgainstSchema((op.input ?? { type: "object", additionalProperties: false }) as never, t.input as never);
           if (!r.ok) err("type_mismatch", `${p}/input`, `the poll input does not fit ${t.product}.${t.op}: ${r.errors.map((e) => e.message).join("; ")}`);
         }
-        addUse(op, t.product, "trigger", tool);
+        // a poll reads by definition (poll_not_read above): its access is read whichever tool it names
+        addUse(op, t.product, "trigger", tool, ["read"]);
       }
     } else if (t.kind === "event") {
       warn("event_trigger_pending", p, "event triggers need app event subscriptions (P2); until then the same workflow runs from a poll trigger");
@@ -216,9 +246,13 @@ export function validateContract(contract: unknown, opts: ValidateOptions = {}):
     return op;
   }
 
-  function addUse(op: TargetOp, product: string, stepId: string, tool: string | undefined): void {
+  /** `crud`: what the call may do. Default: the op's own, or for a dynamic op (Connect `tools`) the named tool's (F-G1: not the search op's "read"). */
+  function addUse(op: TargetOp, product: string, stepId: string, tool: string | undefined, crud?: readonly string[]): void {
     const k = `${product}.${op.id}`;
-    const u = uses.get(k) ?? { product, op: op.id, crud: [...op.crud], effect: op.effect, ...(op.holdFamily ? { holdFamily: op.holdFamily } : {}), ...(op.scopeType ? { scopeType: op.scopeType } : {}), idempotency: op.idempotency, steps: [] };
+    const callCrud = crud ?? crudOfCall(op, tool);
+    const u = uses.get(k) ?? { product, op: op.id, crud: op.dynamic ? [] : [...op.crud], effect: op.effect, ...(op.holdFamily ? { holdFamily: op.holdFamily } : {}), ...(op.scopeType ? { scopeType: op.scopeType } : {}), idempotency: op.idempotency, steps: [] };
+    // a dynamic op's crud is the union over the tools the workflow names, in the order read, create, update, delete
+    u.crud = op.dynamic ? (["read", "create", "update", "delete"] as const).filter((c) => u.crud.includes(c) || callCrud.includes(c)) : u.crud;
     if (!u.steps.includes(stepId)) u.steps.push(stepId);
     if (tool !== undefined) u.tools = [...new Set([...(u.tools ?? []), tool])].sort();
     uses.set(k, u);
@@ -460,6 +494,9 @@ export function validateContract(contract: unknown, opts: ValidateOptions = {}):
   }
 
   function checkAi(s: AiStep, sc: SScope, path: string): Schema {
+    if (opts.refusePlaceholderAgent && "agent" in s.by && s.by.agent === UNASSIGNED_AGENT) {
+      err("agent_unassigned", `${path}/by/agent`, `Step ${s.id} still names the placeholder agent of a workflow moved from 0.3.x. In the editor, choose the agent for this step, save a new version and activate that one.`, s.id);
+    }
     if ("role" in s.by) {
       if (!roles.includes(s.by.role)) err("unknown_model_role", `${path}/by/role`, `"${s.by.role}" is not a model role (${roles.join(", ")})`, s.id);
       else if (!TEXT_ROLES.includes(s.by.role)) warn("model_role_not_text", `${path}/by/role`, `${s.by.role} is not a text role: the engine runs reasoning, utility, dreaming and summarize steps; this step would fail with model_role_unsupported`, s.id);
