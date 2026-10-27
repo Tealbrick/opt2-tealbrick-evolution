@@ -34,7 +34,7 @@ for (const h of offsets.split(",").map(Number)) {
   }
   const name = `evo-wp1-cold-${h}h`;
   const started = process.hrtime.bigint();
-  podman(["run", "-d", "--rm", "--name", name, "--user", "root", "-e", "HOME=/tmp", "-v", `${dir}:/data:Z`, "--entrypoint", "/opt/temporal/run.sh", "--memory", "768m", "--cpus", "0.5", image]);
+  podman(["run", "-d", "--rm", "--name", name, "--user", "root", "-e", "HOME=/tmp", "-v", `${dir}:/data:Z`, "--entrypoint", "/opt/temporal/run.sh", "--memory", "384m", "--cpus", "0.5", image]);
   let seconds = Number.NaN;
   for (let i = 0; i < 600; i++) {
     try {

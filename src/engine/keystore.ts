@@ -4,12 +4,17 @@
 //   engine-payload-keys = JSON { current: <kid>, keys: { <kid>: <base64 of 32 bytes>, ... } }
 //
 // First start: one key is generated. Rotation (rotateKey): a new key becomes `current`; the old ones stay in the ring so history
-// sealed with them still opens; retireKey drops an old one after the Temporal retention window (14 days) has passed.
+// sealed with them still opens; retireKey drops an old one after the Temporal retention window (5 days, 120 h) has passed.
 // Loss of the ring: see ARCHITECTURE.md ("Key loss costs run progress only").
 import { randomBytes } from "node:crypto";
 import { type KeyRing, keyIdOf } from "./codec.ts";
 
 export const SECRET_NAME = "engine-payload-keys";
+
+/** The retention of the `evolution` namespace: the default of TEMPORAL_RETENTION in services/temporal/run.sh (120h). A test keeps both equal. */
+export const TEMPORAL_RETENTION_HOURS = 120;
+/** An old key may be retired only after this many hours since the rotation: the retention window plus a margin of one day (clock skew, a run closed just before the window ends). */
+export const KEY_RETIRE_AFTER_HOURS = TEMPORAL_RETENTION_HOURS + 24;
 
 /** The part of the SDK's AppSecrets that the key store uses. */
 export interface SecretStore {
@@ -64,7 +69,7 @@ export async function rotateKey(secrets: SecretStore, ring: KeyRing): Promise<Ke
   return ring;
 }
 
-/** Drops an old key (never the current one). Payloads still sealed with it become unreadable: their runs fail. */
+/** Drops an old key (never the current one). Payloads still sealed with it become unreadable: their runs fail. The caller waits KEY_RETIRE_AFTER_HOURS after the rotation (the ring holds no rotation time, so this is not enforced here). */
 export async function retireKey(secrets: SecretStore, ring: KeyRing, kid: string): Promise<KeyRing> {
   if (kid === ring.current) throw new Error("The current key cannot be retired; rotate first.");
   delete ring.keys[kid];
