@@ -61,7 +61,7 @@ State: written 2026-10-26 on branch `feat/c367-wp2-engine`; verified by `test/en
 Every Temporal payload (workflow arguments, activity inputs and results, memo) is sealed with AES-256-GCM in the app (`codec.ts`) before it leaves the process, with a key that only the app holds. Decode REFUSES a payload that is not sealed: a neighbour on the private network cannot read a history, cannot inject a forged step result (a plain start or a plain completion fails at the worker; the run takes nothing from it), and the data of other apps stays sealed in the Temporal database and in its backups. The client, the worker and the history reads of the run detail share the one codec (`temporal.ts`).
 
 - **Where the key lives**: the key ring `engine-payload-keys` is in the SDK secret store, sealed under `TB_KEK` (excluded from export, sealed inside backups; `keystore.ts`). It is NEVER in the env, the image, the volume or the backup of the `temporal` service (`test/engine/codec.test.ts` checks the manifest entry and the service files).
-- **Key rotation**: every sealed payload carries a key id in its metadata (`encryption-key-id`, also bound into the GCM tag). The ring holds the current key and the older ones. `rotateKey` adds a new key and makes it current; new writes use it; decode opens payloads of every key still in the ring, so history written before the rotation stays readable. `retireKey` removes an old key after the Temporal retention window (14 days) has passed; a payload still sealed with a retired key is refused, so a run that still needs it fails. There is no owner op for rotation yet: it is a deliberate maintenance step (release note).
+- **Key rotation**: every sealed payload carries a key id in its metadata (`encryption-key-id`, also bound into the GCM tag). The ring holds the current key and the older ones. `rotateKey` adds a new key and makes it current; new writes use it; decode opens payloads of every key still in the ring, so history written before the rotation stays readable. `retireKey` removes an old key after the Temporal retention window (5 days, 120 h; `KEY_RETIRE_AFTER_HOURS` = retention + 1 day margin = 144 h) has passed; a payload still sealed with a retired key is refused, so a run that still needs it fails. There is no owner op for rotation yet: it is a deliberate maintenance step (release note).
 - **Key loss**: if the ring is lost (the secret store is wiped and there is no backup), it costs RUN PROGRESS ONLY. In-flight runs and the history in Temporal become unreadable and fail (the reconcile job closes their index rows). Workflow definitions, versions, activations, schedule metadata and the run index in `app.db` survive; schedules keep firing once a new key exists (the engine makes a new ring at the next start when none exists, and the old Temporal history stays unreadable). A stored value that is not a valid ring is never replaced silently: the engine stops with an error instead of orphaning history.
 - **Limits**: failure messages in the history carry a code and a status, never the text of another app. M1 runs in flight on a workspace are not readable after the codec ships: terminate them.
 
@@ -117,7 +117,7 @@ Suggestions, Drafts, Workflows, Editor, Activation, Schedules, Runs, Cycles, Hol
 
 Kanban is a soft dependency for the detector (suggestions from agents work without it) and is needed for run issues. A Bound agent and its runner must exist for schedules to do anything.
 
-Port 8080. 0.5 cpu, 768 MB (C367 WP1; was 0.25 cpu / 256 MB). Data 1 GB plus backup 2 GB. Backup cron `30 2 * * *`, retain 7. The `temporal` companion service (below): 0.5 cpu, 768 MB, data 5 GB.
+Port 8080. 0.5 cpu, 768 MB (C367 WP1; was 0.25 cpu / 256 MB). Data 1 GB plus backup 2 GB. Backup cron `30 2 * * *`, retain 7. The `temporal` companion service (below): limit 1 cpu, 1024 MB, data 5 GB.
 
 ## Pinned packages
 
@@ -136,7 +136,7 @@ The workflow engine runs on Temporal in the single-binary shape: one companion s
   miniapp-sdk version equal to the app's). tb-exec claims the service, then runs `services/temporal/run.sh` as uid 1000 (`dropPrivileges`).
 - **Server:** `temporal server start-dev --headless --ip 0.0.0.0 --port 7233 --db-filename /data/temporal.db --namespace evolution --log-level warn`.
   The state is one SQLite file on the 5 GB volume `temporal_data`. Health is a TCP check on 7233. `run.sh` raises the `evolution` namespace retention
-  from the dev default of 24 h to 14 days (`TEMPORAL_RETENTION`, default `336h`) once the server answers. The dev server also opens a metrics port and
+  from the dev default of 24 h to 5 days (`TEMPORAL_RETENTION`, default `120h`) once the server answers. The dev server also opens a metrics port and
   the internal service ports on random numbers; only 7233 is declared, and nothing is routed to the service from outside the private network.
   There is no authentication on 7233: the private network is the boundary (the same as v1).
 - **Schema (the self-migration finding):** `start-dev` never migrates an existing SQLite file. It creates the schema once in an empty file and then
@@ -155,6 +155,20 @@ The workflow engine runs on Temporal in the single-binary shape: one companion s
 - **App side:** `src/engine/health.ts` probes `TEMPORAL_ADDRESS` with a TCP connect (cached 10 s, one probe at a time, bounded below the SDK's 1 s
   attention timeout). When the engine does not answer, `defineApp({attention})` reports `temporal_unreachable` (readiness `degraded`, the app still
   serves). It is never part of `GET /tb/v1/health`, so the E3 upgrade gate does not depend on the engine.
+- **Size and resources (interim values):** SQLite does not shrink after retention deletes rows: the file stays at its high-water mark. At the measured
+  2.78 MB/h (about 100 runs per hour) a 5-day (120 h) window is about 330 MB, below the 512 MB restore cap of tb-exec. The `temporal` service has a LIMIT of 1 cpu
+  and 1024 MB (measured over 11.7 h at ~100 runs/h: anon RAM max 153 MB, cgroup peak 206 MB, CPU at most 1.7 % of one core). The limit is a ceiling, not a
+  reservation: a small workspace uses what it needs. It is set well above the measured use on purpose, because an app update cannot raise it later (below).
+  The key ring retires an old payload key `KEY_RETIRE_AFTER_HOURS` (retention + 1 day) after the rotation; a test keeps it above the retention in `run.sh`.
+- **Raising the limits (the 1024 MB / 1 cpu values are a default starting limit):** Core applies a service's `resources` only when it creates the
+  service (`serviceInstanceLimitsUpdate` in portal-core `src/providers/railway.ts`, `deploy`; a refused call is logged as advisory and the deploy goes on).
+  `update` (an app update with a new manifest value) does not touch the limits, so a changed `memoryMb` or `cpu` in a later release does NOT reach an existing
+  workspace, and a limit the owner sets by hand stays. Today the path to more room is the resource limit of the `temporal` service in the Railway project
+  of the workspace (the owner's own Railway), then a restart of the service. The manifest value only decides new workspaces. No Portal GUI or CLI control exists for this yet.
+  The tb-exec restore cap (512 MB) is a constant of the SDK (`RESTORE_MAX_BYTES`, `exec/servers.ts`); an app cannot raise it. Both are open items for Core and the SDK.
+- **Near-limit signal:** the app cannot read the memory or disk of the `temporal` service. `src/engine/load.ts` counts the kept workflow executions every
+  10 minutes (one visibility count), estimates the database at about 30 KB per run, and `attention()` reports `temporal_near_restore_cap` from 80 % of the 512 MB cap
+  (after `temporal_unreachable`, before a model-role code). The estimate is a lower bound (the file keeps its high-water mark). There is no memory signal; it needs a stats route in tb-exec or a metrics port read.
 - **Proof:** `smoke/engine-smoke.ts` (start the image, gRPC reachability, schema hash, retention, a workflow through an inline worker, a Schedule:
   create, fire, trigger, pause, unpause, delete; and the dump -> restore round trip with three workflows in flight) and `smoke/measure/` (24 h
   RAM/CPU run with about 100 runs per hour, cold start on a copy of the live file). They need a container CLI and are run by hand (podman on neuu), not in CI.

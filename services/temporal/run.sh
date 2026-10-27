@@ -7,7 +7,10 @@
 #    ARCHITECTURE.md);
 #  - applies a pending restore (services/temporal/temporal-restore leaves /data/restore/pending.sqlite and stops the
 #    server) while the server is stopped, keeping the replaced file as /data/restore/previous.sqlite;
-#  - raises the `evolution` namespace retention once the server answers (dev-server namespaces start at 24 h).
+#  - raises the `evolution` namespace retention once the server answers (dev-server namespaces start at 24 h) to
+#    TEMPORAL_RETENTION, default 120h (5 days). Keep src/engine/keystore.ts (TEMPORAL_RETENTION_HOURS) equal to it; a test checks.
+#    Interim value from the 24 h measurement: SQLite never shrinks after retention deletes rows, so the file stays at its
+#    high-water mark (see "Temporal service" in ARCHITECTURE.md).
 # Signals reach this script from tb-exec; a stop signal is forwarded to the server and ends the loop.
 set -u
 
@@ -18,7 +21,7 @@ PENDING="$RESTORE_DIR/pending.sqlite"
 PIDFILE=${TEMPORAL_PIDFILE:-/tmp/temporal-server.pid}
 EXPECTED_SCHEMA=${TEMPORAL_SCHEMA_SHA256_FILE:-/opt/temporal/schema.sha256}
 NAMESPACE=evolution
-RETENTION=${TEMPORAL_RETENTION:-336h}
+RETENTION=${TEMPORAL_RETENTION:-120h}
 
 log() { printf '%s temporal-run %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >&2; }
 

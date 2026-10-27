@@ -11,6 +11,7 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { validateAppFiles, validateManifest } from "@opt2-tealbrick/manifest";
+import { KEY_RETIRE_AFTER_HOURS, TEMPORAL_RETENTION_HOURS } from "../src/engine/keystore.ts";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const svcDir = join(root, "services/temporal");
@@ -80,7 +81,7 @@ test("the manifest declares the temporal service, its env on the app, and valida
   const svc = rt.services.find((s) => s.id === "temporal");
   assert.ok(svc, "service temporal");
   assert.equal(svc.port, 7233);
-  assert.deepEqual(svc.resources, { cpu: 0.5, memoryMb: 768 });
+  assert.deepEqual(svc.resources, { cpu: 1, memoryMb: 1024 });
   assert.deepEqual(svc.volumes, [{ id: "temporal_data", mountPath: "/data", sizeGb: 5, purpose: "data" }]);
   assert.deepEqual(svc.health, { kind: "tcp" });
   assert.equal(svc.startOrder, 0);
@@ -139,7 +140,7 @@ function sandbox(t: { after(fn: () => void): void }): Sandbox {
     TEMPORAL_PIDFILE: join(dir, "server.pid"),
     TEMPORAL_SCHEMA_SHA256_FILE: join(dir, "schema.sha256"),
     TEMPORAL_SCHEMA_HASH_CMD: join(svcDir, "schema-hash"),
-    TEMPORAL_RETENTION: "336h",
+    TEMPORAL_RETENTION: "120h",
     FAKE_LOG: log,
     FAKE_SCHEMA_SQL: FAKE_SCHEMA,
   };
@@ -195,12 +196,20 @@ function seed(file: string, schema: string, values: string[]): void {
   db.close();
 }
 
+test("retention: run.sh default equals the keystore constant, and a key is retired only after the window", () => {
+  const m = /RETENTION=\$\{TEMPORAL_RETENTION:-(\d+)h\}/.exec(read("services/temporal/run.sh"));
+  assert.ok(m, "run.sh has a default retention in hours");
+  const hours = Number(m[1]);
+  assert.equal(hours, TEMPORAL_RETENTION_HOURS, "run.sh default retention equals TEMPORAL_RETENTION_HOURS in src/engine/keystore.ts");
+  assert.ok(KEY_RETIRE_AFTER_HOURS > hours, "the key retire window is longer than the retention (margin), else a run could still need a retired key");
+});
+
 test("run.sh: starts the pinned server command, raises the retention, and a stop signal ends it cleanly", async (t) => {
   const s = sandbox(t);
   const r = runSh(s);
   await until("server started", () => starts(s).length === 1);
   assert.equal(starts(s)[0], `start server start-dev --headless --ip 0.0.0.0 --port 7233 --db-filename ${s.dbPath} --namespace evolution --log-level warn`);
-  await until("retention set", () => logLines(s).some((l) => l.includes("operator namespace update") && l.includes("--namespace evolution") && l.includes("--retention 336h")));
+  await until("retention set", () => logLines(s).some((l) => l.includes("operator namespace update") && l.includes("--namespace evolution") && l.includes("--retention 120h")));
   assert.ok(existsSync(s.env.TEMPORAL_PIDFILE as string), "pid file for temporal-restore");
   r.child.kill("SIGTERM");
   assert.equal(await r.exited, 0);
