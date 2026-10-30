@@ -22,6 +22,7 @@ const SCHEMA = { type: "object", required: ["note"], additionalProperties: false
 
 let t: Env;
 let mintFails = false;
+let mints = 0;
 before(async () => {
   t = await startEnv();
   t.apps.on["knowledge.recall"] = () => ({});
@@ -46,6 +47,7 @@ function agentCtx() {
   c.log = { info() {}, warn() {}, error() {}, debug() {} };
   c.bridgeCaps = () => (t.caps.includes(acting.CAP_ACTING) ? [acting.CAP_ACTING] : []);
   c.actingTickets = async () => {
+    mints++;
     if (mintFails) throw new TbError("bridge_error", "down", 502);
     return [ticketOf(FREE.id)];
   };
@@ -153,4 +155,72 @@ test("fire: no ticket from the bridge at the claim -> 503, the step stays offere
   assert.equal((await op<K.StepClaimOutput>("step_claim", { stepRunId })).claimed, true);
   await op("step_report", { stepRunId, status: "completed", output: { note: "ok" } });
   await pending;
+});
+
+test("quiet: a repeated claim by the same agent mints again when the first ticket never reached the table; a repeated claim with the ticket in place mints nothing", async () => {
+  const id = install();
+  const job = acting.jobOfRun(id, "run_replay");
+  const pending = t.run({ workflowId: id, runId: "run_replay", trigger: { kind: "manual", input: {} } });
+  const stepRunId = await offered();
+  await op("step_claim", { stepRunId });
+  assert.equal(ticketRows(job).length, 1);
+  const mintedBefore = mints;
+  await op("step_claim", { stepRunId });
+  assert.equal(mints, mintedBefore, "ticket in place: no second mint");
+  t.db.prepare("DELETE FROM acting_tickets WHERE job = ?").run(job); // the process died between the claim and the filing
+  await op("step_claim", { stepRunId });
+  assert.equal(mints, mintedBefore + 1);
+  assert.equal(ticketRows(job).length, 1, "repaired");
+  await op("step_report", { stepRunId, status: "completed", output: { note: "ok" } });
+  await pending;
+});
+
+test("quiet: a child run (a workflow step) sends the tickets of the run that started it, under the root job; the child's end keeps them", async () => {
+  const child = install([read("child-read")]);
+  const parent = install([{ id: "ask", type: "ai", by: { agent: FREE.id }, instruction: "Note.", outputSchema: SCHEMA, timeoutSec: 60 }, { id: "sub", type: "workflow", workflow: child }, read("parent-read")]);
+  const rootJob = acting.jobOfRun(parent, "run_tree");
+  const pending = t.run({ workflowId: parent, runId: "run_tree", trigger: { kind: "manual", input: {} } });
+  const stepRunId = await offered();
+  await op("step_claim", { stepRunId });
+  await op("step_report", { stepRunId, status: "completed", output: { note: "ok" } });
+  await pending;
+  const jobs = recallOpts().slice(-2).map((o) => (o as { acting?: { job: string } } | undefined)?.acting?.job);
+  assert.deepEqual(jobs, [rootJob, rootJob], "the child's read and the parent's read both carry the root job");
+  assert.equal(ticketRows(rootJob).length, 0, "the root run's end drops the tickets");
+  assert.equal(t.db.prepare("SELECT count(*) AS n FROM acting_links").get()?.n, 0, "no link is left");
+});
+
+test("fire: a fifth agent in one run is not claimed (409 acting_agents_full) and nothing is filed for it", async () => {
+  const id = install();
+  const job = acting.jobOfRun(id, "run_five");
+  const others = ["B", "C", "D", "E"].map((c) => `agt_01J000000000000000000000${c}0`.slice(0, 30));
+  for (const [i, a] of others.entries()) acting.store(t.db, job, [ticketOf(a)], Date.now() + i);
+  const pending = t.run({ workflowId: id, runId: "run_five", trigger: { kind: "manual", input: {} } });
+  const failed = failure(pending);
+  const stepRunId = await offered();
+  await assert.rejects(() => op("step_claim", { stepRunId }), (e: unknown) => e instanceof Error && (e as { code?: string }).code === "acting_agents_full");
+  assert.equal(ticketRows(job).length, 4);
+  assert.equal((t.db.prepare("SELECT status FROM agent_step_runs WHERE step_run_id = ?").get(stepRunId) as { status: string }).status, "offered");
+  await op("step_report", { stepRunId, status: "failed", summary: "cannot" }).catch(() => undefined);
+  await failed.catch(() => undefined);
+});
+
+test("quiet: bridge_cap_missing (a slice that is stale or not fetched yet) is waited out, not a refusal: the call is tried again and the run goes on", async () => {
+  const id = install();
+  let thrown = 0;
+  t.apps.on["knowledge.recall"] = () => {
+    if (thrown++ === 0) throw new TbError("bridge_cap_missing", "no cap yet", 409);
+    return {};
+  };
+  try {
+    const pending = t.run({ workflowId: id, runId: "run_capwait", trigger: { kind: "manual", input: {} } });
+    const stepRunId = await offered();
+    await op("step_claim", { stepRunId });
+    await op("step_report", { stepRunId, status: "completed", output: { note: "ok" } });
+    await pending;
+    assert.equal(thrown, 2, "the first call failed, the second ran");
+    assert.equal(indexOf(t.db, id, "run_capwait").run?.status, "completed");
+  } finally {
+    t.apps.on["knowledge.recall"] = () => ({});
+  }
 });

@@ -194,6 +194,7 @@ export function createActivities(deps: EngineDeps): Activities & LocalActivities
       });
 
       db.transaction(() => {
+        if (a.parent) acting.link(db, a, a.parent); // a child run shares the tickets of the run that started it
         store.startRun(db, { workflowId: a.workflowId, runId: a.runId, version, scheduleId: a.trigger.scheduleId ?? null, temporalWorkflowId: a.temporalWorkflowId, temporalRunId: a.temporalRunId, triggerKind: a.trigger.kind, startedAt: a.startedAtMs }, now());
         // F7: the new cursor is pending until THIS run completes (engine-store finishRun); a failed run leaves the cursor, the change is seen again
         if (a.trigger.kind === "poll" && a.trigger.scheduleId && a.trigger.cursor !== undefined && !a.resumed) store.setPendingCursor(db, a.trigger.scheduleId, a.runId, a.trigger.cursor);
@@ -244,7 +245,7 @@ export function createActivities(deps: EngineDeps): Activities & LocalActivities
       store.writeStep(db, { ...base, status: "running", attempts, inBytes: sizeOf(a.input) }, now());
       // C380 dev.2: once an agent step of this run was claimed, the run's calls carry that agent's acting ticket (stricter only).
       // A run that has a ticket row but no usable ticket (expired) stops here: it never goes on unattributed.
-      const job = acting.jobOfRun(a.workflowId, a.runId);
+      const job = acting.rootJobOf(db, a.workflowId, a.runId);
       const env = acting.envelopeFor(db, job, now());
       if (!env && acting.hasTickets(db, job)) {
         store.writeStep(db, { ...base, status: "failed", endedAt: now(), attempts, errorCode: "acting_ticket_invalid" }, now());
@@ -254,7 +255,12 @@ export function createActivities(deps: EngineDeps): Activities & LocalActivities
       try {
         r = await invoke(a.product, a.op, a.input, idempotencyKey(a.workflowId, a.runId, a.stepId, a.loopPath), a, env);
       } catch (e) {
-        const f = env && acting.isTicketRefusal(e) ? permanent("acting_ticket_invalid", ACTING_TICKET_STOP) : classify(e);
+        const f =
+          env && acting.isTicketRefusal(e)
+            ? permanent("acting_ticket_invalid", ACTING_TICKET_STOP)
+            : env && acting.isCapMissing(e)
+              ? ApplicationFailure.create({ message: "The bridge capabilities are not known yet. The call is tried again.", type: "bridge_cap_missing", nonRetryable: false })
+              : classify(e);
         const denial = denialOf(e);
         // the last attempt (or a refusal that no retry changes) closes the step row; an earlier one leaves it `running`
         if (f.nonRetryable || attempts >= a.maxAttempts) store.writeStep(db, { ...base, status: "failed", endedAt: now(), attempts, errorCode: f.type ?? "call_failed", ...(denial ? { errorMessage: denial.message, ruleId: denial.ruleId } : {}) }, now());
@@ -435,7 +441,9 @@ export function createActivities(deps: EngineDeps): Activities & LocalActivities
     },
 
     async finishRun(a: FinishArgs): Promise<void> {
-      acting.drop(db, acting.jobOfRun(a.workflowId, a.runId));
+      // a child run only leaves the tree; the tickets belong to the root run and go when it ends
+      if (acting.rootJobOf(db, a.workflowId, a.runId) === acting.jobOfRun(a.workflowId, a.runId)) acting.drop(db, acting.jobOfRun(a.workflowId, a.runId));
+      acting.unlink(db, a);
       store.finishRun(db, { workflowId: a.workflowId, runId: a.runId, status: a.status === "failed" && a.errorCode === "run_timeout" ? "timed_out" : a.status, endedAt: a.endedAtMs, errorCode: a.errorCode ?? null, errorStep: a.errorStep ?? null, skippedReason: a.skippedReason ?? null, outputBytes: a.outputBytes ?? null }, now());
     },
 

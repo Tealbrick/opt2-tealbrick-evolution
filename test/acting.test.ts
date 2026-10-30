@@ -142,7 +142,7 @@ test("routine_claim: an occurrence that is not claimable (another agent's, or ta
   assert.equal(rows(db).length, 1, "still one row for the job");
 });
 
-test("tickets: one row per job and agent (a newer one replaces), expired rows go, at most 4 agents are sent, the oldest first", () => {
+test("tickets: one row per job and agent (a newer one replaces), at most 4 agents are sent, expired rows stay for the run that needs them and go long after", () => {
   const db = migratedDb();
   const now = Date.now();
   const agents = ["A", "B", "C", "D", "E"].map((c) => `agt_01J000000000000000000000${c}0`.slice(0, 30));
@@ -158,7 +158,10 @@ test("tickets: one row per job and agent (a newer one replaces), expired rows go
   assert.equal(acting.envelopeFor(db, "old", now), null);
   assert.equal(acting.hasTickets(db, "old"), true);
   acting.store(db, "job2", [ticketOf(agents[1] as string)], now);
-  assert.equal(acting.hasTickets(db, "old"), false, "an expired ticket is purged when the next one is filed");
+  assert.equal(acting.hasTickets(db, "old"), true, "a ticket that just expired stays: a run that still needs it must stop on it");
+  acting.store(db, "ancient", [ticketOf(agents[0] as string, Math.floor(now / 1000) - 61 * 86400)], now - 100 * 86400_000);
+  acting.store(db, "job3", [ticketOf(agents[1] as string)], now);
+  assert.equal(acting.hasTickets(db, "ancient"), false, "a row far past its expiry is cleaned up by the next claim");
   acting.drop(db, "job1");
   assert.equal(rows(db, "job1").length, 0);
 });
@@ -185,7 +188,7 @@ test("a ticket is read for filing only: a payload that is not the bridge's shape
   assert.deepEqual(calls[1], ["kanban", "issues_list", {}, { idempotencyKey: "k", acting: { job: "j", tickets: ["t"] } }]);
 });
 
-test("migration 0014 on the data of 0.4.2 (0001-0013 with schedules, workflow versions and engine rows): one new empty table, every existing row unchanged", () => {
+test("migration 0014 on the data of 0.4.2 (0001-0013 with schedules, workflow versions and engine rows): two new empty tables, every existing row unchanged", () => {
   const raw = new DatabaseSync(":memory:");
   raw.exec("PRAGMA foreign_keys = ON");
   const files = readdirSync(migrationsDir).filter((x) => x.endsWith(".sql")).sort();
@@ -198,14 +201,28 @@ test("migration 0014 on the data of 0.4.2 (0001-0013 with schedules, workflow ve
   raw.prepare("INSERT INTO engine_definitions (workflow_id, version, title, contract, digest, created_at) VALUES ('flow-j', 1, 'Flow', '{}', 'sha256:x', 1)").run();
   raw.prepare("INSERT INTO engine_activations (workflow_id, version, state, uses, activated_at, ended_at) VALUES ('flow-j', 1, 'active', '[]', 1, NULL)").run();
   const tables = (): string[] => raw.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all().map((r) => String(r.name));
-  const counts = (): Record<string, number> => Object.fromEntries(tables().filter((n) => n !== "acting_tickets").map((n) => [n, Number(raw.prepare(`SELECT count(*) AS c FROM "${n}"`).get()?.c)]));
+  const counts = (): Record<string, number> => Object.fromEntries(tables().filter((n) => !n.startsWith("acting_")).map((n) => [n, Number(raw.prepare(`SELECT count(*) AS c FROM "${n}"`).get()?.c)]));
   const before = counts();
   const tablesBefore = tables();
   const digest = String(raw.prepare("SELECT group_concat(id || agent_id || cron || enabled || revision, '|') AS x FROM automations").get()?.x);
   raw.exec(readFileSync(join(migrationsDir, "0014_acting_tickets.sql"), "utf8"));
-  assert.deepEqual(tables().filter((n) => !tablesBefore.includes(n)), ["acting_tickets"]);
+  assert.deepEqual(tables().filter((n) => !tablesBefore.includes(n)).sort(), ["acting_links", "acting_tickets"]);
   assert.deepEqual(counts(), before, "no existing table changed in size");
   assert.equal(String(raw.prepare("SELECT group_concat(id || agent_id || cron || enabled || revision, '|') AS x FROM automations").get()?.x), digest);
-  assert.equal(Number(raw.prepare("SELECT count(*) AS c FROM acting_tickets").get()?.c), 0);
+  for (const n of ["acting_tickets", "acting_links"]) assert.equal(Number(raw.prepare(`SELECT count(*) AS c FROM ${n}`).get()?.c), 0);
   assert.deepEqual(raw.prepare("PRAGMA foreign_key_check").all(), []);
+});
+
+test("run trees: a child run shares the job of its root run (3 levels at most); a run with no link is its own root", () => {
+  const db = migratedDb();
+  assert.equal(acting.rootJobOf(db, "flow-a", "r1"), acting.jobOfRun("flow-a", "r1"));
+  acting.link(db, { workflowId: "flow-b", runId: "r1-b" }, { workflowId: "flow-a", runId: "r1" });
+  acting.link(db, { workflowId: "flow-c", runId: "r1-c" }, { workflowId: "flow-b", runId: "r1-b" });
+  assert.equal(acting.rootJobOf(db, "flow-c", "r1-c"), acting.jobOfRun("flow-a", "r1"));
+  assert.equal(acting.rootJobOf(db, "flow-b", "r1-b"), acting.jobOfRun("flow-a", "r1"));
+  acting.link(db, { workflowId: "flow-d", runId: "r1-d" }, { workflowId: "flow-c", runId: "r1-c" });
+  acting.link(db, { workflowId: "flow-e", runId: "r1-e" }, { workflowId: "flow-d", runId: "r1-d" });
+  assert.equal(acting.rootJobOf(db, "flow-e", "r1-e"), acting.jobOfRun("flow-b", "r1-b"), "a chain longer than the nesting limit stops at the limit");
+  acting.unlink(db, { workflowId: "flow-c", runId: "r1-c" });
+  assert.equal(acting.rootJobOf(db, "flow-c", "r1-c"), acting.jobOfRun("flow-c", "r1-c"));
 });

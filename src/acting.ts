@@ -14,6 +14,10 @@ export const CAP_ACTING = "acting_agents";
 const JOB = /^[A-Za-z0-9_.:-]{1,128}$/;
 /** The bridge takes 1..4 acting agents per call. */
 export const MAX_ACTING_AGENTS = 4;
+/** A ticket lives 30 days; a row is kept this long past its expiry before a later claim cleans it up. */
+const PURGE_AFTER_EXP_MS = 30 * 86_400_000;
+/** Runs nest 3 levels deep at most. */
+const MAX_NESTING = 3;
 
 export interface ActingEnvelope {
   job: string;
@@ -67,7 +71,8 @@ export async function mint(ctx: OpContext, job: string): Promise<string[]> {
 /** Files minted tickets under their job (one per agent; a newer one replaces an older one) and drops the expired ones. */
 export function store(db: Db, job: string, tickets: readonly string[], now: number): void {
   db.transaction(() => {
-    db.prepare("DELETE FROM acting_tickets WHERE exp < ?").run(now);
+    // A ticket that expired while its run is still going must stay (the run stops on it, see hasTickets); only rows far past expiry go.
+    db.prepare("DELETE FROM acting_tickets WHERE exp < ?").run(now - PURGE_AFTER_EXP_MS);
     for (const t of tickets) {
       const p = parse(t);
       if (!p) continue;
@@ -82,6 +87,32 @@ export function envelopeFor(db: Db, job: string, now: number): ActingEnvelope | 
   return rows.length === 0 ? null : { job, tickets: rows.map((r) => String(r.ticket)) };
 }
 
+/** The job of the ROOT run of a run tree: a child run (a `workflow` step) shares the job, and so the tickets, of the run that started it. */
+export function rootJobOf(db: Db, workflowId: string, runId: string): string {
+  let wf = workflowId;
+  let run = runId;
+  for (let i = 0; i < MAX_NESTING; i++) {
+    const up = db.prepare("SELECT parent_workflow_id, parent_run_id FROM acting_links WHERE workflow_id = ? AND run_id = ?").get(wf, run);
+    if (!up) break;
+    wf = String(up.parent_workflow_id);
+    run = String(up.parent_run_id);
+  }
+  return jobOfRun(wf, run);
+}
+
+export function link(db: Db, child: { workflowId: string; runId: string }, parent: { workflowId: string; runId: string }): void {
+  db.prepare("INSERT OR REPLACE INTO acting_links (workflow_id, run_id, parent_workflow_id, parent_run_id) VALUES (?, ?, ?, ?)").run(child.workflowId, child.runId, parent.workflowId, parent.runId);
+}
+
+export function unlink(db: Db, run: { workflowId: string; runId: string }): void {
+  db.prepare("DELETE FROM acting_links WHERE workflow_id = ? AND run_id = ?").run(run.workflowId, run.runId);
+}
+
+/** The agents that already hold a ticket under the job. */
+export function agentsOf(db: Db, job: string): string[] {
+  return db.prepare("SELECT agent_id FROM acting_tickets WHERE job = ? ORDER BY agent_id").all(job).map((r) => String(r.agent_id));
+}
+
 /** True when the job has a ticket row, expired or not (an expired ticket must fail the run, not be left out). */
 export function hasTickets(db: Db, job: string): boolean {
   return db.prepare("SELECT 1 AS x FROM acting_tickets WHERE job = ? LIMIT 1").get(job) !== undefined;
@@ -91,11 +122,10 @@ export function drop(db: Db, job: string): void {
   db.prepare("DELETE FROM acting_tickets WHERE job = ?").run(job);
 }
 
-/** The ticket of a job could not be used: the bridge refused it, or the cap is gone. The run stops; it never goes on unattributed. */
-export function isTicketRefusal(e: unknown): boolean {
-  const code = (e as { code?: unknown } | null)?.code;
-  return code === "acting_ticket_invalid" || code === "bridge_cap_missing";
-}
+/** The bridge refused the ticket of a job: the run stops here, it never goes on unattributed. */
+export const isTicketRefusal = (e: unknown): boolean => (e as { code?: unknown } | null)?.code === "acting_ticket_invalid";
+/** The SDK has no `acting_agents` cap in the bridge caps of the slice (a stale slice, or one not fetched yet after a restart). It is a wait, not a refusal. */
+export const isCapMissing = (e: unknown): boolean => (e as { code?: unknown } | null)?.code === "bridge_cap_missing";
 
 type CallAppLike = (product: string, op: string, input: never, opts?: Record<string, unknown>) => Promise<never>;
 /** The same callApp with the envelope of one job added to every call; the call's own options stay. */

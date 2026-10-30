@@ -143,7 +143,6 @@ export async function closeRunIssue(db: Db, callApp: CallApp, run: routines.Run)
   }
 }
 
-/** Closes Kanban issues of runs that ended without a report (swept to uncertain) — a few per write call. */
 /** closeRunIssue with the acting ticket of the run's own job (C380 dev.2): the issue of agent X is closed for X, also when the call
  *  that closes it is the call of another agent. The ticket is dropped once the issue is closed (or there is none to close). */
 async function closeRunIssueActing(db: Db, callApp: CallApp, run: routines.Run): Promise<void> {
@@ -152,6 +151,7 @@ async function closeRunIssueActing(db: Db, callApp: CallApp, run: routines.Run):
   if (routines.TERMINAL.has(run.status) && routines.getRun(db, run.occurrence)?.kanbanSync !== "failed") acting.drop(db, job);
 }
 
+/** Closes Kanban issues of runs that ended without a report (swept to uncertain) — a few per write call. */
 async function flushKanban(db: Db, callApp: CallApp): Promise<void> {
   for (const run of routines.pendingKanban(db, 5)) await closeRunIssueActing(db, callApp, run);
 }

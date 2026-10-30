@@ -14,3 +14,13 @@ CREATE TABLE acting_tickets (
   PRIMARY KEY (job, agent_id)
 );
 CREATE INDEX acting_tickets_by_exp ON acting_tickets (exp);
+
+-- A child run (a `workflow` step) acts for the same agents as the run that started it, so all runs of one tree share the job of the
+-- ROOT run (a ticket is bound to one job). This table says whose child a run is; the row goes when the child ends.
+CREATE TABLE acting_links (
+  workflow_id TEXT NOT NULL,
+  run_id TEXT NOT NULL,
+  parent_workflow_id TEXT NOT NULL,
+  parent_run_id TEXT NOT NULL,
+  PRIMARY KEY (workflow_id, run_id)
+);
