@@ -117,6 +117,23 @@ test("held without the cap: the tb.holds_pending list is the fallback; a hold th
   assert.equal(indexOf(t.db, id, "run_fb").steps[0]?.hold_outcome, "decided");
 });
 
+test("held, the bridge has the cap but this manifest does not list tb.hold_status (QA 0.4.0): the list is the fallback; the run does not fail", async () => {
+  reset();
+  t.caps.push("app_hold_status");
+  t.apps.heldFirst["kanban.issue_create"] = { holdId: "hld_06", times: 1 };
+  t.apps.on["kanban.issue_create"] = () => ({ issue: { id: "iss_10" } });
+  t.apps.on["kanban.tb.hold_status"] = () => {
+    throw new TbError("companion_undeclared", "companion operation not declared: kanban.tb.hold_status", 500);
+  };
+  let polls = 0;
+  t.apps.on["kanban.tb.holds_pending"] = () => ({ items: ++polls < 2 ? [{ id: "hld_06" }] : [], nextCursor: null });
+  const id = install([write("send")], { outputs: { issue: "$steps.send.output.issue.id" } });
+  const res = await t.run({ workflowId: id, runId: "run_undeclared" });
+  assert.deepEqual(res.outputs, { issue: "iss_10" });
+  assert.equal(calls("kanban", "issue_create").length, 2, "the same call once more after the owner decided");
+  assert.equal(indexOf(t.db, id, "run_undeclared").steps[0]?.hold_outcome, "decided");
+});
+
 test("held without the cap, the hold list is read page by page", async () => {
   reset();
   t.apps.heldFirst["kanban.issue_create"] = { holdId: "hld_05", times: 1 };

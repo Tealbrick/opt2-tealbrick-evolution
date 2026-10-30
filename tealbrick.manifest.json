@@ -5,7 +5,7 @@
   "name": "Evolving Workflows",
   "summary": "Evolving Workflows turns work your agents repeat into reviewed, versioned workflows that a Bound agent runs on a schedule.",
   "description": "Agents suggest a workflow when they repeat work, with evidence. Evolving Workflows also spots repeated done issues in Task Board. You review each suggestion, edit a draft (steps, allowed operations, trigger), promote it to a versioned workflow, export a recipe that creates a Bound agent in Portal, and schedule it. The Bound agent’s own runner claims each due run at most once; every run is a Task Board issue assigned to that agent. A Bound agent may call only the allowed operations; it is not forced to follow the steps.",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "sdkMajor": 1,
   "requires": {
     "bridge": "0.2.11"
