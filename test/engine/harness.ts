@@ -93,6 +93,17 @@ export interface Env {
 const testKey = randomBytes(32);
 export const testRing: KeyRing = { current: keyIdOf(testKey), keys: { [keyIdOf(testKey)]: testKey } };
 
+/** The local dev server is given 5 s to start (fixed in the Temporal bridge); a busy CI host sometimes needs longer. One failed start is retried, twice at most. */
+async function startLocalServer(o: Parameters<typeof TestWorkflowEnvironment.createLocal>[0]): Promise<TestWorkflowEnvironment> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await TestWorkflowEnvironment.createLocal(o);
+    } catch (e) {
+      if (attempt >= 3 || !String((e as Error)?.message).includes("Failed to start ephemeral server")) throw e;
+    }
+  }
+}
+
 export async function startEnv(opts: {
   /** false: payloads are plain (only record-histories.ts, which records the replay fixtures) */
   codec?: boolean;
@@ -103,7 +114,7 @@ export async function startEnv(opts: {
   const sealed = opts.codec !== false;
   setPayloadCodec(sealed ? createSealCodec(() => testRing) : null);
   const clientOptions = sealed ? { dataConverter } : undefined;
-  const env = opts.local ? await TestWorkflowEnvironment.createLocal({ ...(clientOptions ? { client: clientOptions } : {}), ...(opts.dbFilename ? { server: { dbFilename: opts.dbFilename } } : {}) }) : await TestWorkflowEnvironment.createTimeSkipping(clientOptions ? { client: clientOptions } : {});
+  const env = opts.local ? await startLocalServer({ ...(clientOptions ? { client: clientOptions } : {}), ...(opts.dbFilename ? { server: { dbFilename: opts.dbFilename } } : {}) }) : await TestWorkflowEnvironment.createTimeSkipping(clientOptions ? { client: clientOptions } : {});
   setTemporalClientForTests(env.client);
   const db = migratedDb();
   const apps = fakeApps();

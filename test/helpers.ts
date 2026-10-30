@@ -59,3 +59,9 @@ export async function call<O>(handlers: Record<string, { run: (i: never, c: OpCo
   }
   return out as O;
 }
+
+/** an acting ticket as the bridge shapes it (header.payload.signature). This app reads only `sub` and `exp` (to file it); the bridge verifies it. */
+export function ticketOf(agent: string, expSec: number = Math.floor(Date.now() / 1000) + 30 * 86400): string {
+  const b64 = (o: unknown): string => Buffer.from(JSON.stringify(o)).toString("base64url");
+  return `${b64({ alg: "EdDSA", typ: "tb-act+jwt" })}.${b64({ sub: `tb:agt:${agent}`, exp: expSec, job: "x" })}.sig`;
+}

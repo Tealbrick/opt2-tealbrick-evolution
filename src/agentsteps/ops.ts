@@ -11,6 +11,7 @@
 import { type HandlerSpec, type OpContext, TbError } from "@opt2-tealbrick/miniapp-sdk";
 import type * as K from "#kit";
 import { OP } from "#kit";
+import * as acting from "../acting.ts";
 import { type CompletionProvider, classify, tokenOf } from "./completion.ts";
 import * as store from "./store.ts";
 
@@ -62,7 +63,14 @@ export function agentStepHandlers(deps: AgentStepDeps) {
     [OP.stepClaim]: op<K.StepClaimInput, K.StepClaimOutput>({
       redact: (input, output) => `Claim step ${input.stepRunId.slice(0, 40)}: ${output ? (output.claimed ? "claimed" : output.reason) : "?"}`,
       async run(input, ctx) {
+        // C380 dev.2: with the bridge cap `acting_agents`, the ticket of this agent's call is minted BEFORE the claim writes anything
+        // (no ticket, no claim: 503, the agent asks again), and filed under the run, so that every later `app` step of the run
+        // carries it. Only the agent the step is offered to gets one. Without the cap: today's path.
+        const peek = store.getRow(ctx.db, input.stepRunId);
+        const job = peek && peek.status === "offered" && peek.agentId === ctx.caller.id ? acting.jobOfRun(peek.workflowId, peek.runId) : null;
+        const tickets = job && acting.hasActingCap(ctx) ? await acting.mint(ctx, job) : null;
         const r = store.claim(ctx.db, ctx.caller, input.stepRunId, clock());
+        if (r.claimed && !r.replay && job && tickets) acting.store(ctx.db, job, tickets, clock());
         if (!r.claimed) return { claimed: false, reason: r.reason as NonNullable<K.StepClaimOutput["reason"]>, step: null };
         // The same agent asking again after a lost answer gets the same payload: a read, nothing to tell Temporal.
         if (r.replay) return { claimed: true, reason: null, step: r.step as unknown as NonNullable<K.StepClaimOutput["step"]> };

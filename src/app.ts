@@ -11,6 +11,7 @@ import { type AppDefinition, type Caller, type Db, defineApp, type HandlerSpec, 
 import type * as K from "#kit";
 import { OP, type OpId } from "#kit";
 import { accessHandlers } from "./access.ts";
+import * as acting from "./acting.ts";
 import { agentStepHandlers, defaultCompletion, wireAgentSteps } from "./agentsteps/index.ts";
 import * as cycles from "./cycles.ts";
 import { DEFAULT_MIN_REPEATS, KANBAN } from "./detector.ts";
@@ -143,8 +144,16 @@ export async function closeRunIssue(db: Db, callApp: CallApp, run: routines.Run)
 }
 
 /** Closes Kanban issues of runs that ended without a report (swept to uncertain) — a few per write call. */
+/** closeRunIssue with the acting ticket of the run's own job (C380 dev.2): the issue of agent X is closed for X, also when the call
+ *  that closes it is the call of another agent. The ticket is dropped once the issue is closed (or there is none to close). */
+async function closeRunIssueActing(db: Db, callApp: CallApp, run: routines.Run): Promise<void> {
+  const job = acting.jobOfOccurrence(run.occurrence);
+  await closeRunIssue(db, acting.withActing(callApp, acting.envelopeFor(db, job, Date.now())), run);
+  if (routines.TERMINAL.has(run.status) && routines.getRun(db, run.occurrence)?.kanbanSync !== "failed") acting.drop(db, job);
+}
+
 async function flushKanban(db: Db, callApp: CallApp): Promise<void> {
-  for (const run of routines.pendingKanban(db, 5)) await closeRunIssue(db, callApp, run);
+  for (const run of routines.pendingKanban(db, 5)) await closeRunIssueActing(db, callApp, run);
 }
 
 /** Evolution has a companion grant for Task Board in this workspace (the verified slice's companionTargets). */
@@ -211,12 +220,17 @@ export const handlers = {
     redact: (input, output) => `Claim ${input.occurrence.slice(0, 12)}: ${output ? (output.claimed ? "claimed" : output.reason) : "?"}`,
     async run(input, ctx) {
       const callApp = ctx.callApp.bind(ctx);
+      // C380 dev.2: with the bridge cap `acting_agents`, the ticket of this agent's call is minted BEFORE the claim writes anything:
+      // no ticket, no claim (503, the agent asks again). Without the cap: today's path.
+      const job = acting.jobOfOccurrence(input.occurrence);
+      const tickets = acting.hasActingCap(ctx) ? await acting.mint(ctx, job) : null;
       const r = routines.claim(ctx.db, { id: ctx.caller.id, mode: ctx.caller.type === "agent" ? ctx.caller.mode : null }, input.occurrence);
       if (!r.claimed) {
         await flushKanban(ctx.db, callApp);
         return { claimed: false, reason: r.reason, job: null };
       }
-      const kanbanIssueId = await createRunIssue(ctx.db, callApp, r.job, r.automation, ctx.caller.id);
+      if (tickets) acting.store(ctx.db, job, tickets, Date.now());
+      const kanbanIssueId = await createRunIssue(ctx.db, acting.withActing(callApp, acting.envelopeFor(ctx.db, job, Date.now())), r.job, r.automation, ctx.caller.id);
       await flushKanban(ctx.db, callApp);
       return { claimed: true, reason: null, job: { ...r.job, kanbanIssueId, kanbanTemplate: routines.runTemplateKey(r.job.workflowId) } };
     },
@@ -227,7 +241,7 @@ export const handlers = {
     async run(input, ctx) {
       const callApp = ctx.callApp.bind(ctx);
       const { run, changed } = routines.report(ctx.db, ctx.caller.id, input.occurrence, input.status, input.summary?.trim() || null, Date.now(), input.metrics ?? null, (workflowId, version) => (version === null ? null : pipeline.declaredMetrics(ctx.db, workflowId, version)));
-      if (changed) await closeRunIssue(ctx.db, callApp, run);
+      if (changed) await closeRunIssueActing(ctx.db, callApp, run);
       await flushKanban(ctx.db, callApp);
       return routines.getRun(ctx.db, input.occurrence) ?? run;
     },
