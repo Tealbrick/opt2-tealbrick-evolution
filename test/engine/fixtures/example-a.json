@@ -1,0 +1,125 @@
+{
+  "format": "tealbrick.workflow/1",
+  "id": "daily-email-summary",
+  "version": 1,
+  "title": "Summarize my daily emails",
+  "inputs": {
+    "type": "object",
+    "required": [
+      "account",
+      "me"
+    ],
+    "properties": {
+      "account": {
+        "type": "string"
+      },
+      "me": {
+        "type": "string",
+        "format": "email"
+      }
+    }
+  },
+  "triggers": [
+    {
+      "kind": "schedule",
+      "cron": "0 8 * * *",
+      "timezone": "Asia/Bangkok"
+    },
+    {
+      "kind": "manual"
+    }
+  ],
+  "steps": [
+    {
+      "id": "fetch",
+      "stage": "enrichment",
+      "type": "app",
+      "product": "connect",
+      "op": "tools",
+      "input": {
+        "tool": "gmail_fetch_emails",
+        "arguments": {
+          "account": "{{ $input.account }}",
+          "query": "newer_than:1d",
+          "max": 50
+        }
+      }
+    },
+    {
+      "id": "slim",
+      "stage": "process",
+      "type": "transform",
+      "map": {
+        "forEach": "$steps.fetch.output.result.messages",
+        "template": {
+          "from": "{{ $item.from }}",
+          "subject": "{{ $item.subject }}",
+          "snippet": "{{ $item.snippet }}"
+        }
+      }
+    },
+    {
+      "id": "summary",
+      "stage": "intelligence",
+      "type": "ai",
+      "by": {
+        "role": "summarize"
+      },
+      "instruction": "Summarize these emails for the owner: 5 bullets, then the ones that need a reply.",
+      "inputs": {
+        "emails": "$steps.slim.output"
+      },
+      "outputSchema": {
+        "type": "object",
+        "required": [
+          "bullets",
+          "needsReply"
+        ],
+        "properties": {
+          "bullets": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 5
+          },
+          "needsReply": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "body",
+      "stage": "concat",
+      "type": "transform",
+      "template": "Daily summary\n- {{ join($steps.summary.output.bullets, '\n- ') }}\n\nNeeds a reply:\n- {{ join($steps.summary.output.needsReply, '\n- ') }}"
+    },
+    {
+      "id": "draft",
+      "stage": "result",
+      "type": "app",
+      "product": "connect",
+      "op": "tools",
+      "input": {
+        "tool": "gmail_create_email_draft",
+        "arguments": {
+          "account": "{{ $input.account }}",
+          "to": "{{ $input.me }}",
+          "subject": "Email summary {{ $trigger.date }}",
+          "body": "{{ $steps.body.output }}"
+        }
+      }
+    }
+  ],
+  "outputs": {
+    "draftId": "$steps.draft.output.result.id"
+  },
+  "metrics": [
+    "emails",
+    "needs_reply"
+  ]
+}

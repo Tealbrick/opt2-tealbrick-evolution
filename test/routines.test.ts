@@ -62,12 +62,14 @@ test("R1/R2: one due job → one claim; any second claim of that occurrence is r
   assert.equal(r.dueJobs(db, BOUND.id, T("2026-10-13T08:00:10Z")).length, 1, "the next day is due again");
 });
 
-test("only Bound agents claim; a non-matching occurrence is not_due", () => {
+test("a Bound schedule is claimed only by a Bound caller; a non-matching occurrence is not_due", () => {
   const db = migratedDb();
   daily(db);
   const now = T("2026-10-12T08:00:30Z");
   const occ = r.dueJobs(db, BOUND.id, now)[0]?.occurrence as string;
-  assert.deepEqual(r.claim(db, { ...BOUND, mode: "free" }, occ, now), { claimed: false, reason: "not_bound" });
+  // R1a: the same agent id in Free mode reaches only Free schedules, so this Bound schedule's occurrence is a mode_mismatch (test/free-target.test.ts has the rest)
+  assert.deepEqual(r.claim(db, { ...BOUND, mode: "free" }, occ, now), { claimed: false, reason: "mode_mismatch" });
+  assert.deepEqual(r.claim(db, { id: OWNER.id, mode: null }, occ, now), { claimed: false, reason: "not_bound" }, "a non-agent is not_bound");
   assert.deepEqual(r.claim(db, BOUND, "0".repeat(64), now), { claimed: false, reason: "not_due" });
   assert.deepEqual(r.claim(db, OTHER, occ, now), { claimed: false, reason: "not_due" }, "another agent's occurrence does not leak");
 });

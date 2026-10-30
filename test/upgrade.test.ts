@@ -5,20 +5,30 @@
 // C250 Release B: 0005 adds eval_runs and routine_runs.reported_at on 0.2.13 data (0001-0004, a run in every status
 // incl. policy_stale and missed rows without a version): every existing value unchanged, the new column null, and the
 // 0.3.0 ledger reads the old rows.
+// C288 R8: 0006 adds run_metrics on 0.3.0 data (0001-0005): one new table, every existing row of every table unchanged.
+// C288 R10: 0007 adds pipeline_sources and workflow_version_pipelines on 0.3.0 + R8 data (0001-0006): two new tables, nothing else changes.
+// C364a R1a: 0008 adds automations.target_mode (every old row 'bound') and the mode / status / in_directory columns of agent_names on 0.3.0 + R8 + R10 data (0001-0007).
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readdirSync, readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
+import { ulid } from "@opt2-tealbrick/manifest";
 import type { Caller, Db } from "@opt2-tealbrick/miniapp-sdk";
 import { migrationsDir } from "../src/app.ts";
 import * as cycles from "../src/cycles.ts";
+import * as directory from "../src/directory.ts";
+import * as pipeline from "../src/pipeline.ts";
 import * as r from "../src/routines.ts";
 import * as store from "../src/store.ts";
 import { AGENT_A } from "./helpers.ts";
 
 const BOUND: Caller = { ...AGENT_A, mode: "bound" };
+const root = fileURLToPath(new URL("..", import.meta.url));
 const T = (s: string) => Date.parse(s);
 const D0 = T("2026-10-12T06:00:00Z");
 
@@ -49,14 +59,31 @@ function tables(raw: DatabaseSync): Record<string, unknown[]> {
   return Object.fromEntries(names.map(({ name }) => [name, raw.prepare(`SELECT * FROM "${name}" ORDER BY rowid`).all()]));
 }
 
+/** The promotion of 0.2.12, as SQL on its own tables (store.promote of today also writes the R10 pipeline tables,
+ *  which a 0.2.12 database does not have yet: the app always migrates first, a seed of old data must not). */
+function promote0212(raw: DatabaseSync, d: store.Draft): string {
+  const wf = `wfl_${ulid(D0)}`;
+  const snap = store.snapshotOf(d);
+  raw.prepare("INSERT INTO workflows (id, title, summary, active_version, draft_id, created_at, updated_at) VALUES (?, ?, ?, 1, ?, ?, ?)").run(wf, snap.title, snap.summary, d.id, D0, D0);
+  raw.prepare("INSERT INTO workflow_versions (workflow_id, version, snapshot, draft_id, draft_revision, promoted_at) VALUES (?, 1, ?, ?, ?, ?)").run(wf, JSON.stringify(snap), d.id, d.revision, D0);
+  raw.prepare("UPDATE drafts SET workflow_id = ?, state = 'promoted', promoted_version = 1, updated_at = ? WHERE id = ?").run(wf, D0, d.id);
+  return wf;
+}
+
 /** 0.2.12 data: schema 0001-0003, one run per status and Kanban sync state, written with the run-row SQL of 0.2.12. */
 function seed0212(raw: DatabaseSync): void {
   raw.exec("PRAGMA foreign_keys = ON");
   for (const f of files.filter((x) => x < "0004")) raw.exec(readFileSync(join(migrationsDir, f), "utf8"));
   const db = dbAt(raw);
   const d = store.createDraft(db, { suggestionId: null, templateId: null, snapshot: { title: "Rollup", summary: "", instruction: "Roll up.", trigger: "", steps: [], allowed: [{ product: "kanban", operations: ["issues_list"], crud: ["read"] }] } }, D0);
-  const wf = store.promote(db, d.id, d.revision, D0).workflow.id;
-  const a = r.setAutomation(db, { workflowId: wf, agentId: BOUND.id, cron: "0 8 * * *", kanbanProject: "prj_shared" }, D0);
+  const wf = promote0212(raw, d);
+  // the schedule row as 0.2.12 wrote it (no target_mode column yet: setAutomation of today writes one, so it cannot seed this)
+  const a = { id: `aut_${ulid(D0)}`, revision: 1 };
+  raw
+    .prepare(
+      "INSERT INTO automations (id, workflow_id, version_pin, policy_version, agent_id, cron, enabled, misfire_grace_sec, kanban_project, revision, next_due_at, created_at, updated_at) VALUES (?, ?, NULL, 1, ?, ?, 1, 120, ?, 1, ?, ?, ?)",
+    )
+    .run(a.id, wf, BOUND.id, "0 8 * * *", "prj_shared", T("2026-10-12T08:00:00Z"), D0, D0);
   const ins = raw.prepare(
     "INSERT INTO routine_runs (occurrence, automation_id, revision, due_at, status, claimed_by, workflow_id, workflow_version, summary, kanban_issue_id, kanban_sync, claimed_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
   );
@@ -108,6 +135,7 @@ test("the 0.2.13 code works on migrated 0.2.12 data", () => {
   const raw = new DatabaseSync(":memory:");
   seed0212(raw);
   raw.exec(readFileSync(join(migrationsDir, "0004_policy_stale_runs.sql"), "utf8"));
+  raw.exec(readFileSync(join(migrationsDir, "0008_free_target.sql"), "utf8")); // the code of today reads target_mode and the agent directory; the app always migrates all
   const db = dbAt(raw);
   const now = T("2026-10-12T08:00:30Z");
   const runs = r.listRuns(db, { limit: 50 }, now);
@@ -119,14 +147,17 @@ test("the 0.2.13 code works on migrated 0.2.12 data", () => {
   assert.equal(r.claim(db, BOUND, job?.occurrence as string, now).claimed, true, "the schedule runs on");
 });
 
-test("the migration files are gap-free and 0001-0004 are unchanged since 0.2.13 (the SDK refuses a changed file)", () => {
-  assert.deepEqual(files, ["0001_init.sql", "0002_routines.sql", "0003_detector_state.sql", "0004_policy_stale_runs.sql", "0005_eval_runs.sql"]);
-  // sha256 of the files in tags v0.2.12 / v0.2.13 (the SDK stores these in tb_migrations and refuses a changed applied file)
+test("the migration files are gap-free and 0001-0005 are unchanged since their release (the SDK refuses a changed file)", () => {
+  assert.deepEqual(files.slice(0, 9), ["0001_init.sql", "0002_routines.sql", "0003_detector_state.sql", "0004_policy_stale_runs.sql", "0005_eval_runs.sql", "0006_run_metrics.sql", "0007_pipeline_contract.sql", "0008_free_target.sql", "0009_engine.sql"]);
+  // later migrations (WP3 adds 0010 ...) only have to stay gap-free
+  for (const [i, f] of files.entries()) assert.equal(Number(f.slice(0, 4)), i + 1, f);
+  // sha256 of the files in tags v0.2.12 / v0.2.13 / v0.3.0 (the SDK stores these in tb_migrations and refuses a changed applied file)
   const RELEASED: Record<string, string> = {
     "0001_init.sql": "61853b592934920222d86bd1ec3d658822aa3307eec6d7faa2888f4a97615a68",
     "0002_routines.sql": "fb84ff74b28f2d82740b0a7065890faa8a181f07ac5f76cb330921784061f7da",
     "0003_detector_state.sql": "81cc359d49e0a1690a9e7adad321ba6a57882b667d558448219c91169cef98f7",
     "0004_policy_stale_runs.sql": "97acdd6d8bfbae587ec4aa2e95ca29c50ac62447b7d9151db8c447baf2cda6ad",
+    "0005_eval_runs.sql": "93039a548c3d1ef5a26ab1cdc33fb62f0432fec376cc39cf6d75b6d1369fb30c",
   };
   for (const [f, sum] of Object.entries(RELEASED)) assert.equal(createHash("sha256").update(readFileSync(join(migrationsDir, f))).digest("hex"), sum, f);
 });
@@ -182,10 +213,13 @@ test("0005 on 0.2.13 data: every row unchanged (reported_at null), eval_runs and
   ins.run("evr_7", wf, "s", "T2", "pass", "[]", "0.3.0", "owner", null);
 });
 
-test("the 0.3.0 ledger reads migrated 0.2.13 rows: version-less missed rows go to the version active at their due time", () => {
+test("the ledger reads migrated 0.2.13 rows: version-less missed rows go to the version active at their due time", () => {
   const raw = new DatabaseSync(":memory:");
   seed0213(raw);
   raw.exec(readFileSync(join(migrationsDir, "0005_eval_runs.sql"), "utf8"));
+  raw.exec(readFileSync(join(migrationsDir, "0006_run_metrics.sql"), "utf8"));
+  raw.exec(readFileSync(join(migrationsDir, "0007_pipeline_contract.sql"), "utf8")); // the code of today reads the R10 tables; the app always migrates all
+  raw.exec(readFileSync(join(migrationsDir, "0009_engine.sql"), "utf8")); // ... and the engine tables (C367): the ledger reads engine_runs
   const db = dbAt(raw);
   const now = T("2026-10-12T08:00:30Z");
   const [v1, v2] = cycles.workflowCycles(db, store.listWorkflows(db)[0]?.id as string, now);
@@ -195,4 +229,241 @@ test("the 0.3.0 ledger reads migrated 0.2.13 rows: version-less missed rows go t
   assert.deepEqual(v2?.counts, { total: 2, completed: 0, failed: 0, uncertain: 0, missed: 1, policyStale: 1, open: 0 });
   assert.equal(v1?.retiredAt, v2?.promotedAt);
   assert.equal(v2?.active, true);
+  // no run reported metrics before 0006: the rollup is empty, not wrong
+  for (const c of [v1, v2]) assert.deepEqual(c?.runMetrics, { runs: 0, okRuns: 0, okRatio: null, minutesMedian: null, minutesMean: null, retriesTotal: 0, questionsToMartinTotal: 0, lessonCount: 0, namedMetrics: [] });
+});
+
+/** 0.3.0 data: the 0.2.13 rows migrated by 0005 (a 0.3.0 runner has also reported: reported_at set on one run). */
+function seed030(raw: DatabaseSync): void {
+  seed0213(raw);
+  raw.exec(readFileSync(join(migrationsDir, "0005_eval_runs.sql"), "utf8"));
+  raw.prepare("UPDATE routine_runs SET reported_at = updated_at WHERE status IN ('completed', 'failed')").run();
+  const wf = (raw.prepare("SELECT id FROM workflows").get() as { id: string }).id;
+  raw
+    .prepare('INSERT INTO eval_runs (id, workflow_id, version, suite, tier, verdict, results, app_version, "trigger", idempotency_key, created_at) VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?, NULL, 0)')
+    .run("evr_030", wf, "cycle:x@v1", "T2", "pass", "[]", "0.3.0", "promotion");
+}
+
+test("0006 on 0.3.0 data: every row of every table unchanged, run_metrics is new and empty, its constraints hold", () => {
+  const raw = new DatabaseSync(":memory:");
+  raw.exec("PRAGMA foreign_keys = ON");
+  seed030(raw);
+  const before = tables(raw);
+  assert.equal((before.routine_runs as unknown[]).length, 7);
+  assert.equal((before.eval_runs as unknown[]).length, 1);
+  raw.exec("BEGIN");
+  raw.exec(readFileSync(join(migrationsDir, "0006_run_metrics.sql"), "utf8"));
+  raw.exec("COMMIT");
+  const after = tables(raw);
+  assert.deepEqual(after.run_metrics, [], "new table, no rows");
+  assert.deepEqual(after.run_metric_values, [], "new table, no rows");
+  delete after.run_metrics;
+  delete after.run_metric_values;
+  assert.deepEqual(after, before, "same tables, same rows, same order, same columns");
+  assert.deepEqual(raw.prepare("PRAGMA foreign_key_check").all(), []);
+  assert.equal((raw.prepare("PRAGMA integrity_check").get() as Record<string, string>).integrity_check, "ok");
+  const idx = (raw.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'routine_runs' AND name NOT LIKE 'sqlite_%' ORDER BY name").all() as { name: string }[]).map((x) => x.name);
+  assert.deepEqual(idx, ["routine_runs_by_automation", "routine_runs_open"], "routine_runs is not touched");
+
+  const occ = (before.routine_runs as { occurrence: string; status: string }[]).filter((x) => x.status === "completed")[0]?.occurrence as string;
+  const ins = raw.prepare("INSERT INTO run_metrics (occurrence, ok, minutes, retries, questions_to_martin, lessons, created_at) VALUES (?, ?, ?, ?, ?, ?, 0)");
+  assert.throws(() => ins.run("run_missing", 1, 5, null, null, "[]"), /FOREIGN KEY/);
+  assert.throws(() => ins.run(occ, 2, 5, null, null, "[]"), /CHECK constraint/, "ok is 0 or 1");
+  assert.throws(() => ins.run(occ, 1, -0.1, null, null, "[]"), /CHECK constraint/);
+  assert.throws(() => ins.run(occ, 1, 10080.5, null, null, "[]"), /CHECK constraint/);
+  assert.throws(() => ins.run(occ, 1, 5, 1001, null, "[]"), /CHECK constraint/);
+  assert.throws(() => ins.run(occ, 1, 5, 1.5, null, "[]"), /CHECK constraint/, "retries is a whole number");
+  assert.throws(() => ins.run(occ, 1, 5, null, -1, "[]"), /CHECK constraint/);
+  assert.throws(() => ins.run(occ, 1, 5, null, null, "not json"), /CHECK constraint/);
+  assert.throws(() => ins.run(occ, 1, 5, null, null, '{"a":1}'), /CHECK constraint/, "lessons is an array");
+  assert.throws(() => ins.run(occ, 1, 5, null, null, JSON.stringify(Array(21).fill("x"))), /CHECK constraint/);
+  ins.run(occ, 1, 10080, 1000, 0, JSON.stringify(Array(20).fill("x")));
+  assert.throws(() => ins.run(occ, 0, 1, null, null, "[]"), /UNIQUE|PRIMARY KEY/, "one metrics row per run");
+  // the named values of the same report (also in 0006): constraints hold, one row per run and name, at most 20 names
+  const val = raw.prepare("INSERT INTO run_metric_values (occurrence, name, value) VALUES (?, ?, ?)");
+  assert.throws(() => val.run("run_missing", "candidates_seen", 1), /FOREIGN KEY/);
+  assert.throws(() => val.run(occ, "Candidates", 1), /CHECK constraint/, "name pattern");
+  assert.throws(() => val.run(occ, "a", 1), /CHECK constraint/);
+  assert.throws(() => val.run(occ, "candidates_seen", Number.POSITIVE_INFINITY), /CHECK constraint/, "finite numbers only");
+  assert.throws(() => val.run(occ, "candidates_seen", 1e12 + 1), /CHECK constraint/, "at most 1e12 in size");
+  val.run(occ, "candidates_seen", 12);
+  assert.throws(() => val.run(occ, "candidates_seen", 13), /UNIQUE|PRIMARY KEY/);
+  for (let i = 0; i < 19; i++) val.run(occ, `m_${i}`, i);
+  assert.throws(() => val.run(occ, "one_more", 1), /at most 20/);
+});
+
+test("the code works on migrated 0.3.0 data: a late report of an old uncertain run stores metrics, the ledger rolls them up, the old rows still read", () => {
+  const raw = new DatabaseSync(":memory:");
+  seed030(raw);
+  raw.exec(readFileSync(join(migrationsDir, "0006_run_metrics.sql"), "utf8"));
+  raw.exec(readFileSync(join(migrationsDir, "0007_pipeline_contract.sql"), "utf8")); // the code of today reads the R10 tables; the app always migrates all
+  raw.exec(readFileSync(join(migrationsDir, "0009_engine.sql"), "utf8")); // ... and the engine tables (C367): the ledger reads engine_runs
+  const db = dbAt(raw);
+  const now = T("2026-10-12T08:00:30Z");
+  const uncertain = (raw.prepare("SELECT occurrence FROM routine_runs WHERE status = 'uncertain'").all() as { occurrence: string }[]).map((x) => x.occurrence)[0] as string;
+  const done = r.report(db, BOUND.id, uncertain, "completed", "late", now, { ok: true, minutes: 12, retries: 1, lessons: [" late but fine "] });
+  assert.equal(done.changed, true);
+  const [v1] = cycles.workflowCycles(db, store.listWorkflows(db)[0]?.id as string, now);
+  assert.deepEqual(v1?.runMetrics, { runs: 1, okRuns: 1, okRatio: 1, minutesMedian: 12, minutesMean: 12, retriesTotal: 1, questionsToMartinTotal: 0, lessonCount: 1, namedMetrics: [] });
+  assert.deepEqual(v1?.counts, { total: 5, completed: 2, failed: 1, uncertain: 2, missed: 0, policyStale: 0, open: 0 });
+});
+
+/** 0.3.0 + R8 data: the 0.3.0 rows migrated by 0006, plus a metrics row on the completed run. */
+function seedR8(raw: DatabaseSync): void {
+  seed030(raw);
+  raw.exec(readFileSync(join(migrationsDir, "0006_run_metrics.sql"), "utf8"));
+  const occ = (raw.prepare("SELECT occurrence FROM routine_runs WHERE status = 'completed'").get() as { occurrence: string }).occurrence;
+  raw.prepare("INSERT INTO run_metrics (occurrence, ok, minutes, retries, questions_to_martin, lessons, created_at) VALUES (?, 1, 7, 0, 0, '[\"a lesson\"]', 0)").run(occ);
+}
+
+test("0007 on 0.3.0 + R8 data: every row of every table unchanged, the two pipeline tables are new and empty, their constraints hold", () => {
+  const raw = new DatabaseSync(":memory:");
+  raw.exec("PRAGMA foreign_keys = ON");
+  seedR8(raw);
+  const before = tables(raw);
+  assert.equal((before.routine_runs as unknown[]).length, 7);
+  assert.equal((before.run_metrics as unknown[]).length, 1);
+  raw.exec("BEGIN");
+  raw.exec(readFileSync(join(migrationsDir, "0007_pipeline_contract.sql"), "utf8"));
+  raw.exec("COMMIT");
+  const after = tables(raw);
+  assert.deepEqual(after.pipeline_sources, [], "new table, no rows");
+  assert.deepEqual(after.workflow_version_pipelines, [], "new table, no rows");
+  delete after.pipeline_sources;
+  delete after.workflow_version_pipelines;
+  assert.deepEqual(after, before, "same tables, same rows, same order, same columns");
+  assert.deepEqual(raw.prepare("PRAGMA foreign_key_check").all(), []);
+  assert.equal((raw.prepare("PRAGMA integrity_check").get() as Record<string, string>).integrity_check, "ok");
+  for (const t of ["drafts", "workflows", "workflow_versions"]) {
+    const cols = (raw.prepare(`PRAGMA table_info(${t})`).all() as { name: string }[]).map((c) => c.name);
+    assert.ok(!cols.some((c) => /pipeline/.test(c)), `${t} gets no pipeline column`);
+  }
+  const idx = (raw.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name IN ('pipeline_sources', 'workflow_version_pipelines') AND name NOT LIKE 'sqlite_%' ORDER BY name").all() as { name: string }[]).map((x) => x.name);
+  assert.deepEqual(idx, ["pipeline_sources_by_pipeline", "workflow_version_pipelines_by_pipeline"]);
+
+  const wf = (before.workflows as { id: string; draft_id: string }[])[0] as { id: string; draft_id: string };
+  const ins = raw.prepare("INSERT INTO workflow_version_pipelines (workflow_id, version, pipeline_id, pipeline_version, source) VALUES (?, ?, ?, ?, ?)");
+  assert.throws(() => ins.run(wf.id, 9, "p1-x", 1, "{}"), /FOREIGN KEY/, "only an existing version");
+  assert.throws(() => ins.run(wf.id, 1, "ab", 1, "{}"), /CHECK/);
+  assert.throws(() => ins.run(wf.id, 1, "p1-x", 0, "{}"), /CHECK/);
+  assert.throws(() => ins.run(wf.id, 1, "p1-x", 1, "[]"), /CHECK/);
+  ins.run(wf.id, 1, "p1-x", 1, "{}");
+  assert.throws(() => ins.run(wf.id, 1, "p1-y", 1, "{}"), /UNIQUE|PRIMARY/, "one contract per version");
+});
+
+test("the code works on migrated 0.3.0 + R8 data: import as a new draft of the old workflow, promote (v3), export; the old versions read as not imported", () => {
+  const raw = new DatabaseSync(":memory:");
+  seedR8(raw);
+  raw.exec(readFileSync(join(migrationsDir, "0007_pipeline_contract.sql"), "utf8"));
+  const db = dbAt(raw);
+  const [wf] = store.listWorkflows(db);
+  assert.ok(wf);
+  assert.deepEqual(pipeline.versionPipelines(db, wf.id), []);
+  assert.equal(pipeline.versionSource(db, wf.id, 1), null);
+  assert.deepEqual(pipeline.pipelineIdsOfWorkflow(db, wf.id), []);
+  const contract = JSON.parse(readFileSync(new URL("./fixtures/pipelines/p2-source-vetting.json", import.meta.url), "utf8")) as Record<string, unknown>;
+  const imp = pipeline.importPipeline(db, { contract, asDraftOf: wf.id, confirmReplace: true }, D0);
+  // the seeded 0.2.12 workflow has the kanban.issues_list allow-list; the import adds the contract's own operations
+  assert.equal(imp.draft.workflowId, wf.id);
+  const v = store.promote(db, imp.draft.id, imp.draft.revision, D0 + 1000).version;
+  assert.equal(v.version, 3, "versions 1 and 2 existed");
+  assert.deepEqual(pipeline.versionPipelines(db, wf.id).map((x) => [x.version, x.id]), [[3, "p2-source-vetting"]]);
+  const out = pipeline.exportContract({ workflowId: wf.id, version: 3, active: true, snapshot: store.snapshotOf(v), imported: pipeline.versionSource(db, wf.id, 3), automationCron: null });
+  assert.equal(out.contract.id, "p2-source-vetting");
+  const old = pipeline.exportContract({ workflowId: wf.id, version: 2, active: false, snapshot: store.snapshotOf(store.getVersion(db, wf.id, 2)), imported: pipeline.versionSource(db, wf.id, 2), automationCron: null });
+  assert.equal(old.contract.status, "retired");
+  assert.equal(old.contract.owner, "unassigned", "an old version that was not imported gets the defaults");
+  // the runs, schedules and metrics of the old data still read
+  assert.equal(r.listRuns(db, { limit: 50 }, T("2026-10-12T08:00:30Z")).length, 7);
+});
+
+/** 0.3.0 + R8 + R10 data: the R8 rows migrated by 0007, plus an agent name that 0.3.0 stored (id, name, seen_at only). */
+function seedR10(raw: DatabaseSync): void {
+  seedR8(raw);
+  raw.exec(readFileSync(join(migrationsDir, "0007_pipeline_contract.sql"), "utf8"));
+  raw.prepare("INSERT INTO agent_names (id, name, seen_at) VALUES (?, ?, ?)").run(BOUND.id, "Agent A", D0);
+}
+
+test("0008 on 0.3.0 + R8 + R10 data: every old schedule stays bound, no other value changes, the new columns have their start values, the CHECKs hold", () => {
+  const raw = new DatabaseSync(":memory:");
+  raw.exec("PRAGMA foreign_keys = ON");
+  seedR10(raw);
+  const before = tables(raw);
+  assert.equal((before.automations as unknown[]).length, 1);
+  assert.equal((before.agent_names as unknown[]).length, 1);
+  assert.ok(!("target_mode" in ((before.automations as object[])[0] as object)), "0.3.0 has no target_mode");
+  raw.exec("BEGIN");
+  raw.exec(readFileSync(join(migrationsDir, "0008_free_target.sql"), "utf8"));
+  raw.exec("COMMIT");
+  const after = tables(raw);
+  const strip = (rows: unknown[], cols: string[]) =>
+    (rows as Record<string, unknown>[]).map((row) => Object.assign(Object.create(null), Object.fromEntries(Object.entries(row).filter(([k]) => !cols.includes(k)))));
+  // the new columns and their start values
+  assert.deepEqual((after.automations as { target_mode: string }[]).map((x) => x.target_mode), ["bound"], "an old schedule keeps its meaning");
+  assert.deepEqual((after.agent_names as Record<string, unknown>[]).map((x) => [x.mode, x.status, x.in_directory]), [[null, null, 1]]);
+  // every other value of every table: unchanged, same order
+  after.automations = strip(after.automations ?? [], ["target_mode"]);
+  after.agent_names = strip(after.agent_names ?? [], ["mode", "status", "in_directory"]);
+  assert.deepEqual(after, before, "same tables, same rows, same order");
+  assert.deepEqual(raw.prepare("PRAGMA foreign_key_check").all(), []);
+  assert.equal((raw.prepare("PRAGMA integrity_check").get() as Record<string, string>).integrity_check, "ok");
+  const idx = (raw.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'automations' AND name NOT LIKE 'sqlite_%' ORDER BY name").all() as { name: string }[]).map((x) => x.name);
+  assert.deepEqual(idx, ["automations_by_agent"], "the automations index is still there");
+
+  // constraints
+  const id = (before.automations as { id: string }[])[0]?.id as string;
+  assert.throws(() => raw.prepare("UPDATE automations SET target_mode = 'bogus' WHERE id = ?").run(id), /CHECK constraint/);
+  assert.throws(() => raw.prepare("UPDATE automations SET target_mode = NULL WHERE id = ?").run(id), /NOT NULL/);
+  raw.prepare("UPDATE automations SET target_mode = 'free' WHERE id = ?").run(id);
+  assert.throws(() => raw.prepare("UPDATE agent_names SET mode = 'supervised' WHERE id = ?").run(BOUND.id), /CHECK constraint/);
+  assert.throws(() => raw.prepare("UPDATE agent_names SET status = 'gone' WHERE id = ?").run(BOUND.id), /CHECK constraint/);
+  assert.throws(() => raw.prepare("UPDATE agent_names SET in_directory = 2 WHERE id = ?").run(BOUND.id), /CHECK constraint/);
+  // the old INSERT of 0.3.0 (no target_mode) still works and means bound: a rollback-era writer cannot create a Free schedule by accident
+  raw
+    .prepare("INSERT INTO automations (id, workflow_id, version_pin, policy_version, agent_id, cron, enabled, misfire_grace_sec, kanban_project, revision, next_due_at, created_at, updated_at) VALUES ('aut_old', ?, NULL, 1, ?, '0 8 * * *', 1, 120, NULL, 1, 0, 0, 0)")
+    .run((before.workflows as { id: string }[])[0]?.id as string, BOUND.id);
+  assert.equal((raw.prepare("SELECT target_mode FROM automations WHERE id = 'aut_old'").get() as { target_mode: string }).target_mode, "bound");
+});
+
+test("the code works on migrated 0.3.0 + R8 + R10 data: the old Bound schedule is offered and claimed by its Bound agent, never by a Free agent of the same id; the directory starts open", () => {
+  const raw = new DatabaseSync(":memory:");
+  seedR10(raw);
+  raw.exec(readFileSync(join(migrationsDir, "0008_free_target.sql"), "utf8"));
+  const db = dbAt(raw);
+  const now = T("2026-10-12T08:00:30Z");
+  const [a] = r.listAutomations(db, now);
+  assert.equal(a?.targetMode, "bound");
+  assert.deepEqual(r.dueJobs(db, BOUND.id, now, "free"), [], "a Free caller gets no old schedule");
+  const job = r.dueJobs(db, BOUND.id, now)[0];
+  assert.ok(job);
+  assert.deepEqual(r.claim(db, { id: BOUND.id, mode: "free" }, job.occurrence, now), { claimed: false, reason: "mode_mismatch" });
+  assert.equal(directory.isAvailable(db, BOUND.id), true, "a name row from 0.3.0 does not stop the agent");
+  assert.equal(directory.isFreeAgent(db, BOUND.id), false, "and it is not a Free target until the directory says its mode");
+  assert.equal(r.claim(db, BOUND, job.occurrence, now).claimed, true, "the schedule runs on");
+  // the first agentsChanged after the upgrade fills mode and status
+  directory.recordDirectory(db, [{ id: BOUND.id as `agt_${string}`, name: "Agent A", mode: "free", status: "active" }], now);
+  assert.equal(directory.isFreeAgent(db, BOUND.id), true);
+});
+
+test("scripts/upgrade-check.ts passes on a 0.3.0 + R8 data file and reports the columns 0008 adds", (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "evolution-upgrade-check-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const file = join(dir, "app.db");
+  const raw = new DatabaseSync(file);
+  raw.exec("PRAGMA foreign_keys = ON");
+  seedR8(raw);
+  raw.prepare("INSERT INTO agent_names (id, name, seen_at) VALUES (?, ?, ?)").run(BOUND.id, "Agent A", D0);
+  // the SDK's record of the applied app migrations (version, name, sha256 of the released file)
+  raw.exec("CREATE TABLE tb_migrations (scope TEXT NOT NULL, version INTEGER NOT NULL, name TEXT NOT NULL, sha256 TEXT NOT NULL, applied_at INTEGER NOT NULL, PRIMARY KEY (scope, version))");
+  const ins = raw.prepare("INSERT INTO tb_migrations (scope, version, name, sha256, applied_at) VALUES ('app', ?, ?, ?, 0)");
+  for (const f of files.filter((x) => x < "0007")) ins.run(Number(f.slice(0, 4)), f.slice(5, -4), createHash("sha256").update(readFileSync(join(migrationsDir, f))).digest("hex"));
+  raw.close();
+  const work = join(dir, "work");
+  mkdirSync(work);
+  const run = spawnSync(process.execPath, [join(root, "scripts", "upgrade-check.ts"), file, "--work", work], { encoding: "utf8" });
+  assert.equal(run.status, 0, `${run.stdout}${run.stderr}`);
+  const out = JSON.parse(run.stdout) as { applied: string[]; addedColumns: string[]; result: string };
+  assert.deepEqual(out.applied, files.filter((f) => f >= "0007_")); // 0007 and 0008, then the engine line (0009, 0010)
+  assert.deepEqual(out.addedColumns.sort(), ["agent_names.in_directory", "agent_names.mode", "agent_names.status", "automations.target_mode"]);
+  assert.equal(out.result, "pass");
 });

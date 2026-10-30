@@ -5,8 +5,11 @@
   "name": "Evolving Workflows",
   "summary": "Evolving Workflows turns work your agents repeat into reviewed, versioned workflows that a Bound agent runs on a schedule.",
   "description": "Agents suggest a workflow when they repeat work, with evidence. Evolving Workflows also spots repeated done issues in Task Board. You review each suggestion, edit a draft (steps, allowed operations, trigger), promote it to a versioned workflow, export a recipe that creates a Bound agent in Portal, and schedule it. The Bound agent’s own runner claims each due run at most once; every run is a Task Board issue assigned to that agent. A Bound agent may call only the allowed operations; it is not forced to follow the steps.",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "sdkMajor": 1,
+  "requires": {
+    "bridge": "0.2.11"
+  },
   "publisher": {
     "name": "Tealbrick"
   },
@@ -40,8 +43,8 @@
     "port": 8080,
     "healthPath": "/tb/v1/health",
     "resources": {
-      "cpu": 0.25,
-      "memoryMb": 256
+      "cpu": 0.5,
+      "memoryMb": 768
     },
     "volumes": [
       {
@@ -55,6 +58,49 @@
         "mountPath": "/backup",
         "sizeGb": 2,
         "purpose": "backup"
+      }
+    ],
+    "env": [
+      {
+        "name": "TEMPORAL_ADDRESS",
+        "value": "{{services.temporal.host}}:7233"
+      }
+    ],
+    "services": [
+      {
+        "id": "temporal",
+        "title": "Workflow engine (Temporal)",
+        "build": {
+          "context": ".",
+          "dockerfile": "services/temporal/Dockerfile"
+        },
+        "port": 7233,
+        "resources": {
+          "cpu": 1,
+          "memoryMb": 1024
+        },
+        "volumes": [
+          {
+            "id": "temporal_data",
+            "mountPath": "/data",
+            "sizeGb": 5,
+            "purpose": "data"
+          }
+        ],
+        "health": {
+          "kind": "tcp"
+        },
+        "startOrder": 0,
+        "dropPrivileges": true,
+        "backup": {
+          "dump": [
+            "/opt/temporal/temporal-dump"
+          ],
+          "restore": [
+            "/opt/temporal/temporal-restore"
+          ],
+          "extension": "sqlite"
+        }
       }
     ]
   },
@@ -704,7 +750,7 @@
     {
       "id": "workflow_get",
       "title": "Get a workflow",
-      "description": "Read a promoted workflow: instruction, trigger, reviewed steps and the operations you may call. A Bound agent reads its workflow here before it works. Without version: the active version.",
+      "description": "Read a promoted workflow: instruction, trigger, reviewed steps and the operations you may call. A Bound agent reads its workflow here before it works; for a Free agent the notice says that it runs with its own access and the operation list is guidance. Without version: the active version.",
       "input": {
         "type": "object",
         "additionalProperties": false,
@@ -886,7 +932,7 @@
     {
       "id": "routines_due",
       "title": "Due workflow runs",
-      "description": "For a Bound agent: the scheduled runs of your workflows that are due now. Reading claims nothing (it only records runs whose due time passed the misfire grace as missed); claim a run with routine_claim before you start it. Your `tealbrick agent serve` routines mode calls this for you.",
+      "description": "For a Bound or a Free agent: the scheduled runs due now on the schedules that name you and target your own mode (a Bound agent gets Bound schedules, a Free agent gets Free ones). A paused or removed agent gets none. Reading claims nothing (it only records runs whose due time passed the misfire grace as missed); claim a run with routine_claim before you start it. Your `tealbrick agent serve` routines mode calls this for you. A schedule that moved to the engine gives nothing here: use steps_due. Deprecated; it stays for one release for Bound agents.",
       "input": {
         "type": "object",
         "additionalProperties": false,
@@ -948,7 +994,7 @@
     {
       "id": "routine_claim",
       "title": "Claim a due run",
-      "description": "Claim one due run by its occurrence. At most one claim per occurrence ever succeeds; a run that was claimed, missed or is not due answers claimed false with a reason. The answer carries the reviewed workflow (instruction, steps, allowed operations).",
+      "description": "Claim one due run by its occurrence. At most one claim per occurrence ever succeeds; a run that was claimed, missed or is not due answers claimed false with a reason. You can claim only an occurrence of your own schedule of your own mode: mode_mismatch (the schedule targets the other mode), agent_unavailable (you are paused or removed), not_bound (not an agent, or a Free agent with no Free schedule). The answer carries the reviewed workflow (instruction, steps, allowed operations). migrated: the schedule moved to the engine (C367 M3); its agent takes the work as workflow steps (steps_due, step_claim, step_report). This path is deprecated and stays for one release.",
       "input": {
         "type": "object",
         "additionalProperties": false,
@@ -986,8 +1032,11 @@
                   "not_due",
                   "paused",
                   "not_bound",
+                  "mode_mismatch",
+                  "agent_unavailable",
                   "version_missing",
-                  "policy_stale"
+                  "policy_stale",
+                  "migrated"
                 ]
               },
               {
@@ -1188,7 +1237,7 @@
     {
       "id": "routine_report",
       "title": "Report a run",
-      "description": "Report the state of a run you claimed: dispatched (the turn started), then completed, failed or uncertain, with a short summary. Repeating the same report changes nothing.",
+      "description": "Report the state of a run you claimed: dispatched (the turn started), then completed, failed or uncertain, with a short summary. Repeating the same report changes nothing. With the report that ends the run (completed or failed) you may send metrics (the RunReport: ok, minutes, retries, questions_to_martin, lessons, and metrics: your own named numbers, name to number, at most 20). They are stored once with that report; the owner sees them per workflow version, no agent sees them. metrics.pipeline, metrics.version and metrics.issue are optional and ignored. Metrics on any other status are refused (metrics_need_terminal_status). If the workflow version was imported from a pipeline contract, a named metric must be declared there (metric_not_declared). If a report with metrics is refused, send it again without metrics, so the run still ends.",
       "input": {
         "type": "object",
         "additionalProperties": false,
@@ -1216,6 +1265,73 @@
             "type": "string",
             "minLength": 0,
             "maxLength": 500
+          },
+          "metrics": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "ok",
+              "minutes"
+            ],
+            "properties": {
+              "pipeline": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64
+              },
+              "version": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 100000
+              },
+              "ok": {
+                "type": "boolean"
+              },
+              "minutes": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 10080
+              },
+              "retries": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 1000
+              },
+              "questions_to_martin": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 1000
+              },
+              "lessons": {
+                "type": "array",
+                "maxItems": 20,
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 280,
+                  "pattern": "(?![\\u2800\\u3164\\u115F\\u1160\\uFFA0\\u17B4\\u17B5])[\\p{L}\\p{N}\\p{P}\\p{S}]"
+                }
+              },
+              "metrics": {
+                "type": "object",
+                "description": "Per-pipeline numbers: name to number (from -1e12 to 1e12). A name starts with a lower case letter and has 2 to 41 characters (lower case letters, digits, underscore). At most 20 per report, and at most 20 different names per workflow version. Omit a metric you could not measure.",
+                "propertyNames": {
+                  "pattern": "^[a-z][a-z0-9_]{1,40}$"
+                },
+                "additionalProperties": {
+                  "type": "number",
+                  "minimum": -1000000000000.0,
+                  "maximum": 1000000000000.0
+                },
+                "maxProperties": 20
+              },
+              "issue": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64,
+                "description": "Task Board issue id of the run. Accepted and ignored: the run itself says which issue it has."
+              }
+            }
           }
         }
       },
@@ -1321,6 +1437,780 @@
       "idempotency": "supported",
       "receipt": true,
       "audience": "agent"
+    },
+    {
+      "id": "steps_due",
+      "title": "Workflow steps offered to you",
+      "description": "For a Free agent: the steps of running workflows that are offered to you now, each as {stepRunId, workflowTitle, deadline}. An agent step asks you for content, not for an action. A Bound agent, a paused agent and a removed agent get none. Reading claims nothing; claim a step with step_claim before you work on it. Your `tealbrick agent serve` steps mode calls this for you.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      },
+      "output": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "steps"
+        ],
+        "properties": {
+          "steps": {
+            "type": "array",
+            "maxItems": 50,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "stepRunId",
+                "workflowTitle",
+                "deadline"
+              ],
+              "properties": {
+                "stepRunId": {
+                  "type": "string"
+                },
+                "workflowTitle": {
+                  "type": "string"
+                },
+                "deadline": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      },
+      "crud": [
+        "read"
+      ],
+      "effect": "read",
+      "idempotency": "none",
+      "receipt": false,
+      "audience": "agent"
+    },
+    {
+      "id": "step_claim",
+      "title": "Claim a workflow step",
+      "description": "Claim one offered step by its stepRunId. At most one agent ever claims a step attempt, once; the same agent asking again for a step it claimed (its answer was lost) gets the same answer again, as a read that changes nothing; a step that is claimed, ended, timed out, cancelled, not yours or not for your mode answers claimed false with a reason (already_claimed, finished, timed_out, cancelled, not_found, mode_mismatch, agent_unavailable). The answer carries the instruction, the typed inputs, the outputSchema your answer must match, an allowedHint (guidance only: you act with your own access), the deadline and heartbeatSec. It says mode content: return the output only, do not act. The step is not a task to carry out; the engine runs every action itself. The claim takes no idempotency key on purpose: the SDK would keep a copy of the answer, and the inputs can hold data of other apps. That is why a lost answer is safe to ask again.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "stepRunId"
+        ],
+        "properties": {
+          "stepRunId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
+          }
+        }
+      },
+      "output": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "claimed",
+          "reason",
+          "step"
+        ],
+        "properties": {
+          "claimed": {
+            "type": "boolean"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "already_claimed",
+                  "finished",
+                  "timed_out",
+                  "cancelled",
+                  "not_found",
+                  "mode_mismatch",
+                  "agent_unavailable"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "step": {
+            "anyOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "stepRunId",
+                  "workflowTitle",
+                  "attempt",
+                  "instruction",
+                  "inputs",
+                  "outputSchema",
+                  "allowedHint",
+                  "deadline",
+                  "heartbeatSec",
+                  "mode",
+                  "note"
+                ],
+                "properties": {
+                  "stepRunId": {
+                    "type": "string"
+                  },
+                  "workflowTitle": {
+                    "type": "string"
+                  },
+                  "attempt": {
+                    "type": "integer"
+                  },
+                  "instruction": {
+                    "type": "string"
+                  },
+                  "inputs": {
+                    "type": "object",
+                    "description": "The typed inputs of the step: name to value."
+                  },
+                  "outputSchema": {
+                    "type": "object",
+                    "description": "A JSON Schema (type object). Your output must match it."
+                  },
+                  "allowedHint": {
+                    "type": "array",
+                    "maxItems": 32,
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "product",
+                        "operations",
+                        "crud"
+                      ],
+                      "properties": {
+                        "product": {
+                          "type": "string"
+                        },
+                        "operations": {
+                          "type": "array",
+                          "maxItems": 64,
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "crud": {
+                          "type": "array",
+                          "maxItems": 4,
+                          "items": {
+                            "type": "string",
+                            "enum": [
+                              "create",
+                              "read",
+                              "update",
+                              "delete"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  },
+                  "deadline": {
+                    "type": "string"
+                  },
+                  "heartbeatSec": {
+                    "type": "integer"
+                  },
+                  "mode": {
+                    "type": "string",
+                    "enum": [
+                      "content"
+                    ]
+                  },
+                  "note": {
+                    "type": "string"
+                  }
+                }
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "crud": [
+        "update"
+      ],
+      "effect": "write",
+      "idempotency": "none",
+      "receipt": true,
+      "audience": "agent"
+    },
+    {
+      "id": "step_heartbeat",
+      "title": "Keep a claimed step alive",
+      "description": "Tell the engine that you still work on a step you claimed. Send it at least every heartbeatSec seconds (heartbeatSec 0 means the workflow asks for no heartbeat; then only the deadline applies): after three missed heartbeats, or after the deadline, the step times out and you get a refusal (step_timed_out) here and on step_report. A step the engine cancelled answers step_cancelled. Stop working when you get a refusal.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "stepRunId"
+        ],
+        "properties": {
+          "stepRunId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
+          }
+        }
+      },
+      "output": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "stepRunId",
+          "status",
+          "deadline",
+          "heartbeatBy",
+          "heartbeatSec"
+        ],
+        "properties": {
+          "stepRunId": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "claimed"
+            ]
+          },
+          "deadline": {
+            "type": "string"
+          },
+          "heartbeatBy": {
+            "type": "string"
+          },
+          "heartbeatSec": {
+            "type": "integer"
+          }
+        }
+      },
+      "crud": [
+        "update"
+      ],
+      "effect": "write",
+      "idempotency": "none",
+      "receipt": false,
+      "audience": "agent"
+    },
+    {
+      "id": "step_report",
+      "title": "Report a workflow step",
+      "description": "Report the end of a step you claimed: completed with the typed output, or failed with a short summary. The output is checked against the outputSchema of the step: an output that does not match answers 422 output_invalid with a pointer to the field, and the step stays claimed until it times out, so you can report again. Repeating a report that already ended the step changes nothing. With the report you may send a summary (at most 500 characters, the owner sees it) and metrics (your own named numbers, name to number, at most 20; the owner sees them, no agent does). Return the output only: do not act.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "stepRunId",
+          "status"
+        ],
+        "properties": {
+          "stepRunId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "completed",
+              "failed"
+            ]
+          },
+          "output": {
+            "type": "object",
+            "description": "The typed output. Required with completed."
+          },
+          "summary": {
+            "type": "string",
+            "minLength": 0,
+            "maxLength": 500
+          },
+          "metrics": {
+            "type": "object",
+            "description": "Named numbers: name to number (from -1e12 to 1e12). A name starts with a lower case letter and has 2 to 41 characters (lower case letters, digits, underscore). At most 20.",
+            "propertyNames": {
+              "pattern": "^[a-z][a-z0-9_]{1,40}$"
+            },
+            "additionalProperties": {
+              "type": "number",
+              "minimum": -1000000000000.0,
+              "maximum": 1000000000000.0
+            },
+            "maxProperties": 20
+          }
+        }
+      },
+      "output": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "stepRunId",
+          "status",
+          "attempt",
+          "outputBytes",
+          "summary",
+          "finishedAt"
+        ],
+        "properties": {
+          "stepRunId": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "offered",
+              "claimed",
+              "completed",
+              "failed",
+              "timed_out",
+              "cancelled"
+            ]
+          },
+          "attempt": {
+            "type": "integer"
+          },
+          "outputBytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "summary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "finishedAt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "crud": [
+        "update"
+      ],
+      "effect": "write",
+      "idempotency": "supported",
+      "receipt": true,
+      "audience": "agent"
+    },
+    {
+      "id": "agent_steps_list",
+      "title": "Agent steps",
+      "description": "The agent steps of workflow runs, newest first: which agent card was offered the step, who claimed it, heartbeats, timeouts, cancellations and re-offers (attempts), the size of the output, and the summary and numbers the agent reported. Of one run, of one workflow, or of all. Never the inputs and never the output itself. Owner only.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "runId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "workflowId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z]{3}_[0-9A-Za-z]{1,60}$"
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 200
+          }
+        }
+      },
+      "output": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "steps"
+        ],
+        "properties": {
+          "steps": {
+            "type": "array",
+            "maxItems": 200,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "stepRunId",
+                "workflowId",
+                "workflowTitle",
+                "version",
+                "runId",
+                "stepId",
+                "agentId",
+                "status",
+                "attempt",
+                "offeredAt",
+                "deadlineAt",
+                "claimedBy",
+                "claimedAt",
+                "heartbeatAt",
+                "finishedAt",
+                "heartbeatSec",
+                "outputBytes",
+                "summary",
+                "metrics",
+                "invalidReports",
+                "events"
+              ],
+              "properties": {
+                "stepRunId": {
+                  "type": "string"
+                },
+                "workflowId": {
+                  "type": "string"
+                },
+                "workflowTitle": {
+                  "type": "string"
+                },
+                "version": {
+                  "type": "integer"
+                },
+                "runId": {
+                  "type": "string"
+                },
+                "stepId": {
+                  "type": "string"
+                },
+                "agentId": {
+                  "type": "string"
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "offered",
+                    "claimed",
+                    "completed",
+                    "failed",
+                    "timed_out",
+                    "cancelled"
+                  ]
+                },
+                "attempt": {
+                  "type": "integer"
+                },
+                "offeredAt": {
+                  "type": "string"
+                },
+                "deadlineAt": {
+                  "type": "string"
+                },
+                "claimedBy": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "claimedAt": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "heartbeatAt": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "finishedAt": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "heartbeatSec": {
+                  "type": "integer"
+                },
+                "outputBytes": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "summary": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "metrics": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "number"
+                      }
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "invalidReports": {
+                  "type": "integer"
+                },
+                "events": {
+                  "type": "array",
+                  "maxItems": 200,
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "attempt",
+                      "kind",
+                      "agentId",
+                      "detail",
+                      "at"
+                    ],
+                    "properties": {
+                      "attempt": {
+                        "type": "integer"
+                      },
+                      "kind": {
+                        "type": "string",
+                        "enum": [
+                          "offered",
+                          "claimed",
+                          "completed",
+                          "failed",
+                          "timed_out",
+                          "cancelled"
+                        ]
+                      },
+                      "agentId": {
+                        "type": "string"
+                      },
+                      "detail": {
+                        "anyOf": [
+                          {
+                            "type": "string"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "at": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "crud": [
+        "read"
+      ],
+      "effect": "read",
+      "idempotency": "none",
+      "receipt": false,
+      "audience": "person"
+    },
+    {
+      "id": "migration_status",
+      "title": "Move from 0.3.x",
+      "description": "What the one-time move of 0.3.x workflows to the engine did: how many workflows and schedules moved, how many stayed on the 0.3.x runner because their agent is Bound (legacy_bound), how many were skipped or failed and why, and what waits for the engine (deferred). Each item names the engine workflow or schedule it became. Owner only.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      },
+      "output": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "done",
+          "doneAt",
+          "counts",
+          "items"
+        ],
+        "properties": {
+          "done": {
+            "type": "boolean"
+          },
+          "doneAt": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "counts": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "workflowsMigrated",
+              "workflowsFailed",
+              "schedulesMigrated",
+              "schedulesLegacyBound",
+              "schedulesSkipped",
+              "schedulesFailed",
+              "deferred"
+            ],
+            "properties": {
+              "workflowsMigrated": {
+                "type": "integer"
+              },
+              "workflowsFailed": {
+                "type": "integer"
+              },
+              "schedulesMigrated": {
+                "type": "integer"
+              },
+              "schedulesLegacyBound": {
+                "type": "integer"
+              },
+              "schedulesSkipped": {
+                "type": "integer"
+              },
+              "schedulesFailed": {
+                "type": "integer"
+              },
+              "deferred": {
+                "type": "integer"
+              }
+            }
+          },
+          "items": {
+            "type": "array",
+            "maxItems": 1000,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "kind",
+                "legacyId",
+                "engineId",
+                "status",
+                "reason",
+                "versions"
+              ],
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "workflow",
+                    "schedule"
+                  ]
+                },
+                "legacyId": {
+                  "type": "string"
+                },
+                "engineId": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "migrated",
+                    "legacy_bound",
+                    "skipped",
+                    "failed",
+                    "deferred"
+                  ]
+                },
+                "reason": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "versions": {
+                  "anyOf": [
+                    {
+                      "type": "integer"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
+      "crud": [
+        "read"
+      ],
+      "effect": "read",
+      "idempotency": "none",
+      "receipt": false,
+      "audience": "person"
     },
     {
       "id": "review_suggestions",
@@ -2708,7 +3598,7 @@
     {
       "id": "draft_get",
       "title": "Draft detail",
-      "description": "One workflow draft.",
+      "description": "One workflow draft. `pipeline` says which pipeline contract it was imported from (null for a draft that was not imported).",
       "input": {
         "type": "object",
         "additionalProperties": false,
@@ -2742,7 +3632,8 @@
           "state",
           "promotedVersion",
           "createdAt",
-          "updatedAt"
+          "updatedAt",
+          "pipeline"
         ],
         "properties": {
           "id": {
@@ -2900,6 +3791,193 @@
           },
           "updatedAt": {
             "type": "string"
+          },
+          "pipeline": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "id",
+                  "version",
+                  "importedAt",
+                  "report",
+                  "baseVersion"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "version": {
+                    "type": "integer"
+                  },
+                  "importedAt": {
+                    "type": "string"
+                  },
+                  "report": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "mapped",
+                      "unmapped",
+                      "kept_as_data",
+                      "schedule_hint",
+                      "declaredMetrics",
+                      "notes",
+                      "agent_visible"
+                    ],
+                    "properties": {
+                      "mapped": {
+                        "type": "array",
+                        "maxItems": 600,
+                        "items": {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "required": [
+                            "from",
+                            "to"
+                          ],
+                          "properties": {
+                            "from": {
+                              "type": "string"
+                            },
+                            "to": {
+                              "type": "string"
+                            }
+                          }
+                        }
+                      },
+                      "unmapped": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "tools"
+                        ],
+                        "properties": {
+                          "tools": {
+                            "type": "array",
+                            "maxItems": 600,
+                            "items": {
+                              "type": "object",
+                              "additionalProperties": false,
+                              "required": [
+                                "step",
+                                "tool",
+                                "reason"
+                              ],
+                              "properties": {
+                                "step": {
+                                  "type": "string"
+                                },
+                                "tool": {
+                                  "type": "string"
+                                },
+                                "reason": {
+                                  "type": "string"
+                                }
+                              }
+                            }
+                          }
+                        }
+                      },
+                      "kept_as_data": {
+                        "type": "array",
+                        "maxItems": 100,
+                        "items": {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "required": [
+                            "field"
+                          ],
+                          "properties": {
+                            "field": {
+                              "type": "string"
+                            },
+                            "steps": {
+                              "type": "array",
+                              "maxItems": 600,
+                              "items": {
+                                "type": "string"
+                              }
+                            }
+                          }
+                        }
+                      },
+                      "schedule_hint": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "cron",
+                          "timezone",
+                          "event",
+                          "once"
+                        ],
+                        "properties": {
+                          "cron": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "timezone": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "event": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "once": {
+                            "type": [
+                              "boolean",
+                              "null"
+                            ]
+                          }
+                        }
+                      },
+                      "declaredMetrics": {
+                        "type": "array",
+                        "maxItems": 200,
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "notes": {
+                        "type": "array",
+                        "maxItems": 50,
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "agent_visible": {
+                        "type": "array",
+                        "maxItems": 10,
+                        "items": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  },
+                  "baseVersion": {
+                    "anyOf": [
+                      {
+                        "type": "null"
+                      },
+                      {
+                        "type": "integer"
+                      }
+                    ]
+                  }
+                }
+              }
+            ]
           }
         }
       },
@@ -3469,6 +4547,632 @@
       "audience": "person"
     },
     {
+      "id": "pipeline_import",
+      "title": "Import a pipeline contract",
+      "description": "Import a typed pipeline contract (tealbrick.agents/pipeline-contract/0.1) as a new workflow draft. Teal Brick tools of the steps become the step operations and the allowed operations; every other tool is listed as not mapped; the rest of the contract is kept as data and is not enforced. No schedule is created: the report gives the trigger as a hint. With asDraftOf the draft is a new draft of that workflow. Agents that run the workflow read its title, summary and step text; everything else of the contract stays with the owner.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "contract"
+        ],
+        "properties": {
+          "contract": {
+            "type": "object",
+            "description": "The pipeline contract JSON object."
+          },
+          "asDraftOf": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z]{3}_[0-9A-Za-z]{1,60}$",
+            "description": "A workflow that was imported from the same pipeline id (or never imported): the draft becomes its next version when promoted."
+          },
+          "confirmReplace": {
+            "type": "boolean",
+            "description": "Needed with asDraftOf when the workflow was never imported from a contract: the draft replaces its steps and allowed operations."
+          }
+        }
+      },
+      "output": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "draft",
+          "report"
+        ],
+        "properties": {
+          "draft": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "suggestionId",
+              "templateId",
+              "workflowId",
+              "title",
+              "summary",
+              "instruction",
+              "trigger",
+              "steps",
+              "allowed",
+              "revision",
+              "state",
+              "promotedVersion",
+              "createdAt",
+              "updatedAt",
+              "pipeline"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "suggestionId": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "templateId": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "workflowId": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "title": {
+                "type": "string"
+              },
+              "summary": {
+                "type": "string"
+              },
+              "instruction": {
+                "type": "string"
+              },
+              "trigger": {
+                "type": "string"
+              },
+              "steps": {
+                "type": "array",
+                "maxItems": 50,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "id",
+                    "title",
+                    "instruction",
+                    "ops"
+                  ],
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 40
+                    },
+                    "title": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 200
+                    },
+                    "instruction": {
+                      "type": "string"
+                    },
+                    "ops": {
+                      "type": "array",
+                      "maxItems": 32,
+                      "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "product",
+                          "operation"
+                        ],
+                        "properties": {
+                          "product": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 40,
+                            "pattern": "^[a-z][a-z0-9-]{0,39}$"
+                          },
+                          "operation": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": 40,
+                            "pattern": "^[a-z][a-z0-9_]{0,39}$"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              "allowed": {
+                "type": "array",
+                "maxItems": 32,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "product",
+                    "operations",
+                    "crud"
+                  ],
+                  "properties": {
+                    "product": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 40,
+                      "pattern": "^[a-z][a-z0-9-]{0,39}$"
+                    },
+                    "operations": {
+                      "type": "array",
+                      "minItems": 1,
+                      "maxItems": 64,
+                      "items": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 40,
+                        "pattern": "^[a-z][a-z0-9_]{0,39}$"
+                      }
+                    },
+                    "crud": {
+                      "type": "array",
+                      "minItems": 1,
+                      "maxItems": 4,
+                      "items": {
+                        "type": "string",
+                        "enum": [
+                          "create",
+                          "read",
+                          "update",
+                          "delete"
+                        ]
+                      }
+                    }
+                  }
+                }
+              },
+              "revision": {
+                "type": "integer"
+              },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "open",
+                  "promoted"
+                ]
+              },
+              "promotedVersion": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "createdAt": {
+                "type": "string"
+              },
+              "updatedAt": {
+                "type": "string"
+              },
+              "pipeline": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "id",
+                      "version",
+                      "importedAt",
+                      "report",
+                      "baseVersion"
+                    ],
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "version": {
+                        "type": "integer"
+                      },
+                      "importedAt": {
+                        "type": "string"
+                      },
+                      "report": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "mapped",
+                          "unmapped",
+                          "kept_as_data",
+                          "schedule_hint",
+                          "declaredMetrics",
+                          "notes",
+                          "agent_visible"
+                        ],
+                        "properties": {
+                          "mapped": {
+                            "type": "array",
+                            "maxItems": 600,
+                            "items": {
+                              "type": "object",
+                              "additionalProperties": false,
+                              "required": [
+                                "from",
+                                "to"
+                              ],
+                              "properties": {
+                                "from": {
+                                  "type": "string"
+                                },
+                                "to": {
+                                  "type": "string"
+                                }
+                              }
+                            }
+                          },
+                          "unmapped": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": [
+                              "tools"
+                            ],
+                            "properties": {
+                              "tools": {
+                                "type": "array",
+                                "maxItems": 600,
+                                "items": {
+                                  "type": "object",
+                                  "additionalProperties": false,
+                                  "required": [
+                                    "step",
+                                    "tool",
+                                    "reason"
+                                  ],
+                                  "properties": {
+                                    "step": {
+                                      "type": "string"
+                                    },
+                                    "tool": {
+                                      "type": "string"
+                                    },
+                                    "reason": {
+                                      "type": "string"
+                                    }
+                                  }
+                                }
+                              }
+                            }
+                          },
+                          "kept_as_data": {
+                            "type": "array",
+                            "maxItems": 100,
+                            "items": {
+                              "type": "object",
+                              "additionalProperties": false,
+                              "required": [
+                                "field"
+                              ],
+                              "properties": {
+                                "field": {
+                                  "type": "string"
+                                },
+                                "steps": {
+                                  "type": "array",
+                                  "maxItems": 600,
+                                  "items": {
+                                    "type": "string"
+                                  }
+                                }
+                              }
+                            }
+                          },
+                          "schedule_hint": {
+                            "type": "object",
+                            "additionalProperties": false,
+                            "required": [
+                              "cron",
+                              "timezone",
+                              "event",
+                              "once"
+                            ],
+                            "properties": {
+                              "cron": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "timezone": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "event": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "once": {
+                                "type": [
+                                  "boolean",
+                                  "null"
+                                ]
+                              }
+                            }
+                          },
+                          "declaredMetrics": {
+                            "type": "array",
+                            "maxItems": 200,
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "notes": {
+                            "type": "array",
+                            "maxItems": 50,
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "agent_visible": {
+                            "type": "array",
+                            "maxItems": 10,
+                            "items": {
+                              "type": "string"
+                            }
+                          }
+                        }
+                      },
+                      "baseVersion": {
+                        "anyOf": [
+                          {
+                            "type": "null"
+                          },
+                          {
+                            "type": "integer"
+                          }
+                        ]
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          },
+          "report": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "mapped",
+              "unmapped",
+              "kept_as_data",
+              "schedule_hint",
+              "declaredMetrics",
+              "notes",
+              "agent_visible"
+            ],
+            "properties": {
+              "mapped": {
+                "type": "array",
+                "maxItems": 600,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "from",
+                    "to"
+                  ],
+                  "properties": {
+                    "from": {
+                      "type": "string"
+                    },
+                    "to": {
+                      "type": "string"
+                    }
+                  }
+                }
+              },
+              "unmapped": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "tools"
+                ],
+                "properties": {
+                  "tools": {
+                    "type": "array",
+                    "maxItems": 600,
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "step",
+                        "tool",
+                        "reason"
+                      ],
+                      "properties": {
+                        "step": {
+                          "type": "string"
+                        },
+                        "tool": {
+                          "type": "string"
+                        },
+                        "reason": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              "kept_as_data": {
+                "type": "array",
+                "maxItems": 100,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "field"
+                  ],
+                  "properties": {
+                    "field": {
+                      "type": "string"
+                    },
+                    "steps": {
+                      "type": "array",
+                      "maxItems": 600,
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              },
+              "schedule_hint": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "cron",
+                  "timezone",
+                  "event",
+                  "once"
+                ],
+                "properties": {
+                  "cron": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "timezone": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "event": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "once": {
+                    "type": [
+                      "boolean",
+                      "null"
+                    ]
+                  }
+                }
+              },
+              "declaredMetrics": {
+                "type": "array",
+                "maxItems": 200,
+                "items": {
+                  "type": "string"
+                }
+              },
+              "notes": {
+                "type": "array",
+                "maxItems": 50,
+                "items": {
+                  "type": "string"
+                }
+              },
+              "agent_visible": {
+                "type": "array",
+                "maxItems": 10,
+                "items": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      },
+      "crud": [
+        "create"
+      ],
+      "effect": "write",
+      "idempotency": "required",
+      "receipt": true,
+      "audience": "person"
+    },
+    {
+      "id": "pipeline_export",
+      "title": "Export a pipeline contract",
+      "description": "A pipeline contract (tealbrick.agents/pipeline-contract/0.1) rebuilt from one version of a workflow. A workflow imported from a contract gives that contract back, except the fields Evolution owns (status, and the purpose, steps and Teal Brick tools you edited). A workflow that was never imported gets documented defaults for the required fields.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "workflowId"
+        ],
+        "properties": {
+          "workflowId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z]{3}_[0-9A-Za-z]{1,60}$"
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100000
+          }
+        }
+      },
+      "output": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "contract",
+          "filename",
+          "imported",
+          "omitted",
+          "notice"
+        ],
+        "properties": {
+          "contract": {
+            "type": "object"
+          },
+          "filename": {
+            "type": "string"
+          },
+          "imported": {
+            "type": "boolean"
+          },
+          "omitted": {
+            "type": "array",
+            "maxItems": 2100,
+            "items": {
+              "type": "string"
+            },
+            "description": "Allowed operations (product.operation) that no step uses: a contract lists tools per step, so they are not in it."
+          },
+          "notice": {
+            "type": "string"
+          }
+        }
+      },
+      "crud": [
+        "read"
+      ],
+      "effect": "read",
+      "idempotency": "none",
+      "receipt": false,
+      "audience": "person"
+    },
+    {
       "id": "workflows_list",
       "title": "Workflows",
       "description": "All permanent workflows.",
@@ -3537,7 +5241,7 @@
     {
       "id": "workflow_versions",
       "title": "Workflow versions",
-      "description": "Every version of one workflow, oldest first.",
+      "description": "Every version of one workflow, oldest first. `pipelines` lists the versions that came from an imported pipeline contract.",
       "input": {
         "type": "object",
         "additionalProperties": false,
@@ -3558,7 +5262,8 @@
         "additionalProperties": false,
         "required": [
           "workflow",
-          "versions"
+          "versions",
+          "pipelines"
         ],
         "properties": {
           "workflow": {
@@ -3744,6 +5449,30 @@
                 },
                 "promotedAt": {
                   "type": "string"
+                }
+              }
+            }
+          },
+          "pipelines": {
+            "type": "array",
+            "maxItems": 1000,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "version",
+                "id",
+                "pipelineVersion"
+              ],
+              "properties": {
+                "version": {
+                  "type": "integer"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "pipelineVersion": {
+                  "type": "integer"
                 }
               }
             }
@@ -4036,7 +5765,7 @@
     {
       "id": "automation_set",
       "title": "Schedule a workflow",
-      "description": "Create or change the schedule of a workflow for one Bound agent (cron, 5 fields, UTC). Each run becomes a Task Board issue in kanbanProject: a project you share with the Bound agent in Task Board, so the agent can read and comment on its runs. When Task Board is connected, a new schedule needs kanbanProject (kanban_project_required); an edit can keep an old schedule without one but not remove one.",
+      "description": "Create or change the schedule of a workflow for one agent (cron, 5 fields, UTC). targetMode \"bound\" (the default) is a Bound agent that holds the recipe of the workflow. targetMode \"free\" is an existing Free agent from the agent list: it claims its runs with its own access, no recipe is applied, so policyVersion must be left out (422 policy_version_not_applicable) and the agent must be a Free agent of this workspace (422 agent_not_free). An edit without targetMode keeps the stored mode. Each run becomes a Task Board issue in kanbanProject: a project you share with the agent in Task Board, so the agent can read and comment on its runs. When Task Board is connected, a new schedule needs kanbanProject (kanban_project_required); an edit can keep an old schedule without one but not remove one.",
       "input": {
         "type": "object",
         "additionalProperties": false,
@@ -4083,6 +5812,13 @@
             "maxLength": 64,
             "pattern": "^agt_[0-9A-Za-z]{1,60}$"
           },
+          "targetMode": {
+            "type": "string",
+            "enum": [
+              "bound",
+              "free"
+            ]
+          },
           "cron": {
             "type": "string",
             "minLength": 9,
@@ -4120,6 +5856,7 @@
           "versionPin",
           "policyVersion",
           "agentId",
+          "targetMode",
           "cron",
           "enabled",
           "misfireGraceSec",
@@ -4157,6 +5894,13 @@
           },
           "agentId": {
             "type": "string"
+          },
+          "targetMode": {
+            "type": "string",
+            "enum": [
+              "bound",
+              "free"
+            ]
           },
           "cron": {
             "type": "string"
@@ -4217,7 +5961,9 @@
                   "type": "string",
                   "enum": [
                     "policy_stale",
-                    "kanban_project_missing"
+                    "kanban_project_missing",
+                    "migrated",
+                    "legacy_bound"
                   ]
                 },
                 "message": {
@@ -4275,6 +6021,7 @@
           "versionPin",
           "policyVersion",
           "agentId",
+          "targetMode",
           "cron",
           "enabled",
           "misfireGraceSec",
@@ -4312,6 +6059,13 @@
           },
           "agentId": {
             "type": "string"
+          },
+          "targetMode": {
+            "type": "string",
+            "enum": [
+              "bound",
+              "free"
+            ]
           },
           "cron": {
             "type": "string"
@@ -4372,7 +6126,9 @@
                   "type": "string",
                   "enum": [
                     "policy_stale",
-                    "kanban_project_missing"
+                    "kanban_project_missing",
+                    "migrated",
+                    "legacy_bound"
                   ]
                 },
                 "message": {
@@ -4444,7 +6200,7 @@
     {
       "id": "automations_list",
       "title": "Schedules",
-      "description": "All schedules with their next due time and warnings (a version that needs a new recipe; no Task Board project). kanbanLinked: Evolving Workflows can reach Task Board.",
+      "description": "All schedules (targetMode: bound or free) with their next due time and warnings (a version that needs a new recipe; no Task Board project). kanbanLinked: Evolving Workflows can reach Task Board.",
       "input": {
         "type": "object",
         "additionalProperties": false,
@@ -4471,6 +6227,7 @@
                 "versionPin",
                 "policyVersion",
                 "agentId",
+                "targetMode",
                 "cron",
                 "enabled",
                 "misfireGraceSec",
@@ -4508,6 +6265,13 @@
                 },
                 "agentId": {
                   "type": "string"
+                },
+                "targetMode": {
+                  "type": "string",
+                  "enum": [
+                    "bound",
+                    "free"
+                  ]
                 },
                 "cron": {
                   "type": "string"
@@ -4568,7 +6332,9 @@
                         "type": "string",
                         "enum": [
                           "policy_stale",
-                          "kanban_project_missing"
+                          "kanban_project_missing",
+                          "migrated",
+                          "legacy_bound"
                         ]
                       },
                       "message": {
@@ -4733,7 +6499,7 @@
     {
       "id": "cycles_list",
       "title": "Workflow cycles",
-      "description": "The cycle ledger: one cycle per workflow version, from its promotion until the next version is promoted. Run counts, ratios and the live eval (gates: no duplicate claim, uncertain at most 5%, completed at least 80%, no drop over 10 points from the previous version). Newest promotion first, at most 500.",
+      "description": "The cycle ledger: one cycle per workflow version, from its promotion until the next version is promoted. Run counts, ratios and the live eval (gates: no duplicate claim, uncertain at most 5%, completed at least 80%, no drop over 10 points from the previous version). Newest promotion first, at most 500. Each cycle carries runMetrics: what the runners reported with routine_report metrics (runs with metrics, ok ratio, median and mean minutes, total retries, total questions to the owner, lesson count, and namedMetrics: each named per-pipeline number with its report count, median, mean, min and max), to compare versions. declaredMetrics lists the metric names that the pipeline contract of the version declares, in contract order (null when the version was not imported).",
       "input": {
         "type": "object",
         "additionalProperties": false,
@@ -4782,8 +6548,11 @@
                 "kanbanClosedRatio",
                 "duplicateClaims",
                 "last10",
+                "runMetrics",
                 "evalLive",
-                "evalStored"
+                "evalStored",
+                "declaredMetrics",
+                "engine"
               ],
               "properties": {
                 "workflowId": {
@@ -4931,6 +6700,92 @@
                     ]
                   }
                 },
+                "runMetrics": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "runs",
+                    "okRuns",
+                    "okRatio",
+                    "minutesMedian",
+                    "minutesMean",
+                    "retriesTotal",
+                    "questionsToMartinTotal",
+                    "lessonCount",
+                    "namedMetrics"
+                  ],
+                  "properties": {
+                    "runs": {
+                      "type": "integer"
+                    },
+                    "okRuns": {
+                      "type": "integer"
+                    },
+                    "okRatio": {
+                      "type": [
+                        "number",
+                        "null"
+                      ]
+                    },
+                    "minutesMedian": {
+                      "type": [
+                        "number",
+                        "null"
+                      ]
+                    },
+                    "minutesMean": {
+                      "type": [
+                        "number",
+                        "null"
+                      ]
+                    },
+                    "retriesTotal": {
+                      "type": "integer"
+                    },
+                    "questionsToMartinTotal": {
+                      "type": "integer"
+                    },
+                    "lessonCount": {
+                      "type": "integer"
+                    },
+                    "namedMetrics": {
+                      "type": "array",
+                      "maxItems": 20,
+                      "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "name",
+                          "reports",
+                          "median",
+                          "mean",
+                          "min",
+                          "max"
+                        ],
+                        "properties": {
+                          "name": {
+                            "type": "string"
+                          },
+                          "reports": {
+                            "type": "integer"
+                          },
+                          "median": {
+                            "type": "number"
+                          },
+                          "mean": {
+                            "type": "number"
+                          },
+                          "min": {
+                            "type": "number"
+                          },
+                          "max": {
+                            "type": "number"
+                          }
+                        }
+                      }
+                    }
+                  }
+                },
                 "evalLive": {
                   "type": "object",
                   "additionalProperties": false,
@@ -5057,6 +6912,65 @@
                       "type": "null"
                     }
                   ]
+                },
+                "declaredMetrics": {
+                  "anyOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "type": "array",
+                      "maxItems": 20,
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  ]
+                },
+                "engine": {
+                  "type": [
+                    "object",
+                    "null"
+                  ],
+                  "additionalProperties": false,
+                  "required": [
+                    "runs",
+                    "stepsDone",
+                    "stepsFailed",
+                    "stepFailureRatio",
+                    "heldWaits",
+                    "heldWaitP50Ms",
+                    "modelTokens"
+                  ],
+                  "properties": {
+                    "runs": {
+                      "type": "integer"
+                    },
+                    "stepsDone": {
+                      "type": "integer"
+                    },
+                    "stepsFailed": {
+                      "type": "integer"
+                    },
+                    "stepFailureRatio": {
+                      "type": [
+                        "number",
+                        "null"
+                      ]
+                    },
+                    "heldWaits": {
+                      "type": "integer"
+                    },
+                    "heldWaitP50Ms": {
+                      "type": [
+                        "integer",
+                        "null"
+                      ]
+                    },
+                    "modelTokens": {
+                      "type": "integer"
+                    }
+                  }
                 }
               }
             }
@@ -5074,7 +6988,7 @@
     {
       "id": "cycle_get",
       "title": "One workflow cycle",
-      "description": "One cycle (workflow version) with its live eval and its stored evals, newest first (at most 50).",
+      "description": "One cycle (workflow version) with its live eval and its stored evals, newest first (at most 50), its runMetrics, and the lessons the runners reported for this version (owner only; free text written by agents; newest first, at most 500).",
       "input": {
         "type": "object",
         "additionalProperties": false,
@@ -5101,7 +7015,8 @@
         "additionalProperties": false,
         "required": [
           "cycle",
-          "evals"
+          "evals",
+          "lessons"
         ],
         "properties": {
           "cycle": {
@@ -5130,8 +7045,11 @@
               "kanbanClosedRatio",
               "duplicateClaims",
               "last10",
+              "runMetrics",
               "evalLive",
-              "evalStored"
+              "evalStored",
+              "declaredMetrics",
+              "engine"
             ],
             "properties": {
               "workflowId": {
@@ -5279,6 +7197,92 @@
                   ]
                 }
               },
+              "runMetrics": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "runs",
+                  "okRuns",
+                  "okRatio",
+                  "minutesMedian",
+                  "minutesMean",
+                  "retriesTotal",
+                  "questionsToMartinTotal",
+                  "lessonCount",
+                  "namedMetrics"
+                ],
+                "properties": {
+                  "runs": {
+                    "type": "integer"
+                  },
+                  "okRuns": {
+                    "type": "integer"
+                  },
+                  "okRatio": {
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  },
+                  "minutesMedian": {
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  },
+                  "minutesMean": {
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  },
+                  "retriesTotal": {
+                    "type": "integer"
+                  },
+                  "questionsToMartinTotal": {
+                    "type": "integer"
+                  },
+                  "lessonCount": {
+                    "type": "integer"
+                  },
+                  "namedMetrics": {
+                    "type": "array",
+                    "maxItems": 20,
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "name",
+                        "reports",
+                        "median",
+                        "mean",
+                        "min",
+                        "max"
+                      ],
+                      "properties": {
+                        "name": {
+                          "type": "string"
+                        },
+                        "reports": {
+                          "type": "integer"
+                        },
+                        "median": {
+                          "type": "number"
+                        },
+                        "mean": {
+                          "type": "number"
+                        },
+                        "min": {
+                          "type": "number"
+                        },
+                        "max": {
+                          "type": "number"
+                        }
+                      }
+                    }
+                  }
+                }
+              },
               "evalLive": {
                 "type": "object",
                 "additionalProperties": false,
@@ -5405,6 +7409,65 @@
                     "type": "null"
                   }
                 ]
+              },
+              "declaredMetrics": {
+                "anyOf": [
+                  {
+                    "type": "null"
+                  },
+                  {
+                    "type": "array",
+                    "maxItems": 20,
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                ]
+              },
+              "engine": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "additionalProperties": false,
+                "required": [
+                  "runs",
+                  "stepsDone",
+                  "stepsFailed",
+                  "stepFailureRatio",
+                  "heldWaits",
+                  "heldWaitP50Ms",
+                  "modelTokens"
+                ],
+                "properties": {
+                  "runs": {
+                    "type": "integer"
+                  },
+                  "stepsDone": {
+                    "type": "integer"
+                  },
+                  "stepsFailed": {
+                    "type": "integer"
+                  },
+                  "stepFailureRatio": {
+                    "type": [
+                      "number",
+                      "null"
+                    ]
+                  },
+                  "heldWaits": {
+                    "type": "integer"
+                  },
+                  "heldWaitP50Ms": {
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
+                  "modelTokens": {
+                    "type": "integer"
+                  }
+                }
               }
             }
           },
@@ -5522,6 +7585,30 @@
                   "type": "string"
                 },
                 "createdAt": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "lessons": {
+            "type": "array",
+            "maxItems": 500,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "occurrence",
+                "reportedAt",
+                "text"
+              ],
+              "properties": {
+                "occurrence": {
+                  "type": "string"
+                },
+                "reportedAt": {
+                  "type": "string"
+                },
+                "text": {
                   "type": "string"
                 }
               }
@@ -5684,23 +7771,2361 @@
       "idempotency": "required",
       "receipt": true,
       "audience": "person"
+    },
+    {
+      "id": "workflow_contract_validate",
+      "title": "Check a workflow contract",
+      "description": "Check a tealbrick.workflow/1 contract without saving it. Give the contract, or workflowId and version of a saved one. It lists every error and warning (refs that do not resolve, type clashes between steps, unbounded loops, operations that are not agent operations of an installed app, operations without idempotency, unknown model roles). When it is valid it also lists the operations the workflow would use. Owner only.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "contract": {
+            "type": "object"
+          },
+          "workflowId": {
+            "type": "string",
+            "minLength": 3,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9_-]{2,63}$"
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100000
+          }
+        }
+      },
+      "output": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "errors": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "severity": {
+                  "enum": [
+                    "error",
+                    "warning"
+                  ]
+                },
+                "code": {
+                  "type": "string"
+                },
+                "path": {
+                  "type": "string"
+                },
+                "message": {
+                  "type": "string"
+                },
+                "stepId": {
+                  "type": "string"
+                },
+                "pointer": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "severity",
+                "code",
+                "path",
+                "message"
+              ]
+            }
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "severity": {
+                  "enum": [
+                    "error",
+                    "warning"
+                  ]
+                },
+                "code": {
+                  "type": "string"
+                },
+                "path": {
+                  "type": "string"
+                },
+                "message": {
+                  "type": "string"
+                },
+                "stepId": {
+                  "type": "string"
+                },
+                "pointer": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "severity",
+                "code",
+                "path",
+                "message"
+              ]
+            }
+          },
+          "uses": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "product": {
+                  "type": "string"
+                },
+                "op": {
+                  "type": "string"
+                },
+                "crud": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "effect": {
+                  "type": "string"
+                },
+                "holdFamily": {
+                  "type": "string"
+                },
+                "scopeType": {
+                  "type": "string"
+                },
+                "idempotency": {
+                  "type": "string"
+                },
+                "steps": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "tools": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "via": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              },
+              "required": [
+                "product",
+                "op",
+                "crud",
+                "effect",
+                "idempotency",
+                "steps"
+              ]
+            }
+          },
+          "stepTypes": {
+            "type": "object"
+          },
+          "usage": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "product",
+                "op",
+                "crud",
+                "effect",
+                "scope",
+                "held"
+              ],
+              "properties": {
+                "product": {
+                  "type": "string"
+                },
+                "op": {
+                  "type": "string"
+                },
+                "crud": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "effect": {
+                  "type": "string"
+                },
+                "scope": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "held": {
+                  "type": "boolean"
+                },
+                "tools": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "via": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          },
+          "activeVersion": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "ok",
+          "errors",
+          "warnings",
+          "uses",
+          "stepTypes",
+          "usage",
+          "activeVersion"
+        ]
+      },
+      "crud": [
+        "read"
+      ],
+      "effect": "read",
+      "idempotency": "none",
+      "receipt": false,
+      "audience": "person"
+    },
+    {
+      "id": "workflow_contract_save",
+      "title": "Save a workflow contract version",
+      "description": "Check and save a contract as an immutable version (workflow id and version come from the contract). A saved version never changes: edit it as the next version. Saving does not run or activate anything. Owner only.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "contract": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "contract"
+        ]
+      },
+      "output": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "workflowId": {
+            "type": "string"
+          },
+          "version": {
+            "type": "integer"
+          },
+          "digest": {
+            "type": "string"
+          },
+          "created": {
+            "type": "boolean"
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "severity": {
+                  "enum": [
+                    "error",
+                    "warning"
+                  ]
+                },
+                "code": {
+                  "type": "string"
+                },
+                "path": {
+                  "type": "string"
+                },
+                "message": {
+                  "type": "string"
+                },
+                "stepId": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "severity",
+                "code",
+                "path",
+                "message"
+              ]
+            }
+          }
+        },
+        "required": [
+          "workflowId",
+          "version",
+          "digest",
+          "created",
+          "warnings"
+        ]
+      },
+      "crud": [
+        "create"
+      ],
+      "effect": "write",
+      "idempotency": "required",
+      "receipt": true,
+      "audience": "person"
+    },
+    {
+      "id": "workflow_contracts_list",
+      "title": "Contract versions",
+      "description": "All saved contract versions with their activation state (active, superseded, deactivated or not activated). Owner only.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "workflowId": {
+            "type": "string",
+            "minLength": 3,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9_-]{2,63}$"
+          }
+        }
+      },
+      "output": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "contracts": {
+            "type": "array",
+            "maxItems": 500,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "workflowId": {
+                  "type": "string"
+                },
+                "version": {
+                  "type": "integer"
+                },
+                "title": {
+                  "type": "string"
+                },
+                "createdAt": {
+                  "type": "string"
+                },
+                "state": {
+                  "enum": [
+                    "active",
+                    "superseded",
+                    "deactivated",
+                    null
+                  ]
+                }
+              },
+              "required": [
+                "workflowId",
+                "version",
+                "title",
+                "createdAt",
+                "state"
+              ]
+            }
+          }
+        },
+        "required": [
+          "contracts"
+        ]
+      },
+      "crud": [
+        "read"
+      ],
+      "effect": "read",
+      "idempotency": "none",
+      "receipt": false,
+      "audience": "person"
+    },
+    {
+      "id": "workflow_contract_get",
+      "title": "Get a contract version",
+      "description": "Read one saved contract version and its activation. Owner only.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "workflowId": {
+            "type": "string",
+            "minLength": 3,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9_-]{2,63}$"
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100000
+          }
+        },
+        "required": [
+          "workflowId",
+          "version"
+        ]
+      },
+      "output": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "workflowId": {
+            "type": "string"
+          },
+          "version": {
+            "type": "integer"
+          },
+          "title": {
+            "type": "string"
+          },
+          "digest": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "string"
+          },
+          "contract": {
+            "type": "object"
+          },
+          "activation": {
+            "type": [
+              "object",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "workflowId",
+          "version",
+          "title",
+          "digest",
+          "createdAt",
+          "contract",
+          "activation"
+        ]
+      },
+      "crud": [
+        "read"
+      ],
+      "effect": "read",
+      "idempotency": "none",
+      "receipt": false,
+      "audience": "person"
+    },
+    {
+      "id": "workflow_activate",
+      "title": "Activate a workflow version",
+      "description": "Activate a saved version. The answer lists every operation, CRUD action, scope type and tool the version uses. The engine refuses any other call of this workflow (not_in_workflow). The bridge limits Evolving Workflows as a whole; each workflow's own limit is enforced by the engine until per-workflow grants. A newer version replaces the active one; runs already started may finish. Owner only. Schedules that follow the active version are checked again against the new version; one that no longer fits is paused and listed in staleSchedules with the reason. A workflow step that starts another workflow needs that workflow to be active; its operations are listed with via.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "workflowId": {
+            "type": "string",
+            "minLength": 3,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9_-]{2,63}$"
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100000
+          }
+        },
+        "required": [
+          "workflowId",
+          "version"
+        ]
+      },
+      "output": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "workflowId": {
+            "type": "string"
+          },
+          "version": {
+            "type": "integer"
+          },
+          "previousVersion": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "activatedAt": {
+            "type": "string"
+          },
+          "ops": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "product": {
+                  "type": "string"
+                },
+                "op": {
+                  "type": "string"
+                },
+                "crud": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "effect": {
+                  "type": "string"
+                },
+                "holdFamily": {
+                  "type": "string"
+                },
+                "scopeType": {
+                  "type": "string"
+                },
+                "idempotency": {
+                  "type": "string"
+                },
+                "steps": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "tools": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "via": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              },
+              "required": [
+                "product",
+                "op",
+                "crud",
+                "effect",
+                "idempotency",
+                "steps"
+              ]
+            }
+          },
+          "crud": {
+            "type": "object"
+          },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "product": {
+                  "type": "string"
+                },
+                "scopeType": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "product",
+                "scopeType"
+              ]
+            }
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "severity": {
+                  "enum": [
+                    "error",
+                    "warning"
+                  ]
+                },
+                "code": {
+                  "type": "string"
+                },
+                "path": {
+                  "type": "string"
+                },
+                "message": {
+                  "type": "string"
+                },
+                "stepId": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "severity",
+                "code",
+                "path",
+                "message"
+              ]
+            }
+          },
+          "notice": {
+            "type": "string"
+          },
+          "activeVersion": {
+            "type": "integer"
+          },
+          "usage": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "product",
+                "op",
+                "crud",
+                "effect",
+                "scope",
+                "held"
+              ],
+              "properties": {
+                "product": {
+                  "type": "string"
+                },
+                "op": {
+                  "type": "string"
+                },
+                "crud": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "effect": {
+                  "type": "string"
+                },
+                "scope": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "held": {
+                  "type": "boolean"
+                },
+                "tools": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "via": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          },
+          "staleSchedules": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "id",
+                "reason"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "reason": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
+        "required": [
+          "workflowId",
+          "version",
+          "previousVersion",
+          "activatedAt",
+          "ops",
+          "crud",
+          "scopes",
+          "warnings",
+          "notice",
+          "activeVersion",
+          "usage",
+          "staleSchedules"
+        ]
+      },
+      "crud": [
+        "update"
+      ],
+      "effect": "write",
+      "idempotency": "supported",
+      "receipt": true,
+      "audience": "person"
+    },
+    {
+      "id": "workflow_deactivate",
+      "title": "Deactivate a workflow",
+      "description": "Stop a workflow: the engine refuses every call of all its versions, and its schedules are paused. Runs in flight fail at their next call. Owner only.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "workflowId": {
+            "type": "string",
+            "minLength": 3,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9_-]{2,63}$"
+          }
+        },
+        "required": [
+          "workflowId"
+        ]
+      },
+      "output": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "workflowId": {
+            "type": "string"
+          },
+          "deactivatedVersions": {
+            "type": "array",
+            "items": {
+              "type": "integer"
+            }
+          },
+          "schedulesPaused": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "workflowId",
+          "deactivatedVersions",
+          "schedulesPaused"
+        ]
+      },
+      "crud": [
+        "update"
+      ],
+      "effect": "write",
+      "idempotency": "supported",
+      "receipt": true,
+      "audience": "person"
+    },
+    {
+      "id": "schedule_set",
+      "title": "Set a workflow schedule",
+      "description": "Create or change a Temporal schedule of an activated workflow. Give cron (five fields) or every (15m, 6h, 1d), and an IANA time zone. Overlap is skip by default and the catch-up window is one hour. kind poll uses the poll trigger of the contract: the run stops early when the cursor did not change. Owner only.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^sch_[0-9A-Za-z]{1,60}$"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "workflowId": {
+            "type": "string",
+            "minLength": 3,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9_-]{2,63}$"
+          },
+          "versionPin": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 100000
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "kind": {
+            "enum": [
+              "schedule",
+              "poll"
+            ]
+          },
+          "cron": {
+            "type": "string",
+            "minLength": 9,
+            "maxLength": 120
+          },
+          "every": {
+            "type": "string",
+            "pattern": "^[1-9][0-9]{0,3}[mhd]$"
+          },
+          "timezone": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "input": {
+            "type": "object"
+          },
+          "overlap": {
+            "enum": [
+              "skip",
+              "buffer_one"
+            ]
+          },
+          "paused": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "workflowId"
+        ]
+      },
+      "output": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "workflowId": {
+            "type": "string"
+          },
+          "versionPin": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "kind": {
+            "enum": [
+              "schedule",
+              "poll"
+            ]
+          },
+          "cron": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "every": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "timezone": {
+            "type": "string"
+          },
+          "input": {
+            "type": "object"
+          },
+          "poll": {
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "overlap": {
+            "enum": [
+              "skip",
+              "buffer_one"
+            ]
+          },
+          "paused": {
+            "type": "boolean"
+          },
+          "revision": {
+            "type": "integer"
+          },
+          "cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "cursorAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "temporalState": {
+            "enum": [
+              "pending",
+              "synced",
+              "missing",
+              "error"
+            ]
+          },
+          "temporalError": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "createdAt": {
+            "type": "string"
+          },
+          "updatedAt": {
+            "type": "string"
+          },
+          "live": {
+            "anyOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "state": {
+                    "enum": [
+                      "ok",
+                      "missing",
+                      "unreachable"
+                    ]
+                  },
+                  "paused": {
+                    "type": [
+                      "boolean",
+                      "null"
+                    ]
+                  },
+                  "nextRunAt": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "lastRunAt": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "lastRunWorkflowId": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "runningCount": {
+                    "type": "integer"
+                  },
+                  "timezone": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "note": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "state",
+                  "paused",
+                  "nextRunAt",
+                  "lastRunAt",
+                  "lastRunWorkflowId",
+                  "runningCount",
+                  "timezone",
+                  "note"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "stale": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "workflowId",
+          "versionPin",
+          "kind",
+          "cron",
+          "every",
+          "timezone",
+          "input",
+          "poll",
+          "overlap",
+          "paused",
+          "revision",
+          "cursor",
+          "cursorAt",
+          "temporalState",
+          "temporalError",
+          "createdAt",
+          "updatedAt",
+          "live",
+          "stale"
+        ]
+      },
+      "crud": [
+        "create",
+        "update"
+      ],
+      "effect": "write",
+      "idempotency": "required",
+      "receipt": true,
+      "audience": "person"
+    },
+    {
+      "id": "schedule_pause",
+      "title": "Pause or resume a workflow schedule",
+      "description": "Pause (no new runs) or resume a Temporal schedule. Owner only.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^sch_[0-9A-Za-z]{1,60}$"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "paused": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "revision",
+          "paused"
+        ]
+      },
+      "output": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "workflowId": {
+            "type": "string"
+          },
+          "versionPin": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "kind": {
+            "enum": [
+              "schedule",
+              "poll"
+            ]
+          },
+          "cron": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "every": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "timezone": {
+            "type": "string"
+          },
+          "input": {
+            "type": "object"
+          },
+          "poll": {
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "overlap": {
+            "enum": [
+              "skip",
+              "buffer_one"
+            ]
+          },
+          "paused": {
+            "type": "boolean"
+          },
+          "revision": {
+            "type": "integer"
+          },
+          "cursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "cursorAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "temporalState": {
+            "enum": [
+              "pending",
+              "synced",
+              "missing",
+              "error"
+            ]
+          },
+          "temporalError": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "createdAt": {
+            "type": "string"
+          },
+          "updatedAt": {
+            "type": "string"
+          },
+          "live": {
+            "anyOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "state": {
+                    "enum": [
+                      "ok",
+                      "missing",
+                      "unreachable"
+                    ]
+                  },
+                  "paused": {
+                    "type": [
+                      "boolean",
+                      "null"
+                    ]
+                  },
+                  "nextRunAt": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "lastRunAt": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "lastRunWorkflowId": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "runningCount": {
+                    "type": "integer"
+                  },
+                  "timezone": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "note": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "state",
+                  "paused",
+                  "nextRunAt",
+                  "lastRunAt",
+                  "lastRunWorkflowId",
+                  "runningCount",
+                  "timezone",
+                  "note"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "stale": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "workflowId",
+          "versionPin",
+          "kind",
+          "cron",
+          "every",
+          "timezone",
+          "input",
+          "poll",
+          "overlap",
+          "paused",
+          "revision",
+          "cursor",
+          "cursorAt",
+          "temporalState",
+          "temporalError",
+          "createdAt",
+          "updatedAt",
+          "live",
+          "stale"
+        ]
+      },
+      "crud": [
+        "update"
+      ],
+      "effect": "write",
+      "idempotency": "supported",
+      "receipt": true,
+      "audience": "person"
+    },
+    {
+      "id": "schedule_run_now",
+      "title": "Run a workflow schedule now",
+      "description": "Start one run of a schedule at once and return its run id. Each request starts its own run, whatever else is running; the same request sent again (same idempotency key) returns the same run. Owner only.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^sch_[0-9A-Za-z]{1,60}$"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "output": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "triggered": {
+            "type": "boolean"
+          },
+          "runId": {
+            "type": "string"
+          },
+          "workflowId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "triggered",
+          "runId",
+          "workflowId"
+        ]
+      },
+      "crud": [
+        "create"
+      ],
+      "effect": "write",
+      "idempotency": "required",
+      "receipt": true,
+      "audience": "person"
+    },
+    {
+      "id": "schedule_delete",
+      "title": "Delete a workflow schedule",
+      "description": "Delete a Temporal schedule. Its run history stays. Owner only.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^sch_[0-9A-Za-z]{1,60}$"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "required": [
+          "id",
+          "revision"
+        ]
+      },
+      "output": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "deleted": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "deleted"
+        ]
+      },
+      "crud": [
+        "update",
+        "delete"
+      ],
+      "effect": "destructive",
+      "holdFamily": "destructive",
+      "idempotency": "supported",
+      "receipt": true,
+      "audience": "person"
+    },
+    {
+      "id": "schedules_list",
+      "title": "Workflow schedules",
+      "description": "All workflow schedules with their Temporal state, next run and last run. Owner only.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "workflowId": {
+            "type": "string",
+            "minLength": 3,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9_-]{2,63}$"
+          }
+        }
+      },
+      "output": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "schedules": {
+            "type": "array",
+            "maxItems": 500,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "workflowId": {
+                  "type": "string"
+                },
+                "versionPin": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "kind": {
+                  "enum": [
+                    "schedule",
+                    "poll"
+                  ]
+                },
+                "cron": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "every": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "timezone": {
+                  "type": "string"
+                },
+                "input": {
+                  "type": "object"
+                },
+                "poll": {
+                  "type": [
+                    "object",
+                    "null"
+                  ]
+                },
+                "overlap": {
+                  "enum": [
+                    "skip",
+                    "buffer_one"
+                  ]
+                },
+                "paused": {
+                  "type": "boolean"
+                },
+                "revision": {
+                  "type": "integer"
+                },
+                "cursor": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "cursorAt": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "temporalState": {
+                  "enum": [
+                    "pending",
+                    "synced",
+                    "missing",
+                    "error"
+                  ]
+                },
+                "temporalError": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "createdAt": {
+                  "type": "string"
+                },
+                "updatedAt": {
+                  "type": "string"
+                },
+                "live": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "properties": {
+                        "state": {
+                          "enum": [
+                            "ok",
+                            "missing",
+                            "unreachable"
+                          ]
+                        },
+                        "paused": {
+                          "type": [
+                            "boolean",
+                            "null"
+                          ]
+                        },
+                        "nextRunAt": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "lastRunAt": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "lastRunWorkflowId": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "runningCount": {
+                          "type": "integer"
+                        },
+                        "timezone": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "note": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "state",
+                        "paused",
+                        "nextRunAt",
+                        "lastRunAt",
+                        "lastRunWorkflowId",
+                        "runningCount",
+                        "timezone",
+                        "note"
+                      ]
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "stale": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "id",
+                "workflowId",
+                "versionPin",
+                "kind",
+                "cron",
+                "every",
+                "timezone",
+                "input",
+                "poll",
+                "overlap",
+                "paused",
+                "revision",
+                "cursor",
+                "cursorAt",
+                "temporalState",
+                "temporalError",
+                "createdAt",
+                "updatedAt",
+                "live",
+                "stale"
+              ]
+            }
+          },
+          "temporalConnected": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "schedules",
+          "temporalConnected"
+        ]
+      },
+      "crud": [
+        "read"
+      ],
+      "effect": "read",
+      "idempotency": "none",
+      "receipt": false,
+      "audience": "person"
+    },
+    {
+      "id": "engine_runs_list",
+      "title": "Workflow runs",
+      "description": "Runs of the engine, newest first (status, timing, steps done and failed, held waits, model tokens). It holds no data of other apps. Owner only.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "workflowId": {
+            "type": "string",
+            "minLength": 3,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9_-]{2,63}$"
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100000
+          },
+          "status": {
+            "enum": [
+              "running",
+              "completed",
+              "failed",
+              "cancelled",
+              "timed_out",
+              "terminated",
+              "skipped"
+            ]
+          },
+          "scheduleId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^sch_[0-9A-Za-z]{1,60}$"
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 200
+          }
+        }
+      },
+      "output": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "runs": {
+            "type": "array",
+            "maxItems": 200,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "workflowId": {
+                  "type": "string"
+                },
+                "runId": {
+                  "type": "string"
+                },
+                "version": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "scheduleId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "temporalWorkflowId": {
+                  "type": "string"
+                },
+                "temporalRunId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "triggerKind": {
+                  "type": "string"
+                },
+                "status": {
+                  "enum": [
+                    "running",
+                    "completed",
+                    "failed",
+                    "cancelled",
+                    "timed_out",
+                    "terminated",
+                    "skipped"
+                  ]
+                },
+                "startedAt": {
+                  "type": "string"
+                },
+                "endedAt": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "durationMs": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "errorCode": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "errorStep": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "skippedReason": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "stepsDone": {
+                  "type": "integer"
+                },
+                "stepsFailed": {
+                  "type": "integer"
+                },
+                "heldWaits": {
+                  "type": "integer"
+                },
+                "heldWaitMs": {
+                  "type": "integer"
+                },
+                "modelTokens": {
+                  "type": "integer"
+                },
+                "outputBytes": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "source": {
+                  "enum": [
+                    "activity",
+                    "reconcile"
+                  ]
+                }
+              },
+              "required": [
+                "workflowId",
+                "runId",
+                "version",
+                "scheduleId",
+                "temporalWorkflowId",
+                "temporalRunId",
+                "triggerKind",
+                "status",
+                "startedAt",
+                "endedAt",
+                "durationMs",
+                "errorCode",
+                "errorStep",
+                "skippedReason",
+                "stepsDone",
+                "stepsFailed",
+                "heldWaits",
+                "heldWaitMs",
+                "modelTokens",
+                "outputBytes",
+                "source"
+              ]
+            }
+          }
+        },
+        "required": [
+          "runs"
+        ]
+      },
+      "crud": [
+        "read"
+      ],
+      "effect": "read",
+      "idempotency": "none",
+      "receipt": false,
+      "audience": "person"
+    },
+    {
+      "id": "engine_run_get",
+      "title": "Workflow run",
+      "description": "One run with its step timeline (attempts, held waits, sizes, error codes) and, when it finished, its outputs. Owner only. The workflow id is optional: a run id is unique in practice. Each step also carries input, output and error when Temporal still has the history (owner only; app.db keeps sizes, not bodies).",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "runId"
+        ],
+        "properties": {
+          "workflowId": {
+            "type": "string",
+            "minLength": 3,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9_-]{2,63}$"
+          },
+          "runId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80,
+            "pattern": "^[A-Za-z0-9._@-]{1,80}$"
+          }
+        }
+      },
+      "output": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "run": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "workflowId": {
+                "type": "string"
+              },
+              "runId": {
+                "type": "string"
+              },
+              "version": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "scheduleId": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "temporalWorkflowId": {
+                "type": "string"
+              },
+              "temporalRunId": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "triggerKind": {
+                "type": "string"
+              },
+              "status": {
+                "enum": [
+                  "running",
+                  "completed",
+                  "failed",
+                  "cancelled",
+                  "timed_out",
+                  "terminated",
+                  "skipped"
+                ]
+              },
+              "startedAt": {
+                "type": "string"
+              },
+              "endedAt": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "durationMs": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "errorCode": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "errorStep": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "skippedReason": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "stepsDone": {
+                "type": "integer"
+              },
+              "stepsFailed": {
+                "type": "integer"
+              },
+              "heldWaits": {
+                "type": "integer"
+              },
+              "heldWaitMs": {
+                "type": "integer"
+              },
+              "modelTokens": {
+                "type": "integer"
+              },
+              "outputBytes": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "source": {
+                "enum": [
+                  "activity",
+                  "reconcile"
+                ]
+              }
+            },
+            "required": [
+              "workflowId",
+              "runId",
+              "version",
+              "scheduleId",
+              "temporalWorkflowId",
+              "temporalRunId",
+              "triggerKind",
+              "status",
+              "startedAt",
+              "endedAt",
+              "durationMs",
+              "errorCode",
+              "errorStep",
+              "skippedReason",
+              "stepsDone",
+              "stepsFailed",
+              "heldWaits",
+              "heldWaitMs",
+              "modelTokens",
+              "outputBytes",
+              "source"
+            ]
+          },
+          "steps": {
+            "type": "array",
+            "maxItems": 1000,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "stepKey": {
+                  "type": "string"
+                },
+                "stepId": {
+                  "type": "string"
+                },
+                "loopPath": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "kind": {
+                  "type": "string"
+                },
+                "product": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "op": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "status": {
+                  "type": "string",
+                  "description": "running, completed, failed, skipped, waiting_hold, waiting_agent or waiting_owner"
+                },
+                "attempts": {
+                  "type": "integer"
+                },
+                "startedAt": {
+                  "type": "string"
+                },
+                "endedAt": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "durationMs": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "holdId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "holdStartedAt": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "holdEndedAt": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "holdOutcome": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "inBytes": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "outBytes": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "tokensIn": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "tokensOut": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "errorCode": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "attempt": {
+                  "type": "integer"
+                },
+                "stage": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "stepRunId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "agentId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "errorMessage": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "A short reason the owner may read: the Rules denial text (200 characters at most) of a hook_denied step, or the reason code of an agent step that could not be offered. Null otherwise."
+                },
+                "ruleId": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "The Rules rule that denied the call (rul_<ULID>), when the denial names it."
+                },
+                "input": {},
+                "output": {},
+                "error": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "stepKey",
+                "stepId",
+                "loopPath",
+                "kind",
+                "product",
+                "op",
+                "status",
+                "attempts",
+                "startedAt",
+                "endedAt",
+                "durationMs",
+                "holdId",
+                "holdStartedAt",
+                "holdEndedAt",
+                "holdOutcome",
+                "inBytes",
+                "outBytes",
+                "tokensIn",
+                "tokensOut",
+                "errorCode",
+                "attempt",
+                "stage",
+                "stepRunId",
+                "agentId"
+              ]
+            }
+          },
+          "outputs": {
+            "type": [
+              "object",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "run",
+          "steps",
+          "outputs"
+        ]
+      },
+      "crud": [
+        "read"
+      ],
+      "effect": "read",
+      "idempotency": "none",
+      "receipt": false,
+      "audience": "person"
+    },
+    {
+      "id": "workflow_run_now",
+      "title": "Run a workflow now",
+      "description": "Start one run of an activated workflow now (a manual trigger). Give the inputs the workflow declares; the run uses the active version unless you name another activated version. Owner only.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "workflowId"
+        ],
+        "properties": {
+          "workflowId": {
+            "type": "string",
+            "minLength": 3,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9_-]{2,63}$"
+          },
+          "version": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 1,
+            "maximum": 100000
+          },
+          "inputs": {
+            "type": "object"
+          }
+        }
+      },
+      "output": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "runId",
+          "workflowId",
+          "version",
+          "temporalWorkflowId"
+        ],
+        "properties": {
+          "runId": {
+            "type": "string"
+          },
+          "workflowId": {
+            "type": "string"
+          },
+          "version": {
+            "type": "integer"
+          },
+          "temporalWorkflowId": {
+            "type": "string"
+          }
+        }
+      },
+      "crud": [
+        "create"
+      ],
+      "effect": "write",
+      "idempotency": "required",
+      "receipt": true,
+      "audience": "person"
     }
   ],
   "companions": [
     {
       "product": "kanban",
       "operations": [
+        "projects_list",
+        "project_get",
+        "project_update",
+        "goals_list",
+        "goal_create",
+        "goal_update",
         "issues_list",
+        "issue_get",
         "issue_create",
+        "issue_update",
+        "issue_comment_add",
+        "issue_link",
+        "issue_unlink",
+        "issue_block",
         "issue_complete",
-        "issue_block"
+        "activity_list",
+        "work_next",
+        "issue_document_link",
+        "issue_document_unlink",
+        "issues_import",
+        "sync_pending",
+        "issue_sync_ack",
+        "usage_report"
       ],
       "crud": [
         "read",
         "create",
         "update"
       ],
-      "purpose": "Reads done Task Board issues to spot repeated work, and records every scheduled run as a Task Board issue assigned to the Bound agent."
+      "purpose": "Spots repeated done work, records each scheduled run as an issue, and lets approved workflow steps read and write Task Board work."
+    },
+    {
+      "product": "knowledge",
+      "operations": [
+        "recall",
+        "remember",
+        "search",
+        "get",
+        "context",
+        "ask",
+        "areas_list",
+        "collections_list",
+        "collection_create",
+        "documents_search",
+        "document_get",
+        "document_create",
+        "document_update",
+        "document_revisions",
+        "comments_list",
+        "comment_add",
+        "links_list",
+        "link_add",
+        "research_sources_list",
+        "research_source_get",
+        "research_notes_list",
+        "research_note_get",
+        "research_source_add",
+        "research_chat_start",
+        "research_ask",
+        "research_chat_get",
+        "collection_get",
+        "collection_tree",
+        "research_context_get",
+        "engine"
+      ],
+      "crud": [
+        "read",
+        "create",
+        "update"
+      ],
+      "purpose": "Approved workflow steps read the knowledge base and may add notes or documents."
+    },
+    {
+      "product": "inbox",
+      "operations": [
+        "inbox_ask",
+        "inbox_status",
+        "inbox_reply",
+        "inbox_withdraw"
+      ],
+      "crud": [
+        "read",
+        "create",
+        "update"
+      ],
+      "purpose": "Approval steps ask the owner in Inbox and read the answer. Nothing else in Inbox changes."
+    },
+    {
+      "product": "rules",
+      "operations": [
+        "rules_explain",
+        "rule_draft_submit",
+        "draft_status"
+      ],
+      "crud": [
+        "read",
+        "create"
+      ],
+      "purpose": "Approved workflow steps may read why a rule decided and may propose a rule draft for the owner."
+    },
+    {
+      "product": "connect",
+      "operations": [
+        "tools",
+        "accounts_list",
+        "buzz_identity",
+        "buzz_channels",
+        "buzz_read",
+        "identities_list",
+        "buzz_scheduled",
+        "channel_inbox",
+        "channel_conversations",
+        "data_accounts_list",
+        "data_catalog",
+        "data_pull"
+      ],
+      "crud": [
+        "read"
+      ],
+      "purpose": "Approved workflow steps read connected services (mail, calendars, data) and call the tools the owner approved."
+    },
+    {
+      "product": "*",
+      "operations": [
+        "tb.holds_pending"
+      ],
+      "crud": [
+        "read"
+      ],
+      "purpose": "Lets a workflow wait for the owner to decide a held call: it reads which holds are still pending. Read only."
     }
   ],
   "needsAgentDirectory": true,
@@ -5718,5 +10143,42 @@
   "ui": {
     "launchPath": "/",
     "configurePath": "/configure"
+  },
+  "settings": {
+    "steps": [],
+    "modelRoles": [
+      {
+        "role": "reasoning",
+        "required": false,
+        "usedBy": [
+          "app"
+        ],
+        "help": "Used by workflow steps that write or decide (ai step with by role reasoning)."
+      },
+      {
+        "role": "utility",
+        "required": false,
+        "usedBy": [
+          "app"
+        ],
+        "help": "Used by workflow steps that classify or extract (ai step with by role utility)."
+      },
+      {
+        "role": "summarize",
+        "required": false,
+        "usedBy": [
+          "app"
+        ],
+        "help": "Used by workflow steps that summarise (ai step with by role summarize)."
+      },
+      {
+        "role": "dreaming",
+        "required": false,
+        "usedBy": [
+          "app"
+        ],
+        "help": "Used by workflow steps that need a long, free-form pass (ai step with by role dreaming)."
+      }
+    ]
   }
 }

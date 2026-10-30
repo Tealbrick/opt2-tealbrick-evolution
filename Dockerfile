@@ -24,6 +24,8 @@ COPY package.json tealbrick.manifest.json ./
 COPY migrations ./migrations
 # The cycle eval thresholds (src/evals.ts reads ../eval/thresholds.json, the one source; C250 Release B).
 COPY eval/thresholds.json ./eval/thresholds.json
+# The vendored pipeline contract schema (src/pipeline.ts reads ../contracts/pipeline-contract-0.1.schema.json; C288 R10).
+COPY contracts ./contracts
 # Standard manifest location in every opt2 image (tb-exec default --manifest path).
 COPY tealbrick.manifest.json /opt/tb/tealbrick.manifest.json
 RUN mkdir -p /data/backup && chown -R node:node /data

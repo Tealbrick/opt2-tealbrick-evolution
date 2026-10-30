@@ -1,9 +1,10 @@
-// Schedules page (step B): run a promoted workflow on a cron schedule by one Bound agent; pause, resume, delete;
+// Schedules page (step B): run a promoted workflow on a cron schedule by one Bound agent, or (R1a) by an existing Free agent; pause, resume, delete;
 // run history. Evolving Workflows never starts the agent: the agent's own `tealbrick agent serve` (routines mode) claims runs.
 import type { UseAgents } from "@opt2-tealbrick/miniapp-sdk/client";
 import { Button, CopyBlock, Dialog, EmptyState, Field, Notice, Select, type Status, Table, Tag, TextInput } from "@opt2-tealbrick/ui";
 import { useCallback, useEffect, useState } from "react";
-import { errorText, type Out, person, utcDue, utcStamp } from "./ops.ts";
+import { EngineSchedules } from "./EngineSchedules.tsx";
+import { errorText, freeTargetText, type Out, person, utcDue, utcStamp } from "./ops.ts";
 
 type Automation = Out<"automations_list">["automations"][number];
 type Run = Out<"runs_list">["runs"][number];
@@ -16,7 +17,7 @@ const SERVE_CONFIG = {
   routines: [{ due: "evolution__routines_due", claim: "evolution__routine_claim", report: "evolution__routine_report", items: "jobs", id: "occurrence" }],
 };
 
-export function Schedules({ agents, agentsLoading }: { agents: UseAgents["agents"]; agentsLoading: boolean }) {
+export function Schedules({ agents, agentsLoading, onOpenRuns, onOpenRun }: { agents: UseAgents["agents"]; agentsLoading: boolean; onOpenRuns?: () => void; onOpenRun?: (runId: string) => void }) {
   const [rows, setRows] = useState<Automation[] | null>(null);
   // null = not known yet (list not loaded): the New schedule form waits, so it never offers "no project" by mistake
   const [kanbanLinked, setKanbanLinked] = useState<boolean | null>(null);
@@ -46,6 +47,7 @@ export function Schedules({ agents, agentsLoading }: { agents: UseAgents["agents
       .catch((e) => setWorkflowsError(`Workflows could not be loaded, so a new schedule can’t pick one. ${errorText(e)}`));
   }, [load]);
   const bound = agents.filter((a) => a.mode === "bound");
+  const free = agents.filter((a) => a.mode === "free");
   const name = (id: string) => agents.find((a) => a.id === id)?.name ?? id;
   const openId = open === undefined ? (rows?.[0]?.id ?? null) : open;
 
@@ -64,11 +66,16 @@ export function Schedules({ agents, agentsLoading }: { agents: UseAgents["agents
       <div className="page-head">
         <div className="tb-stack head-text">
           <h1>Schedules</h1>
-          <p className="tb-lede">A schedule runs a promoted workflow with one Bound agent. Every run is a Task Board issue assigned to the agent. Times are UTC.</p>
+          <p className="tb-lede">What starts workflows by themselves. Engine schedules come first; the 0.3.x agent schedules below them are the older path.</p>
         </div>
-        <Button variant="primary" onClick={() => setCreating(true)}>
-          New schedule
-        </Button>
+      </div>
+      <EngineSchedules onOpenRuns={onOpenRuns} onOpenRun={onOpenRun} />
+      <div className="page-head legacy-head">
+        <div className="tb-stack head-text">
+          <h2 className="tb-h2">0.3.x agent schedules</h2>
+          <p className="tb-lede">A schedule runs a promoted workflow with one Bound agent, or with an existing Free agent that keeps its own access. Every run is a Task Board issue assigned to the agent. Times are UTC.</p>
+        </div>
+        <Button onClick={() => setCreating(true)}>New agent schedule</Button>
       </div>
       {workflowsError ? (
         <Notice tone="needs-you" role="alert">
@@ -92,7 +99,7 @@ export function Schedules({ agents, agentsLoading }: { agents: UseAgents["agents
           </p>
         )
       ) : rows.length === 0 ? (
-        <EmptyState title="No schedules yet.">Promote a draft, then schedule it with a Bound agent.</EmptyState>
+        <EmptyState title="No agent schedules.">For a new workflow, use an engine schedule above. This older path needs a promoted draft and a Bound agent or a Free agent.</EmptyState>
       ) : (
         <div className="cards">
           {rows.map((a) => (
@@ -117,7 +124,8 @@ export function Schedules({ agents, agentsLoading }: { agents: UseAgents["agents
                 </div>
               </div>
               <p className="tb-hint">
-                {name(a.agentId)} · {a.cron} · next {utcStamp(a.effectiveNextDueAt)} · {a.versionPin ? `pinned v${a.versionPin}` : "active version"} · Task Board{" "}
+                {name(a.agentId)}
+                {a.targetMode === "free" ? " (Free agent)" : ""} · {a.cron} · next {utcStamp(a.effectiveNextDueAt)} · {a.versionPin ? `pinned v${a.versionPin}` : "active version"} · Task Board{" "}
                 {a.kanbanProject ?? "own project of Evolving Workflows"}
               </p>
               {a.missedSince ? (
@@ -130,6 +138,7 @@ export function Schedules({ agents, agentsLoading }: { agents: UseAgents["agents
                   {w.message}
                 </Notice>
               ))}
+              {a.targetMode === "free" ? <Notice role="status">{freeTargetText(name(a.agentId))}</Notice> : null}
               {openId === a.id ? <Runs id={a.id} /> : null}
             </article>
           ))}
@@ -148,6 +157,7 @@ export function Schedules({ agents, agentsLoading }: { agents: UseAgents["agents
       {editing ? (
         <EditSchedule
           automation={editing}
+          agentName={name(editing.agentId)}
           activeVersion={workflows.find((w) => w.id === editing.workflowId)?.activeVersion ?? editing.policyVersion}
           kanbanLinked={kanbanLinked === true}
           onClose={() => setEditing(null)}
@@ -161,6 +171,7 @@ export function Schedules({ agents, agentsLoading }: { agents: UseAgents["agents
         <NewSchedule
           workflows={workflows}
           bound={bound}
+          free={free}
           agentsLoading={agentsLoading}
           kanbanLinked={kanbanLinked}
           onClose={() => setCreating(false)}
@@ -177,6 +188,7 @@ export function Schedules({ agents, agentsLoading }: { agents: UseAgents["agents
 function NewSchedule({
   workflows,
   bound,
+  free,
   agentsLoading,
   kanbanLinked,
   onClose,
@@ -184,12 +196,22 @@ function NewSchedule({
 }: {
   workflows: Out<"workflows_list">["workflows"];
   bound: UseAgents["agents"];
+  free: UseAgents["agents"];
   agentsLoading: boolean;
   kanbanLinked: boolean | null;
   onClose: () => void;
   onCreated: () => Promise<void>;
 }) {
-  const [form, setForm] = useState({ workflowId: "", agentId: "", cron: "0 8 * * 1-5", kanbanProject: "" });
+  const [form, setForm] = useState<{ workflowId: string; targetMode: "bound" | "free"; agentId: string; cron: string; kanbanProject: string }>({
+    workflowId: "",
+    targetMode: "bound",
+    agentId: "",
+    cron: "0 8 * * 1-5",
+    kanbanProject: "",
+  });
+  const isFree = form.targetMode === "free";
+  const choices = isFree ? free : bound;
+  const chosen = choices.find((a) => a.id === form.agentId);
   const [error, setError] = useState<string | null>(null);
   const [working, setWorking] = useState(false);
   const create = async () => {
@@ -198,6 +220,7 @@ function NewSchedule({
       await person("automation_set", {
         workflowId: form.workflowId,
         agentId: form.agentId,
+        ...(isFree ? { targetMode: "free" as const } : {}),
         cron: form.cron,
         ...(form.kanbanProject.trim() ? { kanbanProject: form.kanbanProject.trim() } : {}),
       });
@@ -229,9 +252,23 @@ function NewSchedule({
             options={workflows.map((w) => ({ value: w.id, label: `${w.title} (v${w.activeVersion})` }))}
           />
         </Field>
-        <Field label="Bound agent" hint={bound.length || agentsLoading ? undefined : "No Bound agent yet: apply a workflow’s recipe in Portal first."}>
-          <Select value={form.agentId} onValueChange={(agentId) => setForm({ ...form, agentId })} placeholder="Choose an agent" options={bound.map((a) => ({ value: a.id, label: a.name }))} />
+        <Field label="Agent type" hint="A Bound agent holds the recipe of the workflow: only its operations. A Free agent keeps its own access.">
+          <Select
+            value={form.targetMode}
+            onValueChange={(targetMode) => setForm({ ...form, targetMode: targetMode === "free" ? "free" : "bound", agentId: "" })}
+            options={[
+              { value: "bound", label: "Bound agent" },
+              { value: "free", label: "Free agent" },
+            ]}
+          />
         </Field>
+        <Field
+          label={isFree ? "Free agent" : "Bound agent"}
+          hint={choices.length || agentsLoading ? undefined : isFree ? "No Free agent in this workspace." : "No Bound agent yet: apply a workflow’s recipe in Portal first."}
+        >
+          <Select value={form.agentId} onValueChange={(agentId) => setForm({ ...form, agentId })} placeholder="Choose an agent" options={choices.map((a) => ({ value: a.id, label: a.name }))} />
+        </Field>
+        {isFree ? <Notice role="status">{freeTargetText(chosen?.name ?? "the agent")}</Notice> : null}
         <Field label="Cron (UTC)" hint="minute hour day month weekday, for example 0 8 * * 1-5">
           <TextInput value={form.cron} onChange={(e) => setForm({ ...form, cron: e.target.value })} maxLength={120} />
         </Field>
@@ -261,12 +298,15 @@ function NewSchedule({
  *  other field is sent unchanged, so an edit never clears the policy gate by itself. */
 export function EditSchedule({
   automation: a,
+  agentName = a.agentId,
   activeVersion,
   kanbanLinked,
   onClose,
   onSaved,
 }: {
   automation: Automation;
+  /** the agent's display name (the notice for a Free target names it) */
+  agentName?: string;
   activeVersion: number;
   kanbanLinked: boolean;
   onClose: () => void;
@@ -288,7 +328,8 @@ export function EditSchedule({
         enabled: a.enabled,
         misfireGraceSec: a.misfireGraceSec,
         cron: form.cron,
-        policyVersion: Number(form.policyVersion),
+        // a Free target has no applied recipe: policyVersion stays out (422 policy_version_not_applicable)
+        ...(a.targetMode === "free" ? {} : { policyVersion: Number(form.policyVersion) }),
         kanbanProject: project || null,
       });
       await onSaved();
@@ -322,10 +363,11 @@ export function EditSchedule({
         <Field label="Cron (UTC)" hint="minute hour day month weekday, for example 0 8 * * 1-5">
           <TextInput value={form.cron} onChange={(e) => setForm({ ...form, cron: e.target.value })} maxLength={120} />
         </Field>
-        <Field label="Task Board project for run issues" hint="Use a project you share with the Bound agent in Task Board (its id).">
+        <Field label="Task Board project for run issues" hint="Use a project you share with the agent in Task Board (its id).">
           <TextInput value={form.kanbanProject} onChange={(e) => setForm({ ...form, kanbanProject: e.target.value })} maxLength={64} />
         </Field>
-        {a.versionPin === null ? (
+        {a.targetMode === "free" ? <Notice role="status">{freeTargetText(agentName)}</Notice> : null}
+        {a.versionPin === null && a.targetMode !== "free" ? (
           <Field label="Recipe applied" hint="The workflow version whose recipe you applied to the agent in Portal. Choose a newer version only after you applied its recipe.">
             <Select value={form.policyVersion} onValueChange={(policyVersion) => setForm({ ...form, policyVersion })} options={versions.map((v) => ({ value: v, label: `version ${v}` }))} />
           </Field>

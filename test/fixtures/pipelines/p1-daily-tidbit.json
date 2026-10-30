@@ -1,0 +1,95 @@
+{
+  "$schema": "../schemas/pipeline-contract.schema.json",
+  "id": "p1-daily-tidbit",
+  "version": 1,
+  "status": "draft",
+  "owner": "henry",
+  "purpose": "Every day a SHORTLIST (3–5) of fresh, quality-gated items (repo, benchmark, model, paper), each with a ready-to-paste text and Henry’s pick, sent to Martin in Buzz to start a conversation; Martin chooses and posts to WhatsApp himself.",
+  "dictation_refs": [
+    "HENRY-DICTATION#part2 Job B",
+    "#part3 tidbit 10:00"
+  ],
+  "trigger": {
+    "cron": "0 10 * * *",
+    "timezone": "Asia/Bangkok"
+  },
+  "inputs": [
+    {
+      "source": "web:vetted list",
+      "what": "X (browser), arXiv, mainstream media, a little Reddit — vetted sources only",
+      "type": "Source"
+    },
+    {
+      "source": "knowledge.brain",
+      "what": "what was already shared; what Martin and attendees liked"
+    }
+  ],
+  "steps": [
+    {
+      "id": "scan",
+      "do": "Find candidate items of the last 24–48 h",
+      "lead": "research-lead",
+      "in": "ResearchBrief",
+      "out": "NewsItem[]"
+    },
+    {
+      "id": "gate",
+      "do": "Score with the quality-gate rubric; drop wrapper-funding and stale items; keep the top 3–5 not shared before; mark Henry’s pick",
+      "skills": [
+        "quality-gate"
+      ],
+      "out": "NewsItem[]"
+    },
+    {
+      "id": "write",
+      "do": "Write a short ready-to-paste text per item (approximation style, link)",
+      "lead": "editorial-lead",
+      "out": "Tidbit[]"
+    },
+    {
+      "id": "check",
+      "do": "Facts and link check",
+      "lead": "review-lead",
+      "out": "Verdict"
+    },
+    {
+      "id": "send",
+      "do": "Send to Martin in Buzz main; remember it in the brain",
+      "tools": [
+        "buzz reply (runtime)",
+        "mcp__tealbrick__knowledge__remember"
+      ]
+    }
+  ],
+  "outputs": [
+    "Buzz message to Martin: shortlist with Henry’s pick + texts",
+    "brain memory: shortlist + Martin’s choice",
+    "Task Board issue closed"
+  ],
+  "done_when": [
+    "review verdict pass for every listed item",
+    "message delivered before 10:15",
+    "no item shared in the last 30 days",
+    "Martin’s choice (or no reply) recorded in the brain"
+  ],
+  "approvals": {
+    "outward": "free",
+    "notes": "Martin posts to WhatsApp himself; Henry only messages Martin."
+  },
+  "escalation": [
+    {
+      "to": "martin",
+      "when": "fewer than 3 items score ≥ 3: send what there is and say so",
+      "via": "buzz_martin"
+    }
+  ],
+  "metrics": [
+    "candidates_seen",
+    "shortlist_size",
+    "martin_choice_rank"
+  ],
+  "taskboard": {
+    "project": "Henry",
+    "issue_title": "P1 tidbit {date}"
+  }
+}

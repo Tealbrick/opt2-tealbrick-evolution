@@ -2,7 +2,10 @@
 import { HARNESS_OPTION_IDS, type HarnessOptionId } from "@opt2-tealbrick/spec/routes";
 import { AppIcon, appArt, appName, Button, CopyBlock, EmptyState, Field, Ink, Notice, Select, Tag, TextInput } from "@opt2-tealbrick/ui";
 import { Fragment, useCallback, useEffect, useState } from "react";
+import { widens } from "./DraftBase.tsx";
+import { MigratedBadge, type Migration, MigrationSummary, useMigration } from "./Migration.tsx";
 import { ALLOWLIST_TEXT, day, errorText, type Out, person } from "./ops.ts";
+import { downloadJson, importedFrom } from "./Pipeline.tsx";
 
 /** EVO-01: one label per spec harness option id (HARNESS_OPTION_IDS); a new id fails the typecheck until it has a label. */
 const HARNESS_LABELS: Record<HarnessOptionId, string> = {
@@ -18,15 +21,6 @@ const HARNESS_LABELS: Record<HarnessOptionId, string> = {
 const HARNESS_ORDER: readonly HarnessOptionId[] = ["claude-desktop", "claude-code", "codex-desktop", "eve", "generic-mcp", "tbd-default", "tealbrick-cli"];
 const rank = (id: HarnessOptionId) => (HARNESS_ORDER.includes(id) ? HARNESS_ORDER.indexOf(id) : HARNESS_ORDER.length);
 const HARNESSES = [...HARNESS_OPTION_IDS].sort((a, b) => rank(a) - rank(b)).map((value) => ({ value, label: HARNESS_LABELS[value] }));
-type Allowed = Out<"workflow_versions">["versions"][number]["allowed"];
-/** Same rule as the server's diff (src/model.ts diffSnapshots `widensAccess`): an operation or an access kind was added. */
-function widens(from: Allowed, to: Allowed): boolean {
-  const ops = (a: Allowed) => new Set(a.flatMap((x) => x.operations.map((o) => `${x.product}.${o}`)));
-  const crud = (a: Allowed) => new Set(a.flatMap((x) => x.crud.map((c) => `${x.product}:${c}`)));
-  const opsFrom = ops(from);
-  const crudFrom = crud(from);
-  return [...ops(to)].some((k) => !opsFrom.has(k)) || [...crud(to)].some((k) => !crudFrom.has(k));
-}
 const opsOf = (ops: { product: string; operation: string }[]) => ops.map((o) => `${o.product}.${o.operation}`).join(", ");
 
 export function Workflows({ openId, stills }: { openId: string | null; stills: string }) {
@@ -43,6 +37,7 @@ export function Workflows({ openId, stills }: { openId: string | null; stills: s
   }, []);
   useEffect(load, [load]);
   useEffect(() => setSelected(openId), [openId]);
+  const migration = useMigration();
   const current = selected ?? rows?.[0]?.id ?? null;
   return (
     <section className="app-page" aria-label="Workflows">
@@ -62,6 +57,7 @@ export function Workflows({ openId, stills }: { openId: string | null; stills: s
           </span>
         </Notice>
       ) : null}
+      <MigrationSummary migration={migration} titleOf={(legacyId, kind) => (kind === "workflow" ? (rows?.find((w) => w.id === legacyId)?.title ?? legacyId) : legacyId)} />
       {rows === null ? (
         error ? null : (
           <p className="tb-soft" role="status">
@@ -76,18 +72,21 @@ export function Workflows({ openId, stills }: { openId: string | null; stills: s
             {rows.map((w) => (
               <button type="button" key={w.id} className="pane-item tb-focusable" aria-current={current === w.id ? "true" : undefined} onClick={() => setSelected(w.id)}>
                 <Ink>{w.title}</Ink>
-                <Tag status="live">{`v${w.activeVersion}`}</Tag>
+                <span className="tb-row">
+                  {migration.engineWorkflowOf(w.id) ? <MigratedBadge /> : null}
+                  <Tag status="live">{`v${w.activeVersion}`}</Tag>
+                </span>
               </button>
             ))}
           </nav>
-          {current ? <Detail key={current} id={current} stills={stills} /> : null}
+          {current ? <Detail key={current} id={current} stills={stills} migration={migration} /> : null}
         </div>
       )}
     </section>
   );
 }
 
-function Detail({ id, stills }: { id: string; stills: string }) {
+function Detail({ id, stills, migration }: { id: string; stills: string; migration: Migration }) {
   const [data, setData] = useState<Out<"workflow_versions"> | null>(null);
   const [shown, setShown] = useState<number>(0);
   const [from, setFrom] = useState(1);
@@ -96,6 +95,7 @@ function Detail({ id, stills }: { id: string; stills: string }) {
   const [agentName, setAgentName] = useState("");
   const [harness, setHarness] = useState("generic-mcp");
   const [recipe, setRecipe] = useState<Out<"recipe_export"> | null>(null);
+  const [pipelineNote, setPipelineNote] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const load = useCallback(async () => {
     const r = await person("workflow_versions", { workflowId: id });
@@ -109,6 +109,8 @@ function Detail({ id, stills }: { id: string; stills: string }) {
   useEffect(() => {
     load().catch((e) => setError(errorText(e)));
   }, [load]);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the note belongs to the version that was exported
+  useEffect(() => setPipelineNote(null), [shown]);
   if (!data)
     return error ? (
       <Notice tone="needs-you" role="alert">
@@ -148,6 +150,17 @@ function Detail({ id, stills }: { id: string; stills: string }) {
     a.click();
     URL.revokeObjectURL(url);
   };
+  const exportPipeline = async () => {
+    try {
+      const r = await person("pipeline_export", { workflowId: id, version: v.version });
+      downloadJson(r.filename, r.contract);
+      setPipelineNote(r.omitted.length ? `${r.notice} Not in the file, because no step uses ${r.omitted.length === 1 ? "it" : "them"}: ${r.omitted.join(", ")}.` : r.notice);
+      setError(null);
+    } catch (e) {
+      setError(errorText(e));
+    }
+  };
+  const fromPipeline = data.pipelines.find((p) => p.version === v.version);
   const previous = data.versions.find((x) => x.version === v.version - 1);
   const widened = previous ? widens(previous.allowed, v.allowed) : false;
   const changes = diff
@@ -158,6 +171,7 @@ function Detail({ id, stills }: { id: string; stills: string }) {
     <article className="tb-card detail">
       <div className="detail-head">
         <h2>{data.workflow.title}</h2>
+        {migration.engineWorkflowOf(id) ? <MigratedBadge title={`Moved to the engine as ${migration.engineWorkflowOf(id)}. Its versions are in the Editor and under Activation.`} /> : null}
         <Field label="Version">
           <Select value={String(v.version)} onValueChange={(x) => setShown(Number(x))} options={options} />
         </Field>
@@ -273,6 +287,18 @@ function Detail({ id, stills }: { id: string; stills: string }) {
             <CopyBlock text={JSON.stringify(recipe.recipe, null, 2)} label="recipe" />
           </>
         ) : null}
+      </section>
+      <section className="tb-section">
+        <h3>Pipeline contract (version {v.version})</h3>
+        <p className="tb-soft">
+          {fromPipeline
+            ? `${importedFrom(fromPipeline.id, fromPipeline.pipelineVersion)}. Export gives you the contract back with the changes you made here.`
+            : "This version was not imported from a pipeline contract. Export builds a contract from it and fills what Evolution does not know with defaults."}
+        </p>
+        <div className="tb-ctas">
+          <Button onClick={() => void exportPipeline()}>Export pipeline contract</Button>
+        </div>
+        {pipelineNote ? <Notice role="status">{pipelineNote}</Notice> : null}
       </section>
       {error ? (
         <Notice tone="needs-you" role="alert">

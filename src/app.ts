@@ -7,12 +7,21 @@
 // edits, promotes or exports is a person op, so only the workspace owner can do it (SDK-API §5).
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { type AppDefinition, type Caller, type Db, defineApp, type HandlerSpec, type OpContext, type SdkAppDefinition, type SdkOpContext, TbError } from "@opt2-tealbrick/miniapp-sdk";
+import { type AppDefinition, type Caller, type Db, defineApp, type HandlerSpec, modelRole, type OpContext, type SdkAppDefinition, type SdkOpContext, TbError } from "@opt2-tealbrick/miniapp-sdk";
 import type * as K from "#kit";
 import { OP, type OpId } from "#kit";
+import { agentStepHandlers, defaultCompletion, wireAgentSteps } from "./agentsteps/index.ts";
 import * as cycles from "./cycles.ts";
 import { DEFAULT_MIN_REPEATS, KANBAN } from "./detector.ts";
-import { ALLOWLIST_NOTICE, allowedFromSteps, diffNotice, diffSnapshots, ModelError, type Snapshot } from "./model.ts";
+import * as directory from "./directory.ts";
+import { startEngine, stopEngine } from "./engine/engine.ts";
+import { engineAttention, refreshEngineHealth, startEngineHealthWatch } from "./engine/health.ts";
+import { engineLoadAttention, startEngineLoadWatch } from "./engine/load.ts";
+import { engineHandlers } from "./engine/ops.ts";
+import { roleAttention, startRoleAttention, stopRoleAttention } from "./engine/role-attention.ts";
+import { migrate, migrateHandlers } from "./migrate/index.ts";
+import { ALLOWLIST_NOTICE, allowedFromSteps, diffNotice, diffSnapshots, freeTargetNotice, ModelError, type Snapshot } from "./model.ts";
+import * as pipeline from "./pipeline.ts";
 import { buildRecipe } from "./recipe.ts";
 import * as routines from "./routines.ts";
 import { createDetectorRefresh, DETECTOR_REFRESH_MS, detectorStatus, scanKanban } from "./scan.ts";
@@ -38,7 +47,7 @@ function op<I, O>(spec: HandlerSpec<I, O>): HandlerSpec {
   } as unknown as HandlerSpec;
 }
 
-const STATUS: Record<store.StoreError["code"], number> = { not_found: 404, conflict: 409, revision_conflict: 409, validation_failed: 422, kanban_project_required: 422 };
+const STATUS: Record<store.StoreError["code"], number> = { not_found: 404, conflict: 409, revision_conflict: 409, validation_failed: 422, kanban_project_required: 422, metrics_need_terminal_status: 422, metric_names_full: 422, pipeline_id_mismatch: 409, confirm_replace_required: 409, contract_too_large: 422, metric_not_declared: 422, agent_not_free: 422, policy_version_not_applicable: 422 };
 export function toTbError(e: unknown): unknown {
   if (e instanceof store.StoreError) return new TbError(e.code, e.message, STATUS[e.code], e.details);
   if (e instanceof ModelError) return new TbError("validation_failed", e.message, 422, { pointer: e.pointer });
@@ -180,7 +189,9 @@ export const handlers = {
   }),
   [OP.workflowGet]: op<K.WorkflowGetInput, K.WorkflowGetOutput>({
     async run(input, ctx) {
-      return { ...store.getVersion(ctx.db, input.id, input.version), notice: ALLOWLIST_NOTICE };
+      // A Free agent that reads its workflow runs with its own access (R1a): the bridge does not narrow it to the list.
+      const free = ctx.caller.type === "agent" && ctx.caller.mode === "free";
+      return { ...store.getVersion(ctx.db, input.id, input.version), notice: free ? freeTargetNotice(ctx.caller.name || ctx.caller.id) : ALLOWLIST_NOTICE };
     },
   }),
 
@@ -188,8 +199,11 @@ export const handlers = {
     // The poll target of `tealbrick agent serve` routines mode. No receipt and no decision: it only books what the clock
     // and the policy gate imply (missed and policy_stale periods), the same bookkeeping the owner's lists do.
     async run(_input, ctx) {
-      if (ctx.caller.type !== "agent" || ctx.caller.mode !== "bound") return { jobs: [] };
-      return { jobs: routines.dueJobs(ctx.db, ctx.caller.id) };
+      // Bound and Free agents get their OWN schedules of their own mode (R1a). A paused or removed agent gets none: the SDK
+      // refuses it first; `dueJobs` asks the directory again (second layer).
+      const mode = ctx.caller.type === "agent" ? ctx.caller.mode : null;
+      if (mode !== "bound" && mode !== "free") return { jobs: [] };
+      return { jobs: routines.dueJobs(ctx.db, ctx.caller.id, Date.now(), mode) };
     },
   }),
   [OP.routineClaim]: op<K.RoutineClaimInput, K.RoutineClaimOutput>({
@@ -207,10 +221,11 @@ export const handlers = {
     },
   }),
   [OP.routineReport]: op<K.RoutineReportInput, K.RoutineReportOutput>({
-    redact: (input) => `Run ${input.occurrence.slice(0, 12)}: ${input.status}`,
+    // never the metrics themselves: lessons are free text from the agent (C88 / L12)
+    redact: (input) => `Run ${input.occurrence.slice(0, 12)}: ${input.status}${input.metrics ? " (with metrics)" : ""}`,
     async run(input, ctx) {
       const callApp = ctx.callApp.bind(ctx);
-      const { run, changed } = routines.report(ctx.db, ctx.caller.id, input.occurrence, input.status, input.summary?.trim() || null);
+      const { run, changed } = routines.report(ctx.db, ctx.caller.id, input.occurrence, input.status, input.summary?.trim() || null, Date.now(), input.metrics ?? null, (workflowId, version) => (version === null ? null : pipeline.declaredMetrics(ctx.db, workflowId, version)));
       if (changed) await closeRunIssue(ctx.db, callApp, run);
       await flushKanban(ctx.db, callApp);
       return routines.getRun(ctx.db, input.occurrence) ?? run;
@@ -278,7 +293,7 @@ export const handlers = {
   }),
   [OP.draftGet]: op<K.DraftGetInput, K.DraftGetOutput>({
     async run(input, ctx) {
-      return store.getDraft(ctx.db, input.id);
+      return { ...store.getDraft(ctx.db, input.id), pipeline: pipeline.pipelineOfDraft(ctx.db, input.id) };
     },
   }),
   [OP.draftUpdate]: op<K.DraftUpdateInput, K.DraftUpdateOutput>({
@@ -294,6 +309,46 @@ export const handlers = {
       return store.promote(ctx.db, input.draftId, input.revision, Date.now(), { log: ctx.log });
     },
   }),
+  // ── typed pipeline contract (C288 R10): person ops only; the stored contract is never returned by an agent op ──
+  [OP.pipelineImport]: op<K.PipelineImportInput, K.PipelineImportOutput>({
+    // the id of the contract only: purposes, dictation refs and owners are not receipt text
+    redact: (input, output) => {
+      const id = (input.contract as { id?: unknown } | null)?.id;
+      return `Imported pipeline ${typeof id === "string" ? id.slice(0, 41) : "contract"}${output ? ` as draft ${output.draft.id}` : ""}${input.asDraftOf ? ` for ${input.asDraftOf}` : ""}`;
+    },
+    async run(input, ctx) {
+      const r = pipeline.importPipeline(ctx.db, { contract: input.contract, asDraftOf: input.asDraftOf, confirmReplace: input.confirmReplace });
+      return { draft: { ...r.draft, pipeline: r.pipeline }, report: r.report };
+    },
+  }),
+  [OP.pipelineExport]: op<K.PipelineExportInput, K.PipelineExportOutput>({
+    async run(input, ctx) {
+      const wf = store.getWorkflow(ctx.db, input.workflowId);
+      const v = store.getVersion(ctx.db, wf.id, input.version);
+      const stored = pipeline.versionSource(ctx.db, wf.id, v.version);
+      const { contract, omitted, notes } = pipeline.exportContract({
+        workflowId: wf.id,
+        version: v.version,
+        active: v.version === wf.activeVersion,
+        snapshot: store.snapshotOf(v),
+        imported: stored,
+        automationCron: pipeline.automationCronOf(ctx.db, wf.id),
+      });
+      const imported = stored !== null;
+      return {
+        contract: contract as unknown as K.PipelineExportOutput["contract"],
+        filename: pipeline.exportFileName(contract),
+        imported,
+        omitted,
+        notice: [
+          imported
+            ? "Rebuilt from the contract you imported and the version you edited. Status is set by Evolution (active, or retired for an older version). Fields Evolution does not enforce come back as they were imported."
+            : "This workflow was not imported from a contract, so the required fields that Evolution has no data for are filled with defaults: owner unassigned, the Task Board run issue as input and output, a default done check, and no declared metrics.",
+          ...notes,
+        ].join(" "),
+      };
+    },
+  }),
   [OP.workflowsList]: op<K.WorkflowsListInput, K.WorkflowsListOutput>({
     async run(_input, ctx) {
       return { workflows: store.listWorkflows(ctx.db) };
@@ -301,7 +356,11 @@ export const handlers = {
   }),
   [OP.workflowVersions]: op<K.WorkflowVersionsInput, K.WorkflowVersionsOutput>({
     async run(input, ctx) {
-      return { workflow: store.getWorkflow(ctx.db, input.workflowId), versions: store.listVersions(ctx.db, input.workflowId) };
+      return {
+        workflow: store.getWorkflow(ctx.db, input.workflowId),
+        versions: store.listVersions(ctx.db, input.workflowId),
+        pipelines: pipeline.versionPipelines(ctx.db, input.workflowId),
+      };
     },
   }),
   [OP.workflowDiff]: op<K.WorkflowDiffInput, K.WorkflowDiffOutput>({
@@ -364,7 +423,9 @@ export const handlers = {
   }),
   [OP.cycleGet]: op<K.CycleGetInput, K.CycleGetOutput>({
     async run(input, ctx) {
-      return { cycle: cycles.getCycle(ctx.db, input.workflowId, input.version), evals: cycles.storedEvals(ctx.db, input.workflowId, input.version) };
+      // the lessons are free text from agents: person op only (C88 / L12), never in an agent op
+      const cycle = cycles.getCycle(ctx.db, input.workflowId, input.version);
+      return { cycle, evals: cycles.storedEvals(ctx.db, input.workflowId, input.version), lessons: cycles.cycleLessons(ctx.db, input.workflowId, input.version) };
     },
   }),
   [OP.cycleEvalRun]: op<K.CycleEvalRunInput, K.CycleEvalRunOutput>({
@@ -375,6 +436,12 @@ export const handlers = {
       return ctx.db.transaction(() => cycles.storeEval(ctx.db, input.workflowId, input.version, "owner", Date.now(), ctx.idempotencyKey ?? null));
     },
   }),
+  // ── workflow engine (C367 WP2): contracts, activation, Temporal schedules, run index (src/engine/ops.ts) ──
+  ...engineHandlers(manifest),
+  // ── agent steps (C367 WP3): steps_due, step_claim, step_heartbeat, step_report (agent) and agent_steps_list (person) ──
+  ...agentStepHandlers({ completion: defaultCompletion }),
+  // ── C367 M3: the move from 0.3.x (owner op) ──
+  ...migrateHandlers(),
 } satisfies Record<OpId, HandlerSpec>;
 
 function draftRow(d: store.Draft): K.DraftsListOutput["drafts"][number] {
@@ -391,11 +458,47 @@ export const definition: SdkAppDefinition = {
   // C85: the Kanban scan runs without an op call (app-initiated companion call with Evolution's own grant).
   async onStart(ctx) {
     detectorRefresh.start({ db: ctx.db, callApp: ctx.callApp.bind(ctx), log: ctx.log });
+    // C367: agent steps. The engine's `ai` activity offers a step through the port (stored in agent_step_runs); step_report
+    // completes the Temporal activity with the client of the engine (503 engine_unavailable while Temporal is down).
+    wireAgentSteps(ctx.db);
+    // C367 M3: the one-time move of 0.3.x agent workflows and schedules to the engine (a marker row says it is done; this is a
+    // no-op afterwards). Database rows only, so it runs before the engine starts: the reconcile job creates the Temporal Schedules.
+    try {
+      const r = migrate(ctx.db, { engineConfigured: Boolean(process.env.TEMPORAL_ADDRESS?.trim()) });
+      if (r.ran) ctx.log.info("0.3.x workflows moved to the engine", { ...r.counts, complete: r.complete });
+    } catch (e) {
+      ctx.log.error("the move of 0.3.x workflows to the engine failed; the 0.3.x path is unchanged", { error: e instanceof Error ? e.message.slice(0, 300) : "unknown" });
+    }
+    // C367: the Temporal worker + reconcile job (off while TEMPORAL_ADDRESS is not set)
+    await startEngine({ db: ctx.db, callApp: ctx.callApp.bind(ctx), log: ctx.log, secrets: ctx.secrets, bridgeCaps: () => ctx.bridgeCaps() });
+    // C367 WP1: tell the status push when the workflow engine goes down or comes back (never in /tb/v1/health).
+    startEngineHealthWatch(() => ctx.statusChanged());
+    // C373a: the kept-run count estimates the size of the engine database; a warning near the 512 MB restore cap
+    startEngineLoadWatch(() => ctx.statusChanged());
+    // `model_role_optional` only when an ACTIVE workflow uses a role that is not bound (the SDK never raises it for an unused role)
+    startRoleAttention({ db: ctx.db, modelRole: (role) => modelRole(role as never), bridgeCaps: () => ctx.bridgeCaps(), onChange: () => ctx.statusChanged() });
+  },
+  async onStop() {
+    stopRoleAttention();
+    await stopEngine();
+  },
+  // C367 WP1: the Temporal companion unreachable -> readiness `degraded` with the reason; the app still serves.
+  async attention() {
+    await refreshEngineHealth();
+    // a fault outranks a model-role code (the SDK keeps ONE slot): the engine down first, then its size warning, then the unset role
+    return engineAttention() ?? engineLoadAttention() ?? roleAttention();
   },
   events: {
     // Agent directory (manifest needsAgentDirectory): keep names so suggestion text can say who repeated the work.
+    // R1a: also its mode and status, so a Free target can be checked and a paused or removed agent gets no runs (src/directory.ts).
     async agentAdded(agent, ctx) {
-      ctx.db.prepare("INSERT INTO agent_names (id, name, seen_at) VALUES (?, ?, ?) ON CONFLICT (id) DO UPDATE SET name = excluded.name, seen_at = excluded.seen_at").run(agent.id, agent.name, Date.now());
+      directory.recordAgent(ctx.db, agent);
+    },
+    async agentsChanged(agents, ctx) {
+      directory.recordDirectory(ctx.db, agents);
+    },
+    async agentRemoved(agent, ctx) {
+      directory.markRemoved(ctx.db, agent.id);
     },
   },
 };

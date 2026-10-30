@@ -54,3 +54,25 @@
 .timeline { display: grid; gap: var(--tb-s3); list-style: none; padding: 0; margin: 0; }
 .timeline > li { display: grid; gap: 4px; }
 .timeline-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+.lessons { margin: 0; padding-left: var(--tb-s4); display: grid; gap: 4px; overflow-wrap: anywhere; }
+/* Engine pages (C367 WP3): editor step cards, the canonical-shape lanes, issues, run timeline extras */
+.step-list > ol, .refmap { margin: 0; padding: 0; }
+.step-card { display: grid; gap: var(--tb-s3); }
+.step-card .step-list { padding-left: var(--tb-s4); box-shadow: inset 2px 0 0 var(--tb-line); }
+.step-card h4, .branch h5 { font-size: 1rem; font-weight: var(--tb-weight-head); display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
+.refmap { border: 0; min-width: 0; }
+.refmap > .two { align-items: end; }
+.lanes { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: var(--tb-s3); list-style: none; padding: 0; margin: 0; counter-reset: lane; }
+.lane { display: grid; gap: var(--tb-s2); align-content: start; padding: var(--tb-s3); border-radius: var(--tb-radius-brick); box-shadow: inset 0 0 0 var(--tb-hair) var(--tb-line); min-width: 0; }
+.lane h3 { font-size: 1rem; font-weight: var(--tb-weight-head); }
+.lanes > .lane::before { counter-increment: lane; content: counter(lane); color: var(--tb-teal-ink); font-weight: var(--tb-weight-head); }
+.lane[data-stage="intelligence"] { box-shadow: inset 0 0 0 2px var(--tb-ink); }
+.lane-step { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; overflow-wrap: anywhere; }
+.lane-flow { box-shadow: inset 0 0 0 var(--tb-hair) var(--tb-line); }
+.issues { gap: var(--tb-s2); }
+.issue { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; overflow-wrap: anywhere; }
+.agent-wait { display: grid; gap: 4px; }
+.agent-history { font-size: var(--tb-text-label); color: var(--tb-ink-soft); }
+.timeline .view { margin: 4px 0 0; padding: 10px 12px; max-height: 240px; overflow: auto; border-radius: var(--tb-radius-brick); background: var(--tb-plate); font-family: var(--tb-font-mono); font-size: var(--tb-text-tag); white-space: pre-wrap; overflow-wrap: anywhere; }
+@media (max-width: 1100px) { .lanes { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (max-width: 720px) { .lanes { grid-template-columns: 1fr; } }

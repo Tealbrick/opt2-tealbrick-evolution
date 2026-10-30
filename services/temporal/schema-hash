@@ -1,0 +1,6 @@
+#!/bin/sh
+# Prints the sha256 of the Temporal SQLite schema of the file $1: every table, index, view and trigger definition,
+# sorted by type and name (independent of the sqlite3 shell version). The expected value of the pinned CLI is in
+# schema.sha256 (a fresh database of that CLI); see "Temporal service" in ARCHITECTURE.md.
+set -eu
+sqlite3 -batch -readonly "$1" "SELECT type || '|' || name || '|' || coalesce(sql, '') FROM sqlite_master WHERE name NOT LIKE 'sqlite\_%' ESCAPE '\' ORDER BY type, name;" | sha256sum | cut -d' ' -f1

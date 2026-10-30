@@ -8,9 +8,15 @@
 //   policy_stale (C250): a due occurrence of a wider active version than the recipe the agent has (`policyVersion`) is
 //   skipped like a claimed period; the first one per schedule revision and version is recorded as a `policy_stale` run;
 //   routines_due leaves it out and routine_claim answers policy_stale. One gate (`policyStale`) decides it for both.
+//   R1a (C364a): a schedule targets a Bound agent (`target_mode` 'bound', as before) or an existing FREE agent ('free'): the
+//   Free agent claims its runs with its own grant. A caller gets and claims a schedule only when (agent_id = caller id AND
+//   target_mode = caller mode); a Free caller reaches only its own schedules, never another agent's. No recipe is applied to
+//   a Free target, so the policy_stale gate does not apply. A paused or removed agent (src/directory.ts) gets nothing.
 import { createHash } from "node:crypto";
 import { CronError, cronDue, nextCronTime, ulid } from "@opt2-tealbrick/manifest";
 import type { Db } from "@opt2-tealbrick/miniapp-sdk";
+import * as directory from "./directory.ts";
+import { getItem as migrationItem } from "./migrate/state.ts";
 import { diffSnapshots } from "./model.ts";
 import { getVersion, getWorkflow, StoreError, snapshotOf, type Version } from "./store.ts";
 
@@ -18,7 +24,12 @@ export const CLAIMED_TIMEOUT_MS = 10 * 60_000;
 export const DISPATCHED_TIMEOUT_MS = 30 * 60_000;
 export const DEFAULT_GRACE_SEC = 120;
 export type RunStatus = "claimed" | "dispatched" | "completed" | "failed" | "missed" | "uncertain" | "policy_stale";
-export type ClaimReason = "already_claimed" | "missed" | "not_due" | "paused" | "not_bound" | "version_missing" | "policy_stale";
+export type TargetMode = "bound" | "free";
+/** `not_bound`: the caller is not an agent, or a Free agent that has no Free schedule. `mode_mismatch`: the occurrence is
+ *  a due occurrence of one of the caller's own schedules, but that schedule targets the other mode (a Bound caller with a
+ *  Free schedule, a Free caller with a Bound one). `agent_unavailable`: the directory says the caller is paused or removed.
+ *  `paused` stays the schedule's own state. */
+export type ClaimReason = "already_claimed" | "missed" | "not_due" | "paused" | "not_bound" | "mode_mismatch" | "agent_unavailable" | "version_missing" | "policy_stale" | "migrated";
 
 export interface Automation {
   id: string;
@@ -26,6 +37,8 @@ export interface Automation {
   versionPin: number | null;
   policyVersion: number;
   agentId: string;
+  /** 'free': the agent runs with its own access (R1a); 'bound': the Bound agent that holds the recipe */
+  targetMode: TargetMode;
   cron: string;
   enabled: boolean;
   misfireGraceSec: number;
@@ -67,6 +80,7 @@ interface Row {
   versionPin: number | null;
   policyVersion: number;
   agentId: string;
+  targetMode: TargetMode;
   cron: string;
   enabled: boolean;
   grace: number;
@@ -85,6 +99,7 @@ function toRow(r: Record<string, unknown>): Row {
     versionPin: r.version_pin === null ? null : Number(r.version_pin),
     policyVersion: Number(r.policy_version),
     agentId: String(r.agent_id),
+    targetMode: r.target_mode === "free" ? "free" : "bound", // a database before 0008 has no column: every schedule there is bound
     cron: String(r.cron),
     enabled: Number(r.enabled) === 1,
     grace: Number(r.misfire_grace_sec),
@@ -104,6 +119,7 @@ function view(r: Row): Automation {
     versionPin: r.versionPin,
     policyVersion: r.policyVersion,
     agentId: r.agentId,
+    targetMode: r.targetMode,
     cron: r.cron,
     enabled: r.enabled,
     misfireGraceSec: r.grace,
@@ -141,6 +157,8 @@ export interface AutomationInput {
   versionPin?: number | null;
   policyVersion?: number;
   agentId: string;
+  /** default bound; an edit without it keeps the stored value */
+  targetMode?: TargetMode;
   cron: string;
   enabled?: boolean;
   misfireGraceSec?: number;
@@ -157,6 +175,10 @@ export interface SetOptions {
 const KANBAN_PROJECT_REQUIRED =
   "Choose a Task Board project that you share with the Bound agent. Run issues in the own project of Evolving Workflows are not visible to the agent.";
 
+const NOT_FREE =
+  "This agent is not a Free agent that Evolving Workflows knows. Choose an agent that is in the agent list of this workspace and has the mode Free. A Bound agent takes a Bound schedule.";
+const NO_RECIPE_FOR_FREE = "A Free agent runs with its own access: no recipe is applied to it. Leave \"Recipe applied\" (policyVersion) out.";
+
 export function setAutomation(db: Db, input: AutomationInput, now: number = Date.now(), opts: SetOptions = {}): Automation {
   return db.transaction(() => {
     const wf = getWorkflow(db, input.workflowId);
@@ -165,6 +187,15 @@ export function setAutomation(db: Db, input: AutomationInput, now: number = Date
     // The applied recipe version is the owner's statement: a new schedule starts at the pin or the active version; an edit
     // that does not name it keeps it (an edit of the project or the cron must not silently clear a policy_stale gate).
     const prior = input.id ? load(db, input.id) : null;
+    // R1a: the target mode. Free = the agent's own access, no applied recipe. The agent must be a listed Free agent when
+    // the schedule is new or its agent or mode changes; a later edit (cron, pause, project) of a schedule whose agent has
+    // since gone must still work, so pause and delete are never blocked by the directory.
+    const targetMode: TargetMode = input.targetMode ?? prior?.targetMode ?? "bound";
+    if (targetMode === "free") {
+      if (input.policyVersion !== undefined) throw new StoreError("policy_version_not_applicable", NO_RECIPE_FOR_FREE, { pointer: "/policyVersion" });
+      if ((prior?.targetMode !== "free" || prior.agentId !== input.agentId) && !directory.isFreeAgent(db, input.agentId))
+        throw new StoreError("agent_not_free", NOT_FREE, { pointer: "/agentId" });
+    }
     // (also when the pin changes: a pinned schedule skips the gate, so keeping the value is safe, and unpinning must not
     // jump to a wider active version)
     const policyVersion = input.policyVersion ?? (prior && prior.workflowId === wf.id ? prior.policyVersion : (pin ?? wf.activeVersion));
@@ -176,8 +207,8 @@ export function setAutomation(db: Db, input: AutomationInput, now: number = Date
       if (opts.kanbanLinked && project === null) throw new StoreError("kanban_project_required", KANBAN_PROJECT_REQUIRED, { pointer: "/kanbanProject" });
       const id = `aut_${ulid(now)}`;
       db.prepare(
-        "INSERT INTO automations (id, workflow_id, version_pin, policy_version, agent_id, cron, enabled, misfire_grace_sec, kanban_project, revision, next_due_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)",
-      ).run(id, wf.id, pin, policyVersion, input.agentId, cron, input.enabled === false ? 0 : 1, input.misfireGraceSec ?? DEFAULT_GRACE_SEC, project, firstDue, now, now);
+        "INSERT INTO automations (id, workflow_id, version_pin, policy_version, agent_id, target_mode, cron, enabled, misfire_grace_sec, kanban_project, revision, next_due_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)",
+      ).run(id, wf.id, pin, policyVersion, input.agentId, targetMode, cron, input.enabled === false ? 0 : 1, input.misfireGraceSec ?? DEFAULT_GRACE_SEC, project, firstDue, now, now);
       return view(load(db, id));
     }
     const cur = load(db, input.id);
@@ -190,12 +221,13 @@ export function setAutomation(db: Db, input: AutomationInput, now: number = Date
     // a changed cron or a re-enabled schedule starts from now; otherwise keep the pending due time
     const keep = cron === cur.cron && enabled === cur.enabled;
     db.prepare(
-      "UPDATE automations SET workflow_id = ?, version_pin = ?, policy_version = ?, agent_id = ?, cron = ?, enabled = ?, misfire_grace_sec = ?, kanban_project = ?, revision = revision + 1, next_due_at = ?, updated_at = ? WHERE id = ?",
+      "UPDATE automations SET workflow_id = ?, version_pin = ?, policy_version = ?, agent_id = ?, target_mode = ?, cron = ?, enabled = ?, misfire_grace_sec = ?, kanban_project = ?, revision = revision + 1, next_due_at = ?, updated_at = ? WHERE id = ?",
     ).run(
       wf.id,
       pin,
       policyVersion,
       input.agentId,
+      targetMode,
       cron,
       enabled ? 1 : 0,
       input.misfireGraceSec ?? cur.grace,
@@ -212,7 +244,18 @@ export function pauseAutomation(db: Db, id: string, revision: number, paused: bo
   const cur = load(db, id);
   return setAutomation(
     db,
-    { id, revision, workflowId: cur.workflowId, versionPin: cur.versionPin, policyVersion: cur.policyVersion, agentId: cur.agentId, cron: cur.cron, enabled: !paused },
+    {
+      id,
+      revision,
+      workflowId: cur.workflowId,
+      versionPin: cur.versionPin,
+      // a Free target has no applied recipe: policyVersion must stay out of the edit
+      ...(cur.targetMode === "free" ? {} : { policyVersion: cur.policyVersion }),
+      agentId: cur.agentId,
+      targetMode: cur.targetMode,
+      cron: cur.cron,
+      enabled: !paused,
+    },
     now,
   );
 }
@@ -245,7 +288,7 @@ export function settle(db: Db, a: Row, now: number): Settled {
   return { row: load(db, a.id), due: null };
 }
 
-export type WarningCode = "policy_stale" | "kanban_project_missing";
+export type WarningCode = "policy_stale" | "kanban_project_missing" | "migrated" | "legacy_bound";
 export interface AutomationWarning {
   code: WarningCode;
   message: string;
@@ -269,6 +312,18 @@ function warningsOf(db: Db, r: Row, kanbanLinked: boolean): AutomationWarning[] 
     w.push({
       code: "kanban_project_missing",
       message: "No Task Board project: run issues go to the own project of Evolving Workflows, which the Bound agent cannot see. Choose Edit and set a project that you share with the agent.",
+    });
+  // C367 M3, compatibility layer: what the move to the engine did with this schedule (src/migrate/run.ts)
+  const m = migrationItem(db, "schedule", r.id);
+  if (m?.status === "migrated")
+    w.push({
+      code: "migrated",
+      message: `Moved to the engine as schedule ${m.engineId}. This 0.3.x schedule is paused and kept only so you can go back: its agent now gets the work as workflow steps (steps_due). To go back, pause or delete the engine schedule first, then resume this one. Never run both.`,
+    });
+  if (m?.status === "legacy_bound")
+    w.push({
+      code: "legacy_bound",
+      message: "Stays on the 0.3.x runner (routines_due, routine_claim, routine_report): workflow steps go to Free agents only, and this schedule has a Bound agent. This path is deprecated and stays for one more release.",
     });
   return w;
 }
@@ -358,6 +413,7 @@ export interface Job {
 /** THE policy gate of routines_due and routine_claim: a schedule that follows the active version may run it only when
  *  that version needs no more access than the recipe the owner applied (`policyVersion`). */
 export function policyStale(db: Db, a: Row, v: Version): boolean {
+  if (a.targetMode === "free") return false; // no applied recipe: the Free agent runs with its own access (R1a)
   if (a.versionPin !== null || v.version === a.policyVersion) return false;
   const applied = resolveVersionAt(db, a.workflowId, a.policyVersion);
   return !applied || diffSnapshots(snapshotOf(applied), snapshotOf(v)).widensAccess;
@@ -371,13 +427,15 @@ function resolveVersion(db: Db, a: Row): Version | null {
   }
 }
 
-/** routines_due: Bound callers only; one job per automation at most (its due occurrence inside the grace). Claims
- *  nothing. Bookkeeping only (facts from the clock and the policy gate): records missed runs (see `settle`) and skips /
+/** routines_due: one job per automation at most (its due occurrence inside the grace), only for the caller's own schedules of
+ *  the caller's own mode (`mode`: a Bound caller gets Bound schedules, a Free caller Free ones; default bound). A paused or
+ *  removed agent gets none. Claims nothing. Bookkeeping only (facts from the clock and the policy gate): records missed runs (see `settle`) and skips /
  *  records policy-stale periods (`recordPolicyStale`); no receipt. */
-export function dueJobs(db: Db, agentId: string, now: number = Date.now()): Job[] {
+export function dueJobs(db: Db, agentId: string, now: number = Date.now(), mode: TargetMode = "bound"): Job[] {
   return db.transaction(() => {
     const jobs: Job[] = [];
-    for (const a0 of db.prepare("SELECT * FROM automations WHERE agent_id = ? AND deleted_at IS NULL AND enabled = 1").all(agentId).map(toRow)) {
+    if (!directory.isAvailable(db, agentId)) return jobs;
+    for (const a0 of db.prepare("SELECT * FROM automations WHERE agent_id = ? AND target_mode = ? AND deleted_at IS NULL AND enabled = 1").all(agentId, mode).map(toRow)) {
       const { row: a, due } = settle(db, a0, now);
       if (due === null) continue;
       const occurrence = occurrenceOf(a.id, a.revision, due);
@@ -405,18 +463,25 @@ export interface ClaimedJob extends Job {
 }
 export type ClaimResult = { claimed: true; job: ClaimedJob; automation: Automation } | { claimed: false; reason: ClaimReason };
 
-/** routine_claim: the ONE write that turns a due occurrence into a run (primary key = at-most-once). */
+/** routine_claim: the ONE write that turns a due occurrence into a run (primary key = at-most-once). Only the caller's own
+ *  schedules are looked at (agent_id = caller id), and a schedule is claimed only by a caller of its target mode. */
 export function claim(db: Db, caller: { id: string; mode: string | null }, occurrence: string, now: number = Date.now()): ClaimResult {
   return db.transaction((): ClaimResult => {
     sweep(db, now);
-    if (caller.mode !== "bound") return { claimed: false, reason: getRun(db, occurrence) ? "already_claimed" : "not_bound" };
-    for (const a0 of db.prepare("SELECT * FROM automations WHERE agent_id = ? AND deleted_at IS NULL").all(caller.id).map(toRow)) settle(db, a0, now);
+    const mode: TargetMode | null = caller.mode === "bound" || caller.mode === "free" ? caller.mode : null;
+    if (mode === null) return { claimed: false, reason: getRun(db, occurrence) ? "already_claimed" : "not_bound" };
+    if (!directory.isAvailable(db, caller.id)) return { claimed: false, reason: "agent_unavailable" };
+    const own = db.prepare("SELECT * FROM automations WHERE agent_id = ? AND deleted_at IS NULL").all(caller.id).map(toRow);
+    for (const a0 of own) if (a0.targetMode === mode) settle(db, a0, now);
     const prior = getRun(db, occurrence);
     if (prior) return { claimed: false, reason: prior.status === "missed" || prior.status === "policy_stale" ? prior.status : "already_claimed" };
     for (const a of db.prepare("SELECT * FROM automations WHERE agent_id = ? AND deleted_at IS NULL").all(caller.id).map(toRow)) {
       const r = cronDue(a.cron, { nextDueAt: new Date(a.nextDueAt), now: new Date(now), graceSec: a.grace });
       if (!r.due || r.missed || occurrenceOf(a.id, a.revision, r.due.getTime()) !== occurrence) continue;
+      if (a.targetMode !== mode) return { claimed: false, reason: "mode_mismatch" };
       const s = { due: r.due.getTime(), next: r.nextDueAt?.getTime() ?? null };
+      // moved to the engine (C367 M3): this schedule hands out nothing any more; the agent takes the work as steps
+      if (migrationItem(db, "schedule", a.id)?.status === "migrated") return { claimed: false, reason: "migrated" };
       if (!a.enabled) return { claimed: false, reason: "paused" };
       const v = resolveVersion(db, a);
       if (!v) return { claimed: false, reason: "version_missing" };
@@ -449,7 +514,7 @@ export function claim(db: Db, caller: { id: string; mode: string | null }, occur
         },
       };
     }
-    return { claimed: false, reason: "not_due" };
+    return { claimed: false, reason: mode === "free" && !own.some((a) => a.targetMode === "free") ? "not_bound" : "not_due" };
   });
 }
 
@@ -539,12 +604,140 @@ const NEXT_STATUS: Record<RunStatus, RunStatus[]> = {
 export type ReportStatus = "dispatched" | "completed" | "failed" | "uncertain";
 export const TERMINAL: ReadonlySet<RunStatus> = new Set(["completed", "failed", "uncertain"]);
 
-/** routine_report: only the claimer; repeating the current status is a no-op; terminal states are final. */
-export function report(db: Db, callerId: string, occurrence: string, status: ReportStatus, summary: string | null, now: number = Date.now()): { run: Run; changed: boolean } {
+/** The optional `metrics` of routine_report (C288 R8): the RunReport of the Henry contracts. `pipeline` and `version` are
+ *  accepted for 1:1 compatibility and IGNORED (Henry's pipeline ids and contract version are not ours); the stored truth
+ *  is the run row's own workflow id and version. */
+export interface MetricsInput {
+  pipeline?: string;
+  version?: number;
+  ok: boolean;
+  minutes: number;
+  retries?: number;
+  questions_to_martin?: number;
+  lessons?: string[];
+  /** the named per-pipeline numbers: name -> number (at most 20 per report, at most 20 distinct names per workflow version; |value| <= 1e12) */
+  metrics?: Record<string, number>;
+  /** the Task Board issue id of the run: accepted and IGNORED (the run row's kanban_issue_id is the truth) */
+  issue?: string;
+}
+export interface StoredMetrics {
+  ok: boolean;
+  minutes: number;
+  retries: number | null;
+  questionsToMartin: number | null;
+  lessons: string[];
+  /** the named numbers, sorted by name */
+  named: [string, number][];
+}
+export const NAMED_MAX = 20;
+export const NAMED_VALUE_MAX = 1e12;
+export const NAME_PATTERN = /^[a-z][a-z0-9_]{1,40}$/;
+export const MINUTES_MAX = 10080;
+export const COUNT_MAX = 1000;
+export const LESSONS_MAX = 20;
+export const LESSON_MAX_CHARS = 280;
+
+const refuse = (pointer: string, message: string): StoreError => new StoreError("validation_failed", message, { pointer });
+
+/** Invisible "filler" characters that are letters or symbols by category but show nothing (braille blank, Hangul fillers,
+ *  Khmer inherent vowels). A lesson of only these is blank. Keep in step with the pattern in the manifest. */
+const FILLERS = new Set(["\u2800", "\u3164", "\u115F", "\u1160", "\uFFA0", "\u17B4", "\u17B5"]);
+const MEANINGFUL = /[\p{L}\p{N}\p{P}\p{S}]/u;
+/** A lesson must show at least one letter, digit, punctuation or symbol. */
+export const isMeaningful = (s: string): boolean => Array.from(s).some((ch) => MEANINGFUL.test(ch) && !FILLERS.has(ch));
+
+function namedOf(map: unknown): [string, number][] {
+  if (map === undefined) return [];
+  if (typeof map !== "object" || map === null || Array.isArray(map)) throw refuse("/metrics/metrics", "metrics.metrics must be an object of names and numbers.");
+  const entries = Object.entries(map);
+  if (entries.length > NAMED_MAX) throw refuse("/metrics/metrics", `metrics.metrics has at most ${NAMED_MAX} names.`);
+  for (const [name, v] of entries) {
+    if (!NAME_PATTERN.test(name)) throw refuse(`/metrics/metrics/${name}`, "A metric name starts with a lower case letter and has 2 to 41 characters: lower case letters, digits and underscore.");
+    if (typeof v !== "number" || !Number.isFinite(v) || Math.abs(v) > NAMED_VALUE_MAX) throw refuse(`/metrics/metrics/${name}`, `metrics.metrics.${name} must be a number from -1e12 to 1e12.`);
+  }
+  return entries.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+}
+
+/** Checks `metrics` and returns what is stored (lessons trimmed). The manifest schema already refuses bad shapes with a
+ *  pointer before the handler runs; the bounds are checked here too, so a direct call of `report` cannot store a value
+ *  the table's CHECKs would refuse. Lesson length counts code points, like the schema.
+ *  - terminal status only: completed or failed (an `uncertain` report is not a result of the run);
+ *  - `pipeline`, `version` and `issue` are ignored: they are not compared with the run (the run row is the truth);
+ *  - `metrics` (the named map): at most 20 names, each ^[a-z][a-z0-9_]{1,40}$, finite numbers with |v| <= 1e12. Which names a
+ *    pipeline may declare is not checked here: any patterned name is stored (a caller may check declared names, R10).
+ *    `report` also keeps a workflow version to at most 20 distinct names over all its runs (metric_names_full).
+ *  `ok` is not cross-checked with the status: it is the runner's own word on the outcome (a completed run can say ok: false). */
+export function checkMetrics(m: MetricsInput, status: ReportStatus): StoredMetrics {
+  if (status !== "completed" && status !== "failed")
+    throw new StoreError("metrics_need_terminal_status", "Send metrics only with the report that ends the run: status completed or failed.", { pointer: "/metrics", status });
+  if (typeof m.ok !== "boolean") throw refuse("/metrics/ok", "metrics.ok must be true or false.");
+  if (typeof m.minutes !== "number" || !Number.isFinite(m.minutes) || m.minutes < 0 || m.minutes > MINUTES_MAX) throw refuse("/metrics/minutes", `metrics.minutes must be a number from 0 to ${MINUTES_MAX}.`);
+  const count = (k: "retries" | "questions_to_martin"): number | null => {
+    const v = m[k];
+    if (v === undefined) return null;
+    if (!Number.isInteger(v) || v < 0 || v > COUNT_MAX) throw refuse(`/metrics/${k}`, `metrics.${k} must be a whole number from 0 to ${COUNT_MAX}.`);
+    return v;
+  };
+  const retries = count("retries");
+  const questionsToMartin = count("questions_to_martin");
+  const lessons = m.lessons ?? [];
+  if (!Array.isArray(lessons) || lessons.length > LESSONS_MAX) throw refuse("/metrics/lessons", `metrics.lessons has at most ${LESSONS_MAX} entries.`);
+  const trimmed = lessons.map((l, i) => {
+    const t = typeof l === "string" ? l.trim() : "";
+    const n = Array.from(t).length;
+    if (n < 1 || n > LESSON_MAX_CHARS || !isMeaningful(t)) throw refuse(`/metrics/lessons/${i}`, `Each lesson has 1 to ${LESSON_MAX_CHARS} characters and shows at least one letter, digit or symbol.`);
+    return t;
+  });
+  const named = namedOf(m.metrics);
+  return { ok: m.ok, minutes: m.minutes, retries, questionsToMartin, lessons: trimmed, named };
+}
+
+/** routine_report: only the claimer; repeating the current status is a no-op; terminal states are final.
+ *  `metrics` (C288 R8) are stored with the report that moves the run to completed / failed, in the same transaction.
+ *  They are checked on every call (a bad payload is refused even on a repeat), but a REPEAT of the current status
+ *  changes nothing: metrics that arrive on it, same or different, are not stored (the first terminal report decides). */
+export function report(
+  db: Db,
+  callerId: string,
+  occurrence: string,
+  status: ReportStatus,
+  summary: string | null,
+  now: number = Date.now(),
+  metrics: MetricsInput | null = null,
+  declared?: (workflowId: string, version: number | null) => readonly string[] | null,
+): { run: Run; changed: boolean } {
   return db.transaction(() => {
     sweep(db, now);
     const run = getRun(db, occurrence);
     if (!run || run.claimedBy !== callerId) throw new StoreError("not_found", "No run of yours with this occurrence.");
+    const stored = metrics ? checkMetrics(metrics, status) : null;
+    // C288 R10: when the run's workflow VERSION was imported from a pipeline contract, a named metric must be one the contract
+    // declares (an empty list declares none). A version that was not imported accepts any patterned name. Checked on every
+    // call like the other metrics errors; the answer does not list the declared names (they are the owner's data).
+    const names = declared && stored?.named.length ? declared(run.workflowId, run.workflowVersion) : null;
+    if (names) {
+      const bad = stored?.named.find(([n]) => !names.includes(n));
+      if (bad) throw new StoreError("metric_not_declared", `The metric "${bad[0]}" is not declared by the pipeline contract of this workflow version. Send only declared names, or send the report again without metrics.`, { pointer: `/metrics/metrics/${bad[0]}` });
+    }
+    // at most 20 distinct names per workflow version, over all its runs: the cycle ledger lists them (cycles_list answers at most 20)
+    if (stored?.named.length) {
+      const have = new Set(
+        db
+          .prepare("SELECT DISTINCT v.name FROM run_metric_values v JOIN routine_runs r ON r.occurrence = v.occurrence WHERE r.workflow_id = ? AND r.workflow_version IS ?")
+          .all(run.workflowId, run.workflowVersion)
+          .map((x) => String(x.name)),
+      );
+      let free = NAMED_MAX - have.size;
+      for (const [name] of stored.named) {
+        if (have.has(name)) continue;
+        if (free-- <= 0)
+          throw new StoreError(
+            "metric_names_full",
+            `This workflow version already has ${NAMED_MAX} metric names. Send only those names, or send the report again without metrics.`,
+            { pointer: `/metrics/metrics/${name}` },
+          );
+      }
+    }
     if (run.status === status) return { run, changed: false };
     if (!NEXT_STATUS[run.status].includes(status)) throw new StoreError("conflict", `A ${run.status} run cannot become ${status}.`, { status: run.status });
     const sync = TERMINAL.has(status) && run.kanbanIssueId ? "pending" : run.kanbanSync;
@@ -553,6 +746,18 @@ export function report(db: Db, callerId: string, occurrence: string, status: Rep
     db.prepare(
       "UPDATE routine_runs SET status = ?, summary = COALESCE(?, summary), kanban_sync = ?, updated_at = ?, reported_at = CASE WHEN ? THEN ? ELSE reported_at END WHERE occurrence = ?",
     ).run(status, summary, sync, now, TERMINAL.has(status) ? 1 : 0, now, occurrence);
+    if (stored) {
+      db.prepare("INSERT INTO run_metrics (occurrence, ok, minutes, retries, questions_to_martin, lessons, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)").run(
+        occurrence,
+        stored.ok ? 1 : 0,
+        stored.minutes,
+        stored.retries,
+        stored.questionsToMartin,
+        JSON.stringify(stored.lessons),
+        now,
+      );
+      for (const [name, value] of stored.named) db.prepare("INSERT INTO run_metric_values (occurrence, name, value) VALUES (?, ?, ?)").run(occurrence, name, value);
+    }
     return { run: getRun(db, occurrence) as Run, changed: true };
   });
 }

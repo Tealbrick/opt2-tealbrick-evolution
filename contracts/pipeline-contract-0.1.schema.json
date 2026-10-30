@@ -1,0 +1,273 @@
+{
+  "$comment": "copied from the Henry typed contracts (tealbrick.agents/pipeline-contract/0.1), coordination/leads/foxy/henry-contracts/schemas/pipeline-contract.schema.json, refreshed 2026-10-20 for agent-stack 640a4aa (named per-pipeline metrics: metrics items are patterned names, unique, at most 20, and not a core RunReport field); refresh when the contracts lead publishes a new version",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "tealbrick.agents/pipeline-contract/0.1",
+  "title": "Pipeline contract",
+  "description": "One repeatable piece of an agent's work: when it runs, what it reads, which steps (lead or tool) it takes with typed data between them, what must exist afterwards, and who is asked when. Each run is one Task Board issue.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "id",
+    "version",
+    "owner",
+    "purpose",
+    "trigger",
+    "inputs",
+    "steps",
+    "outputs",
+    "done_when",
+    "approvals",
+    "escalation",
+    "metrics"
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{2,40}$"
+    },
+    "version": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "status": {
+      "enum": [
+        "draft",
+        "pilot",
+        "active",
+        "paused",
+        "retired"
+      ],
+      "default": "draft"
+    },
+    "owner": {
+      "type": "string",
+      "description": "Agent id/name that owns runs (e.g. henry)."
+    },
+    "purpose": {
+      "type": "string",
+      "maxLength": 400
+    },
+    "dictation_refs": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Where Martin said this (file#part)."
+    },
+    "trigger": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "cron": {
+          "type": "string",
+          "description": "Five-field cron."
+        },
+        "timezone": {
+          "type": "string",
+          "default": "Asia/Bangkok"
+        },
+        "event": {
+          "type": "string",
+          "description": "Named event, e.g. meetup.ended, listmonk.subscribed, martin.request."
+        },
+        "once": {
+          "type": "boolean",
+          "description": "One-time run (backfill)."
+        }
+      },
+      "minProperties": 1
+    },
+    "inputs": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "source",
+          "what"
+        ],
+        "properties": {
+          "source": {
+            "type": "string",
+            "description": "knowledge | knowledge.brain | knowledge.research | taskboard | inbox | buzz | connect:<service> | local:<tool> | browser:<site> | web:<vetted list>"
+          },
+          "what": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string",
+            "description": "Name of a $def in data-types.schema.json."
+          }
+        }
+      }
+    },
+    "steps": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "do"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9-]{1,30}$"
+          },
+          "do": {
+            "type": "string"
+          },
+          "lead": {
+            "type": "string",
+            "description": "Lead contract name when a subagent does the step."
+          },
+          "tools": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Tool names the step may call (exact)."
+          },
+          "skills": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "in": {
+            "type": "string",
+            "description": "Data type consumed."
+          },
+          "out": {
+            "type": "string",
+            "description": "Data type produced; the runtime validates it."
+          },
+          "when": {
+            "type": "string",
+            "description": "Condition; step is skipped when false."
+          },
+          "on_fail": {
+            "enum": [
+              "retry_once_then_block",
+              "skip",
+              "ask_martin",
+              "block"
+            ],
+            "default": "retry_once_then_block"
+          }
+        }
+      }
+    },
+    "outputs": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string"
+      }
+    },
+    "done_when": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string"
+      },
+      "description": "Checkable conditions. The Task Board issue closes only when all hold."
+    },
+    "approvals": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "outward": {
+          "enum": [
+            "held",
+            "held_first_3_weeks",
+            "free"
+          ]
+        },
+        "delete": {
+          "enum": [
+            "held"
+          ]
+        },
+        "money": {
+          "enum": [
+            "held"
+          ]
+        },
+        "notes": {
+          "type": "string"
+        }
+      }
+    },
+    "escalation": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "to",
+          "when",
+          "via"
+        ],
+        "properties": {
+          "to": {
+            "enum": [
+              "martin",
+              "tempo",
+              "atrin",
+              "polly"
+            ]
+          },
+          "when": {
+            "type": "string"
+          },
+          "via": {
+            "enum": [
+              "inbox_ask",
+              "buzz_agents_room",
+              "buzz_martin"
+            ]
+          }
+        }
+      }
+    },
+    "metrics": {
+      "type": "array",
+      "maxItems": 20,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9_]{1,40}$",
+        "not": {
+          "enum": [
+            "pipeline",
+            "version",
+            "ok",
+            "minutes",
+            "retries",
+            "questions_to_martin",
+            "lessons",
+            "issue"
+          ]
+        }
+      },
+      "description": "Names of the per-pipeline numbers the run reports in RunReport.metrics (core RunReport fields are not repeated here). Input for skill and pipeline evolution."
+    },
+    "taskboard": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "project": {
+          "type": "string"
+        },
+        "issue_title": {
+          "type": "string",
+          "description": "Template, e.g. 'P4 deck {meetup_date}'."
+        }
+      }
+    }
+  }
+}
