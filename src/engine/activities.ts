@@ -368,14 +368,18 @@ export function createActivities(deps: EngineDeps): Activities & LocalActivities
       const act = activationFor(a.workflowId, a.version);
       if (!act.uses.some((u) => u.product === a.product)) throw permanent("not_in_workflow", `${a.product} is not in the activated list of ${a.workflowId} v${a.version}.`);
       const end = (outcome: string): void => store.endHold(db, a.workflowId, a.runId, a.stepKey, outcome, now());
+      // The bridge cap alone is not enough: this release's manifest must also list tb.hold_status for the product, and it does not yet
+      // (the targets need miniapp-sdk 0.1.41 first). The SDK refuses that locally (companion_undeclared), so the list is the answer.
+      let r: CompanionResult | null = null;
       if (caps().includes(CAP_HOLD_STATUS)) {
-        let r: CompanionResult;
         try {
           r = await deps.callApp(a.product, "tb.hold_status", { holdId: a.holdId });
         } catch (e) {
           if (e instanceof TbError && e.code === "hold_not_found") return { state: "gone", via: "hold_status" };
-          throw classify(e);
+          if (!(e instanceof TbError && e.code === "companion_undeclared")) throw classify(e);
         }
+      }
+      if (r) {
         const st = r.status === "ok" ? String((r.output as { status?: unknown }).status) : "held";
         if (st === "held") return { state: "pending", via: "hold_status" };
         if (st === "denied") {
