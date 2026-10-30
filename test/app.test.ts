@@ -36,7 +36,7 @@ test("the generated kit matches the manifest and every operation has exactly one
 
 test("agents suggest, read, and claim/report their runs; deciding, editing, promoting, exporting and scheduling are owner-only person ops", () => {
   const agentOps = manifest.operations.filter((o) => o.audience === "agent").map((o) => o.id);
-  assert.deepEqual(agentOps.sort(), ["routine_claim", "routine_report", "routines_due", "step_claim", "step_heartbeat", "step_report", "steps_due", "suggestion_create", "suggestion_get", "suggestions_list", "workflow_get"]);
+  assert.deepEqual(agentOps.sort(), ["access_list", "access_revoke", "routine_claim", "routine_report", "routines_due", "step_claim", "step_heartbeat", "step_report", "steps_due", "suggestion_create", "suggestion_get", "suggestions_list", "workflow_get"]);
   assert.equal(manifest.operations.find((o) => o.id === "routines_due")?.effect, "read", "the poll target changes nothing");
   for (const id of ["suggestion_decide", "draft_create", "draft_update", "workflow_promote", "recipe_export", "workflow_diff", "detector_scan", "automation_set", "automation_pause", "automation_delete", "cycles_list", "cycle_get", "cycle_eval_run"])
     assert.ok((PERSON_OPS as readonly string[]).includes(id), `${id} is a person op`);

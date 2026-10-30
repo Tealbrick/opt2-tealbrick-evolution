@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import { type AppDefinition, type Caller, type Db, defineApp, type HandlerSpec, modelRole, type OpContext, type SdkAppDefinition, type SdkOpContext, TbError } from "@opt2-tealbrick/miniapp-sdk";
 import type * as K from "#kit";
 import { OP, type OpId } from "#kit";
+import { accessHandlers } from "./access.ts";
 import { agentStepHandlers, defaultCompletion, wireAgentSteps } from "./agentsteps/index.ts";
 import * as cycles from "./cycles.ts";
 import { DEFAULT_MIN_REPEATS, KANBAN } from "./detector.ts";
@@ -442,6 +443,8 @@ export const handlers = {
   ...agentStepHandlers({ completion: defaultCompletion }),
   // ── C367 M3: the move from 0.3.x (owner op) ──
   ...migrateHandlers(),
+  // C380 B7: tb.access/1 for Governance (the verified product fleet only; src/access.ts)
+  ...accessHandlers(),
 } satisfies Record<OpId, HandlerSpec>;
 
 function draftRow(d: store.Draft): K.DraftsListOutput["drafts"][number] {
