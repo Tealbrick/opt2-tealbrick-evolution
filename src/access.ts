@@ -10,7 +10,6 @@
 // Evolution cannot list calls that are held for an approval: `notShown` says so, and `complete` stays false (a stated limit).
 import { digest as jcsDigest } from "@opt2-tealbrick/manifest";
 import { type Db, type HandlerSpec, type OpContext, type SdkOpContext, TbError } from "@opt2-tealbrick/miniapp-sdk";
-import type * as K from "#kit";
 import { OP } from "#kit";
 import { walkSteps } from "./engine/contract.ts";
 import * as engineStore from "./engine/engine-store.ts";
@@ -25,9 +24,59 @@ const UNASSIGNED_AGENT = "agt_unassigned";
 const DEFAULT_LIMIT = 100;
 const LABEL_MAX = 120;
 
-type Item = K.AccessListOutput["items"][number];
-type Subject = K.AccessListInput["subjects"][number];
-type Result = K.AccessRevokeOutput["results"][number];
+// The shapes of spec 0.1.89 (docs/ACCESS.md, packages/spec/src/access.ts). Written here because this app pins spec 0.1.87, and the
+// kit generator types a `$ref` schema as unknown. test/contracts holds the byte copies of the spec schemas; the manifest embeds them.
+export type Subject = { kind: "agent"; id: string } | { kind: "person"; id: string; handles: string[] } | { kind: "unlinked" } | { kind: "all" };
+export interface AccessItem {
+  id: string;
+  kind: "routine" | "workflow_agent_step" | "schedule_of_workflow";
+  subject: { kind: "agent" | "person"; id: string } | { kind: "unlinked" };
+  resource: string;
+  direction: "held_by" | "about";
+  level: "read" | "write" | "use" | "info";
+  label: string;
+  state: "active" | "paused" | "scheduled" | "dormant";
+  revocable: boolean;
+  since?: string;
+  digest: string;
+}
+export interface ListIn {
+  v: 1;
+  subjects: Subject[];
+  cursor?: string;
+  limit?: number;
+  sweepId?: string;
+}
+export interface ListOut {
+  v: 1;
+  asOf: string;
+  sweepId?: string;
+  items: AccessItem[];
+  nextCursor: string | null;
+  notShown: { kind: string; reason: string }[];
+  complete: boolean;
+}
+export interface RevokeIn {
+  v: 1;
+  plan: string;
+  attempt: number;
+  subject: { kind: "agent" | "person"; id: string };
+  items: { id: string; digest: string }[];
+}
+export interface RevokeResult {
+  id: string;
+  outcome: "revoked" | "already_gone" | "changed" | "not_revocable" | "failed";
+  code?: string;
+  detail?: string;
+}
+export interface RevokeOut {
+  v: 1;
+  asOf: string;
+  results: RevokeResult[];
+}
+
+type Item = AccessItem;
+type Result = RevokeResult;
 
 // ── guard ───────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
@@ -156,7 +205,7 @@ export function allItems(db: Db): Item[] {
 
 // ── access_list ─────────────────────────────────────────────────────────────────────────────────────────────────────────
 
-export const NOT_SHOWN: K.AccessListOutput["notShown"] = [{ kind: "held_call", reason: "Calls that wait for an owner approval are not listed by this version." }];
+export const NOT_SHOWN: ListOut["notShown"] = [{ kind: "held_call", reason: "Calls that wait for an owner approval are not listed by this version." }];
 
 const refuse = (message: string, pointer: string): TbError => new TbError("validation_failed", message, 422, { pointer });
 
@@ -180,7 +229,7 @@ function decodeCursor(c: string): string {
   throw refuse("This cursor is not valid. Start again without a cursor.", "/cursor");
 }
 
-export function listAccess(db: Db, input: K.AccessListInput, now: number = Date.now()): K.AccessListOutput {
+export function listAccess(db: Db, input: ListIn, now: number = Date.now()): ListOut {
   const asked = askedAgents(input.subjects);
   const after = input.cursor === undefined ? null : decodeCursor(input.cursor);
   const limit = input.limit ?? DEFAULT_LIMIT;
@@ -214,7 +263,7 @@ function pause(db: Db, id: string, revision: number, now: number): void {
   }
 }
 
-function revokeOne(db: Db, ctx: OpContext, subject: K.AccessRevokeInput["subject"], item: { id: string; digest: string }, now: number): Result {
+function revokeOne(db: Db, ctx: OpContext, subject: RevokeIn["subject"], item: { id: string; digest: string }, now: number): Result {
   const id = item.id;
   if (subject.kind !== "agent") return { id, outcome: "not_revocable", code: "subject_not_supported", detail: "Evolving Workflows lists schedules of agents only." };
   if (id.startsWith("workflow_agent_step:") || id.startsWith("schedule_of_workflow:")) return { id, outcome: "not_revocable", code: "manual", detail: MANUAL };
@@ -231,7 +280,7 @@ function revokeOne(db: Db, ctx: OpContext, subject: K.AccessRevokeInput["subject
   });
 }
 
-export function revokeAccess(db: Db, ctx: OpContext, input: K.AccessRevokeInput, now: number = Date.now()): K.AccessRevokeOutput {
+export function revokeAccess(db: Db, ctx: OpContext, input: RevokeIn, now: number = Date.now()): RevokeOut {
   if (new Set(input.items.map((i) => i.id)).size !== input.items.length) throw refuse("An item may appear once.", "/items");
   const results = input.items.map((item): Result => {
     try {
@@ -251,11 +300,11 @@ const op = <I, O>(run: (input: I, ctx: OpContext) => Promise<O>): HandlerSpec =>
 
 export function accessHandlers() {
   return {
-    [OP.accessList]: op(async (input: K.AccessListInput, ctx) => {
+    [OP.accessList]: op(async (input: ListIn, ctx) => {
       guardFleet(ctx);
       return listAccess(ctx.db, input);
     }),
-    [OP.accessRevoke]: op(async (input: K.AccessRevokeInput, ctx) => {
+    [OP.accessRevoke]: op(async (input: RevokeIn, ctx) => {
       guardFleet(ctx);
       return revokeAccess(ctx.db, ctx, input);
     }),

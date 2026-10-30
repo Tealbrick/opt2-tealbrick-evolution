@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { Caller, Db, OpContext } from "@opt2-tealbrick/miniapp-sdk";
-import type * as K from "#kit";
+import type { AccessItem, ListOut, RevokeOut } from "../src/access.ts";
 import * as access from "../src/access.ts";
 import { handlers, manifest } from "../src/app.ts";
 import type { WorkflowContract } from "../src/engine/contract.ts";
@@ -31,8 +31,8 @@ function ctxWith(db: Db, caller: Caller, stopped: readonly string[] = []): OpCon
   c.log = { info() {}, warn() {}, error() {}, debug() {} };
   return c as unknown as OpContext;
 }
-const list = (db: Db, input: Record<string, unknown>, caller: Caller = FLEET) => call<K.AccessListOutput>(H, "access_list", { v: 1, ...input }, ctxWith(db, caller));
-const revoke = (db: Db, input: Record<string, unknown>, stopped: readonly string[], caller: Caller = FLEET) => call<K.AccessRevokeOutput>(H, "access_revoke", { v: 1, plan: "pln_01", attempt: 1, ...input }, ctxWith(db, caller, stopped));
+const list = (db: Db, input: Record<string, unknown>, caller: Caller = FLEET) => call<ListOut>(H, "access_list", { v: 1, ...input }, ctxWith(db, caller));
+const revoke = (db: Db, input: Record<string, unknown>, stopped: readonly string[], caller: Caller = FLEET) => call<RevokeOut>(H, "access_revoke", { v: 1, plan: "pln_01", attempt: 1, ...input }, ctxWith(db, caller, stopped));
 const refusal = (code: string, status: number) => (e: unknown) => (e as { code?: string; httpStatus?: number }).code === code && (e as { httpStatus?: number }).httpStatus === status;
 
 function workflow(db: Db, title = "Morning rollup"): string {
@@ -58,7 +58,7 @@ function activate(db: Db, c: WorkflowContract): void {
 function engineSchedule(db: Db, workflowId: string, extra: Partial<engineStore.ScheduleRow> = {}): engineStore.ScheduleRow {
   return engineStore.insertSchedule(db, { id: engineStore.newScheduleId(T0), workflowId, versionPin: null, kind: "schedule", spec: { cron: "0 8 * * *", timezone: "UTC" }, input: {}, poll: null, overlap: "skip", paused: false, ...extra }, T0);
 }
-const subjectId = (i: K.AccessListOutput["items"][number] | undefined): string | null => (i?.subject.kind === "agent" ? i.subject.id : null);
+const subjectId = (i: AccessItem | undefined): string | null => (i?.subject.kind === "agent" ? i.subject.id : null);
 const enabledOf = (db: Db, id: string): number => Number(db.prepare("SELECT enabled FROM automations WHERE id = ?").get(id)?.enabled);
 
 // ── the guard: one quiet-on-good, one fire-on-bad per caller case (the shared 6-case vector) ──
@@ -111,7 +111,7 @@ test("list: schedules, active workflow steps and schedules of workflows, each ti
     [`routine:${aut.id}`, `schedule_of_workflow:${es.id}:${A}`, `schedule_of_workflow:${es.id}:${B}`, "workflow_agent_step:flow-a:step1", "workflow_agent_step:flow-a:step2"].sort(),
   );
   const byId = Object.fromEntries(out.items.map((i) => [i.id, i]));
-  const routine = byId[`routine:${aut.id}`] as K.AccessListOutput["items"][number];
+  const routine = byId[`routine:${aut.id}`] as AccessItem;
   assert.deepEqual([routine.kind, routine.subject, routine.resource, routine.direction, routine.level, routine.state, routine.revocable], ["routine", { kind: "agent", id: A }, aut.id, "held_by", "use", "scheduled", true]);
   assert.equal(subjectId(byId["workflow_agent_step:flow-a:step2"]), B);
   for (const i of out.items.filter((x) => x.kind !== "routine")) assert.equal(i.revocable, false, i.id);
@@ -182,7 +182,7 @@ test("list: paging by cursor returns every item once, in order; a bad cursor is 
   let cursor: string | undefined;
   let pages = 0;
   do {
-    const p: K.AccessListOutput = await list(db, { subjects: [{ kind: "all" }], limit: 2, sweepId: "swp_1", ...(cursor ? { cursor } : {}) });
+    const p: ListOut = await list(db, { subjects: [{ kind: "all" }], limit: 2, sweepId: "swp_1", ...(cursor ? { cursor } : {}) });
     assert.equal(p.sweepId, "swp_1");
     assert.ok(p.items.length <= 2);
     seen.push(...p.items.map((i) => i.id));
@@ -206,9 +206,9 @@ test("list: notShown names the held calls, so complete is false even on the last
 test("digest: the same item active then paused is equal; another agent, resource or kind is not", () => {
   const db = migratedDb();
   const aut = schedule(db, A);
-  const before = access.allItems(db).find((i) => i.id === `routine:${aut.id}`) as K.AccessListOutput["items"][number];
+  const before = access.allItems(db).find((i) => i.id === `routine:${aut.id}`) as AccessItem;
   r.pauseAutomation(db, aut.id, aut.revision, true, T0);
-  const after = access.allItems(db).find((i) => i.id === `routine:${aut.id}`) as K.AccessListOutput["items"][number];
+  const after = access.allItems(db).find((i) => i.id === `routine:${aut.id}`) as AccessItem;
   assert.equal(before.state, "scheduled");
   assert.equal(after.state, "paused");
   assert.equal(after.digest, before.digest);
@@ -227,7 +227,7 @@ test("text: owner text is plain (no markup, no control or bidi characters) and a
 
 // ── access_revoke ──
 
-const item = (i: K.AccessListOutput["items"][number]) => ({ id: i.id, digest: i.digest });
+const item = (i: AccessItem) => ({ id: i.id, digest: i.digest });
 const subjectA = { kind: "agent", id: A };
 
 test("revoke: a routine of a stopped agent is paused (nothing else changes), and the same request again is already_gone", async () => {
