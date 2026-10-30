@@ -155,6 +155,11 @@ test("a poll schedule is built from the contract's poll trigger: the run stops e
   assert.equal(res.status, "skipped");
   assert.equal(t.db.prepare("SELECT count(*) AS c FROM engine_runs WHERE workflow_id = ?").get(id)?.c, 1, "the second poll saw the same cursor: no run");
   assert.equal(store.getSchedule(t.db, s.id)?.cursor, "c1");
+  // a poll run still open: a second run would act on the same cursor, so Run now refuses; the first state comes back after the check
+  const saved = t.db.prepare("SELECT status, ended_at FROM engine_runs WHERE workflow_id = ?").get(id) as { status: string; ended_at: number };
+  t.db.prepare("UPDATE engine_runs SET status = 'running', ended_at = NULL WHERE workflow_id = ?").run(id);
+  await assert.rejects(op("schedule_run_now", { id: s.id }), (e: unknown) => e instanceof TbError && e.code === "run_in_progress" && e.httpStatus === 409);
+  t.db.prepare("UPDATE engine_runs SET status = ?, ended_at = ? WHERE workflow_id = ?").run(saved.status, saved.ended_at, id);
   t.apps.on["knowledge.recall"] = () => ({});
   await assert.rejects(op("schedule_set", { workflowId: install(), kind: "poll", timezone: "UTC" }), (e: unknown) => e instanceof TbError && e.code === "validation_failed", "a workflow without a poll trigger has no poll schedule");
 });
