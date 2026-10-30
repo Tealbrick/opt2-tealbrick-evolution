@@ -292,12 +292,14 @@ function revokeOne(db: Db, ctx: OpContext, subject: RevokeIn["subject"], item: {
   if (subject.kind !== "agent") return { id, outcome: "not_revocable", code: "subject_not_supported", detail: "Evolving Workflows lists schedules of agents only." };
   if (id.startsWith("workflow_agent_step:") || id.startsWith("schedule_of_workflow:")) return { id, outcome: "not_revocable", code: "manual", detail: MANUAL };
   if (!id.startsWith("routine:")) return { id, outcome: "not_revocable", code: "unknown_kind", detail: "Evolving Workflows does not know this kind of item." };
-  if (!stoppedInSlice(ctx, subject.id)) return { id, outcome: "not_revocable", code: "agent_running", detail: "The agent is not stopped in the workspace list. Stop the agent first." };
   return db.transaction((): Result => {
     const row = db.prepare("SELECT id, agent_id, enabled, revision, deleted_at FROM automations WHERE id = ?").get(id.slice("routine:".length));
     if (!row || row.deleted_at !== null) return { id, outcome: "already_gone" };
+    // the digest is recomputed from the ROW, and the request's subject must be the row's holder
     const live = { id, kind: "routine" as const, subject: { kind: "agent" as const, id: String(row.agent_id) }, resource: String(row.id), level: "use" as const };
     if (live.subject.id !== subject.id || itemDigest(live) !== item.digest) return { id, outcome: "changed", code: "digest_changed", detail: "This schedule changed after the list was read." };
+    // the running check reads the ROW's holder in the signed slice (it is the request's subject here, checked just above)
+    if (!stoppedInSlice(ctx, live.subject.id)) return { id, outcome: "not_revocable", code: "agent_running", detail: "The agent is not stopped in the workspace list. Stop the agent first." };
     if (Number(row.enabled) !== 1) return { id, outcome: "already_gone", code: "already_paused" };
     pause(db, String(row.id), Number(row.revision), now);
     return { id, outcome: "revoked" };

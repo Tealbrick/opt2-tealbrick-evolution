@@ -9,8 +9,10 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { canonicalize, validateAgainstSchema } from "@opt2-tealbrick/manifest";
 import type { Caller, OpContext } from "@opt2-tealbrick/miniapp-sdk";
-import { guardFleet, itemDigest } from "../src/access.ts";
+import { guardFleet, itemDigest, revokeAccess } from "../src/access.ts";
 import { manifest } from "../src/app.ts";
+import * as store from "../src/store.ts";
+import { migratedDb } from "./helpers.ts";
 
 const dir = new URL("./contracts/", import.meta.url);
 const raw = (f: string): string => readFileSync(new URL(f, dir), "utf8");
@@ -27,6 +29,7 @@ const FILES: Record<string, string> = {
   "revoke_in.1.json": "5cab7e5c4b15ddf172aac5a4dab0f55a1028eeaa4ac491a712c4b88f6221783d",
   "revoke_out.1.json": "76ed608d69f86c43d217ce18516ffe7b233d20f5971a962e862184a62b296281",
   "digest.1.json": "e4db19dd894802348b9e87c2251d85383fb2e4f47e90b26dde76c42e17b42daa",
+  "revoke_bind.1.json": "18fda3ce054445dd43498e1a7fab663a44a5ca73fb44bb51c6b4fda3572e1a68",
   "caller_vector.1.json": "faf832b1a3fa7e122f252677e9a946be11668cacd23ce0f765fcaa57ebe5cd49",
 };
 
@@ -84,4 +87,31 @@ test("digest fixture: the JCS form and the digest are the spec's; equal items gi
   const base = d.equal[0]?.item as Parameters<typeof itemDigest>[0];
   assert.equal(canonicalize({ v: 1, target: d.target, id: base.id, kind: base.kind, subject: base.subject, resource: base.resource, level: base.level } as never), d.jcs);
   for (const x of d.different) assert.notEqual(itemDigest(x.item), d.digest);
+});
+
+test("revoke bind fixture: the row is loaded, the digest recomputed from it, the subject compared, and the running check reads the row's holder", () => {
+  interface Bind {
+    row: { id: string; subject: { id: string }; digest: string };
+    cases: { name: string; request: { subject: { kind: "agent"; id: string }; digest: string }; agents: Record<string, "active" | "paused">; outcome: string; code?: string }[];
+  }
+  const f = json<Bind>("access.revoke_bind.1.json");
+  const aut = f.row.id.slice("routine:".length);
+  for (const c of f.cases) {
+    const db = migratedDb();
+    // the row of the fixture: aut_1, held by the fixture's agent (the id of the fixture is stored as is)
+    const d = store.createDraft(db, { suggestionId: null, templateId: null, snapshot: { title: "W", summary: "", instruction: "Do.", trigger: "08:00", steps: [], allowed: [{ product: "kanban", operations: ["issues_list"], crud: ["read" as const] }] } }, 1);
+    const wf = store.promote(db, d.id, d.revision, 1).workflow.id;
+    db.prepare("INSERT INTO automations (id, workflow_id, version_pin, policy_version, agent_id, cron, enabled, misfire_grace_sec, kanban_project, revision, next_due_at, created_at, updated_at) VALUES (?, ?, NULL, 1, ?, '0 8 * * *', 1, 120, NULL, 1, 1, 1, 1)").run(aut, wf, f.row.subject.id);
+    const ctx = {
+      caller: { type: "app", product: "fleet", listed: true },
+      db,
+      log: { info() {}, warn() {}, error() {}, debug() {} },
+      // the signed slice: an agent that is not listed counts as stopped (SDK trust.paused)
+      paused: (agent: string) => ({ workspace: false, instance: false, agent: c.agents[agent] !== "active" }),
+    } as unknown as OpContext;
+    const out = revokeAccess(db, ctx, { v: 1, plan: "pln_1", attempt: 1, subject: c.request.subject, items: [{ id: f.row.id, digest: c.request.digest }] });
+    assert.equal(out.results[0]?.outcome, c.outcome, c.name);
+    if (c.code) assert.equal(out.results[0]?.code, c.code, c.name);
+    assert.equal(Number(db.prepare("SELECT enabled FROM automations WHERE id = ?").get(aut)?.enabled), c.outcome === "revoked" ? 0 : 1, `${c.name}: the row`);
+  }
 });
