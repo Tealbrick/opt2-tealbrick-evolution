@@ -3,6 +3,10 @@
 # this script (1) stores and checks the copy as /data/restore/pending.sqlite, (2) stops the server, (3) waits until the
 # supervisor (run.sh) has swapped the file in and the restarted server answers. Workers reconnect by themselves.
 set -eu
+# Same reason as run.sh: tb-exec drops root but HOME stays /root, and the `temporal` health call below would then fail
+# ("permission denied" on $HOME/.config/temporalio/temporal.yaml) until this script gives up on a healthy server.
+export HOME=${TEMPORAL_HOME:-/tmp/temporal-home}
+mkdir -p "$HOME"
 DATA_DIR=${TEMPORAL_DATA_DIR:-/data}
 RESTORE_DIR="$DATA_DIR/restore"
 PENDING="$RESTORE_DIR/pending.sqlite"
