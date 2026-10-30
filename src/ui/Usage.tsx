@@ -1,7 +1,8 @@
 // What a workflow version uses: ops, CRUD and scopes, with the honest grant label (ENGINE-BUILD §4). Used by the editor's
 // "Check against installed apps" and by the activation review.
 import { Button, Notice, Table, Tag } from "@opt2-tealbrick/ui";
-import { GRANT_LABEL, type UsageRow } from "./engine-ops.ts";
+import { useEffect, useState } from "react";
+import { type ConnectAccess, engine, GRANT_LABEL, type UsageRow } from "./engine-ops.ts";
 import { plainIssues } from "./FieldIssues.tsx";
 
 /** A problem or note: the live check gives a `pointer`, the engine gives a `path` (the same JSON pointer) and also `pointer`. */
@@ -54,6 +55,54 @@ const EFFECT: Record<string, "default" | "needs-you"> = { read: "default", write
 export const CONNECT_SHARE = "On Connect's accounts page, share the account this step uses with Evolving Workflows.";
 const usesConnectTools = (r: UsageRow): boolean => r.product === "connect" && r.op === "tools" && !r.via;
 
+/** What one tool class needs from the owner. The hold rule is Connect's own; this page only says it. */
+const CONNECT_TOOL_NEEDS: Record<string, string> = {
+  read: "reads; needs the account shared with this app.",
+  write: "writes, for example a draft; needs the account shared for writes. It runs with no approval, unless a Rules hold asks you.",
+  outward: "sends or posts; needs the account shared for writes, and the call must wait for your approval: use the tool's first-contact form, or hold outward calls from apps in the workspace policy. A Rules hold alone ends in a refusal, after you approve.",
+  destructive: "deletes; a workflow cannot call this tool. Connect refuses it.",
+  money: "moves money; a workflow cannot call this tool. Connect refuses it.",
+};
+
+/** The Connect part of the review: the class of each tool this version names, and the accounts shared with this app. */
+function ConnectAccessNotes({ tools }: { tools: string[] }) {
+  const [access, setAccess] = useState<ConnectAccess | null>(null);
+  const key = tools.join(",");
+  useEffect(() => {
+    let live = true;
+    engine("connect_access", { tools: key ? key.split(",") : [] })
+      .then((r) => {
+        if (live) setAccess(r);
+      })
+      .catch(() => {
+        if (live) setAccess({ available: false, accounts: [], tools: [] });
+      });
+    return () => {
+      live = false;
+    };
+  }, [key]);
+  if (access === null) return null;
+  if (!access.available) {
+    return <Notice role="status">{CONNECT_SHARE}</Notice>;
+  }
+  return (
+    <Notice tone="needs-you" role="status">
+      <ul className="plain">
+        {access.tools.map((t) => (
+          <li key={t.tool}>
+            <code className="code-ops">{t.tool}</code> {t.known ? (CONNECT_TOOL_NEEDS[t.effect ?? ""] ?? "needs your review.") : "is not a tool Connect knows now. Connect refuses an unknown tool."}
+          </li>
+        ))}
+        <li>
+          {access.accounts.length === 0
+            ? "No Connect account is shared with this app yet. Share one on Connect's accounts page."
+            : `Shared with this app: ${access.accounts.map((a) => `${a.label} (${a.writes ? "read and write" : "read only"})`).join(", ")}.`}
+        </li>
+      </ul>
+    </Notice>
+  );
+}
+
 export function UsageTable({ rows }: { rows: UsageRow[] }) {
   return (
     <div className="tb-stack">
@@ -89,11 +138,9 @@ export function UsageTable({ rows }: { rows: UsageRow[] }) {
           </tbody>
         </Table>
       )}
-      {rows.some((r) => r.tools?.length) ? <p className="tb-hint">For an operation that calls tools by name (Connect tools), the engine refuses any tool not named here. Connect lets a workflow call only the read tools of an account you shared with it; it refuses a tool that sends or changes something.</p> : null}
+      {rows.some((r) => r.tools?.length) ? <p className="tb-hint">For an operation that calls tools by name (Connect tools), the engine refuses any tool not named here, and Connect checks the class of every tool on each call.</p> : null}
       {rows.filter(usesConnectTools).map((r) => (
-        <Notice key={`${r.product}.${r.op}.share`} tone="needs-you" role="status">
-          {`${r.tools?.length ? `${r.tools.join(", ")}: ` : ""}${CONNECT_SHARE}`}
-        </Notice>
+        <ConnectAccessNotes key={`${r.product}.${r.op}.share`} tools={r.tools ?? []} />
       ))}
     </div>
   );

@@ -210,3 +210,19 @@ test("Cycles: 0.3.x workflows are unchanged (engine null) and a database without
   const { db } = fresh();
   assert.deepEqual(cycles.listCycles(db), []);
 });
+
+test("connect_access: the review reads Connect's answer; a refusal or an older Connect is `available: false`, never a failed page", async () => {
+  const db = migratedDb();
+  const answer = { accounts: [{ account: "cna_1", service: "gmail", label: "Mock", writes: true }], tools: [{ tool: "gmail_create_draft", known: true, effect: "write" }] };
+  const seen: unknown[] = [];
+  const ok = await call<{ available: boolean; accounts: unknown[]; tools: unknown[] }>(H, "connect_access", { tools: ["gmail_create_draft"] }, ctxFor(db, OWNER, (async (product: string, op: string, input: unknown) => {
+    seen.push([product, op, input]);
+    return { status: "ok", output: answer };
+  }) as never));
+  assert.deepEqual(seen, [["connect", "tool_shares_mine", { tools: ["gmail_create_draft"] }]]);
+  assert.deepEqual(ok, { available: true, ...answer });
+  const old = await call<{ available: boolean }>(H, "connect_access", {}, ctxFor(db, OWNER, (async () => {
+    throw new TbError("unknown_tool", "no such op", 404);
+  }) as never));
+  assert.deepEqual(old, { available: false, accounts: [], tools: [] });
+});

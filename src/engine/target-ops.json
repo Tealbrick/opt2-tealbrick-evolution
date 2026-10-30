@@ -7379,7 +7379,14 @@
      "scopeType": "area",
      "idempotency": "supported",
      "dynamic": {
-      "mode": "search"
+      "mode": "search",
+      "crudCeiling": [
+       "read",
+       "create",
+       "update",
+       "delete"
+      ],
+      "effectCeiling": "destructive"
      }
     }
    ]
@@ -8280,7 +8287,7 @@
   },
   "connect": {
    "id": "connect",
-   "version": "0.7.3",
+   "version": "0.7.12",
    "operations": [
     {
      "id": "tools",
@@ -8292,7 +8299,14 @@
      "scopeType": "account",
      "idempotency": "supported",
      "dynamic": {
-      "mode": "search"
+      "mode": "search",
+      "crudCeiling": [
+       "read",
+       "create",
+       "update",
+       "delete"
+      ],
+      "effectCeiling": "money"
      }
     },
     {
@@ -10314,6 +10328,32 @@
         "description": "Stored rows skipped because they did not fit the contract."
        }
       }
+     }
+    },
+    {
+     "id": "tool_shares_mine",
+     "audience": "agent",
+     "crud": [
+      "read"
+     ],
+     "effect": "read",
+     "idempotency": "none",
+     "input": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+       "tools": {
+        "type": "array",
+        "maxItems": 50,
+        "items": {
+         "type": "string",
+         "maxLength": 200
+        }
+       }
+      }
+     },
+     "output": {
+      "type": "object"
      }
     }
    ]

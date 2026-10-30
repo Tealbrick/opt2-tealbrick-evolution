@@ -231,7 +231,9 @@ test("M-CP-2: the superset companion block equals the union of its ops' crud, ch
   const cat = bundledCatalog();
   for (const c of (manifest.companions ?? []).filter((x) => x.product !== "*")) for (const id of c.operations) assert.ok(["read", "write"].includes(cat[c.product]?.operations.find((o) => o.id === id)?.effect ?? "?"), `${c.product}.${id}`);
   assert.ok(!(manifest.companions ?? []).find((c) => c.product === "inbox")?.operations.includes("item_decide_dm"));
-  assert.deepEqual((manifest.companions ?? []).find((c) => c.product === "connect")?.crud, ["read"]);
+  // C370a: Connect's dynamic `tools` reaches create and update for result actions, never delete; Connect still checks the write share per call
+  assert.deepEqual((manifest.companions ?? []).find((c) => c.product === "connect")?.crud, ["read", "create", "update"]);
+  assert.ok((manifest.companions ?? []).find((c) => c.product === "connect")?.operations.includes("tool_shares_mine"), "the requires line: an older Connect refuses the update up front");
   // a drifted block fails: add a destructive op
   const bad = { ...manifest, companions: (manifest.companions ?? []).map((c) => (c.product === "kanban" ? { ...c, operations: [...c.operations, "nope_op"] } : c)) };
   assert.equal(validateCompanions(bad as never, targets).ok, false);

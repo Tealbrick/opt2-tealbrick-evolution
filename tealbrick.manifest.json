@@ -5,7 +5,7 @@
   "name": "Evolving Workflows",
   "summary": "Evolving Workflows turns work your agents repeat into reviewed, versioned workflows that a Bound agent runs on a schedule.",
   "description": "Agents suggest a workflow when they repeat work, with evidence. Evolving Workflows also spots repeated done issues in Task Board. You review each suggestion, edit a draft (steps, allowed operations, trigger), promote it to a versioned workflow, export a recipe that creates a Bound agent in Portal, and schedule it. The Bound agent’s own runner claims each due run at most once; every run is a Task Board issue assigned to that agent. A Bound agent may call only the allowed operations; it is not forced to follow the steps.",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "sdkMajor": 1,
   "requires": {
     "bridge": "0.2.11"
@@ -7773,6 +7773,98 @@
       "audience": "person"
     },
     {
+      "id": "connect_access",
+      "title": "What a workflow may do in Connect",
+      "description": "For the activation review: the Connect accounts the owner shared with this app, whether each one is shared for writes, and the class of the named tools. Reads only and authorizes nothing: Connect checks every tool call on its own. Owner only.",
+      "input": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "tools": {
+            "type": "array",
+            "maxItems": 50,
+            "items": {
+              "type": "string",
+              "maxLength": 200
+            }
+          }
+        }
+      },
+      "output": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "available",
+          "accounts",
+          "tools"
+        ],
+        "properties": {
+          "available": {
+            "type": "boolean"
+          },
+          "accounts": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "account",
+                "service",
+                "label",
+                "writes"
+              ],
+              "properties": {
+                "account": {
+                  "type": "string"
+                },
+                "service": {
+                  "type": "string"
+                },
+                "label": {
+                  "type": "string"
+                },
+                "writes": {
+                  "type": "boolean"
+                }
+              }
+            }
+          },
+          "tools": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "tool",
+                "known"
+              ],
+              "properties": {
+                "tool": {
+                  "type": "string"
+                },
+                "known": {
+                  "type": "boolean"
+                },
+                "effect": {
+                  "type": "string"
+                },
+                "holdFamily": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      },
+      "crud": [
+        "read"
+      ],
+      "effect": "read",
+      "idempotency": "none",
+      "receipt": false,
+      "audience": "person"
+    },
+    {
       "id": "workflow_contract_validate",
       "title": "Check a workflow contract",
       "description": "Check a tealbrick.workflow/1 contract without saving it. Give the contract, or workflowId and version of a saved one. It lists every error and warning (refs that do not resolve, type clashes between steps, unbounded loops, operations that are not agent operations of an installed app, operations without idempotency, unknown model roles). When it is valid it also lists the operations the workflow would use. Owner only.",
@@ -10110,12 +10202,15 @@
         "channel_conversations",
         "data_accounts_list",
         "data_catalog",
-        "data_pull"
+        "data_pull",
+        "tool_shares_mine"
       ],
       "crud": [
-        "read"
+        "read",
+        "create",
+        "update"
       ],
-      "purpose": "Approved workflow steps read connected services (mail, calendars, data) and call the tools the owner approved."
+      "purpose": "Approved workflow steps read connected services and, on accounts the owner shared for writes, run result actions such as a draft."
     },
     {
       "product": "*",
