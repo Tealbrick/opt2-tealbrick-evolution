@@ -195,11 +195,11 @@ test("list: paging by cursor returns every item once, in order; a bad cursor is 
   await assert.rejects(() => list(db, { subjects: [{ kind: "all" }], cursor: "not-a-cursor" }), refusal("validation_failed", 422));
 });
 
-test("list: notShown names the held calls, so complete is false even on the last page (a stated limit, not an error)", async () => {
+test("list: notShown names the held calls and the steps in flight, so complete is false even on the last page (a stated limit, not an error)", async () => {
   const db = migratedDb();
   const out = await list(db, { subjects: [{ kind: "all" }] });
   assert.equal(out.nextCursor, null);
-  assert.deepEqual(out.notShown.map((n) => n.kind), ["held_call"]);
+  assert.deepEqual(out.notShown.map((n) => n.kind), ["held_call", "step_in_flight"]);
   assert.equal(out.complete, false);
 });
 
@@ -216,13 +216,41 @@ test("digest: the same item active then paused is equal; another agent, resource
   assert.notEqual(access.itemDigest({ ...before, resource: "aut_other" }), before.digest);
 });
 
-test("text: owner text is plain (no markup, no control or bidi characters) and at most 120 characters", () => {
+test("text: owner text is plain (no markup, no control, bidi, surrogate or quote characters), at most 120 code points, never split inside one", () => {
   assert.equal(access.plain(`a${BIDI}b\u0007c <b>d</b>\n\te`), "a b c bd/b e");
+  assert.equal(access.plain('x" is safe. "y `z`'), "x' is safe. 'y 'z'");
   assert.equal(access.plain("x".repeat(500)).length, 120);
+  const pair = String.fromCodePoint(0x1f600); // one code point, two UTF-16 units
+  const cut = access.plain(pair.repeat(300));
+  assert.equal(Array.from(cut).length, 120);
+  assert.ok(!/\p{Cs}/u.test(cut), "no lone surrogate");
+  assert.equal(access.plain(`a${String.fromCharCode(0xd800)}b`), "a b");
   const db = migratedDb();
   schedule(db, A, workflow(db, `Rollup <script>alert(1)</script>${BIDI}${"y".repeat(300)}`));
   const label = access.allItems(db)[0]?.label as string;
-  assert.ok(label.length <= 120 && !/[<>\p{Cf}]/u.test(label));
+  assert.ok(Array.from(label).length <= 120 && !/[<>"\p{Cf}]/u.test(label));
+});
+
+test("list: an agent id that is not the spec form gives an `unlinked` item, never a failing page; it is not revocable", async () => {
+  const db = migratedDb();
+  const odd = schedule(db, "agt_abc");
+  activate(db, contract("flow-odd", 1, ["agt_lowercase1"]));
+  schedule(db, A);
+  const all = await list(db, { subjects: [{ kind: "all" }] }); // `call` checks the output against the spec schema
+  const unlinked = all.items.filter((i) => i.subject.kind === "unlinked");
+  assert.deepEqual(unlinked.map((i) => i.id).sort(), [`routine:${odd.id}`, "workflow_agent_step:flow-odd:step1"].sort());
+  assert.ok(unlinked.every((i) => !i.revocable));
+  assert.deepEqual((await list(db, { subjects: [{ kind: "unlinked" }] })).items.map((i) => i.id).sort(), unlinked.map((i) => i.id).sort());
+  assert.equal((await list(db, { subjects: [{ kind: "agent", id: A }] })).items.length, 1);
+  assert.equal((await list(db, { subjects: [{ kind: "agent", id: C }] })).items.length, 0);
+});
+
+test("list: a limit outside 1..200 is clamped for a caller that skips the schema (never a crash)", () => {
+  const db = migratedDb();
+  for (let i = 0; i < 3; i++) schedule(db, A);
+  assert.equal(access.listAccess(db, { v: 1, subjects: [{ kind: "all" }], limit: 0 }).items.length, 1);
+  assert.equal(access.listAccess(db, { v: 1, subjects: [{ kind: "all" }], limit: 1000 }).items.length, 3);
+  assert.equal(access.listAccess(db, { v: 1, subjects: [{ kind: "all" }], limit: Number.NaN }).items.length, 3);
 });
 
 // ── access_revoke ──
@@ -248,7 +276,7 @@ test("revoke: a routine of a stopped agent is paused (nothing else changes), and
   assert.equal(Number(db.prepare("SELECT revision FROM automations WHERE id = ?").get(mine.id)?.revision), mine.revision + 1, "no second change");
 });
 
-test("revoke: an agent that runs in the signed slice is never touched (not_revocable / agent_running); an agent not in the slice counts as stopped", async () => {
+test("revoke: with a fake slice view, an agent that runs is never touched (not_revocable / agent_running); the SDK view itself is a QA row (A1, A2 on qa1)", async () => {
   const db = migratedDb();
   const mine = schedule(db, A);
   const [it] = (await list(db, { subjects: [{ kind: "agent", id: A }] })).items;
@@ -264,6 +292,15 @@ test("revoke: an agent that runs in the signed slice is never touched (not_revoc
   bare.log = { info() {}, warn() {}, error() {}, debug() {} };
   const res = access.revokeAccess(db, bare as unknown as OpContext, { v: 1, plan: "p", attempt: 1, subject: { kind: "agent", id: A }, items: [item(it as never)] });
   assert.equal(res.results[0]?.code, "agent_running");
+  assert.equal(enabledOf(db, mine.id), 1);
+  // a slice view that throws: the item fails closed (failed / internal), nothing is paused
+  const broken = ctxFor(db, FLEET) as unknown as Record<string, unknown>;
+  broken.log = { info() {}, warn() {}, error() {}, debug() {} };
+  broken.paused = () => {
+    throw new Error("slice not readable");
+  };
+  const failed = access.revokeAccess(db, broken as unknown as OpContext, { v: 1, plan: "p", attempt: 1, subject: { kind: "agent", id: A }, items: [item(it as never)] });
+  assert.deepEqual([failed.results[0]?.outcome, failed.results[0]?.code], ["failed", "internal"]);
   assert.equal(enabledOf(db, mine.id), 1);
   // stopped: pause
   assert.equal((await revoke(db, { subject: subjectA, items: [item(it as never)] }, [A])).results[0]?.outcome, "revoked");

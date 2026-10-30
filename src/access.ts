@@ -21,7 +21,10 @@ export const FLEET_PRODUCT = "fleet";
 const TARGET = "evolution";
 /** Placeholder agent of a workflow moved from 0.3.x (src/migrate/contract.ts): not an agent, never listed. */
 const UNASSIGNED_AGENT = "agt_unassigned";
+/** The agent id of the spec (`^agt_` + 26 Crockford characters). An id of another form is not an agent: its item has the subject `unlinked`. */
+const AGENT_ID = /^agt_[0-9A-HJKMNP-TV-Z]{26}$/;
 const DEFAULT_LIMIT = 100;
+const LIMIT_MAX = 200;
 const LABEL_MAX = 120;
 
 // The shapes of spec 0.1.89 (docs/ACCESS.md, packages/spec/src/access.ts). Written here because this app pins spec 0.1.87, and the
@@ -91,14 +94,17 @@ export function guardFleet(ctx: OpContext): void {
 
 // ── items ───────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
-/** Plain one-line text for the owner: no control, bidi or format characters, no markup brackets, at most `max` characters. */
+/** Plain one-line text for the owner: no control, bidi, format, surrogate or private-use characters, no markup brackets, no double
+ *  quote or backtick (a title cannot close the sentence it sits in), at most `max` characters (cut by code point). */
 export function plain(s: string, max = LABEL_MAX): string {
   const t = s
-    .replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, " ")
+    .replace(/[\p{Cc}\p{Cf}\p{Cs}\p{Co}\p{Zl}\p{Zp}]/gu, " ")
     .replace(/[<>]/g, "")
+    .replace(/["`]/g, "'")
     .replace(/\s+/g, " ")
     .trim();
-  return t.length > max ? `${t.slice(0, max - 1)}…` : t;
+  const cps = Array.from(t);
+  return cps.length > max ? `${cps.slice(0, max - 1).join("")}\u2026` : t;
 }
 
 const iso = (ms: number): string => new Date(ms).toISOString();
@@ -110,7 +116,9 @@ export function itemDigest(i: Pick<Item, "id" | "kind" | "subject" | "resource" 
 
 function make(base: Omit<Item, "digest" | "direction" | "level" | "subject"> & { agent: string }): Item {
   const { agent, ...rest } = base;
-  const core = { ...rest, subject: { kind: "agent" as const, id: agent }, direction: "held_by" as const, level: "use" as const };
+  const tied = AGENT_ID.test(agent);
+  const subject: Item["subject"] = tied ? { kind: "agent", id: agent } : { kind: "unlinked" };
+  const core = { ...rest, revocable: rest.revocable && tied, subject, direction: "held_by" as const, level: "use" as const };
   return { ...core, digest: itemDigest(core) };
 }
 
@@ -151,7 +159,12 @@ function stepItems(db: Db): Item[] {
     .all();
   const out: Item[] = [];
   for (const r of rows) {
-    const contract = JSON.parse(String(r.contract)) as engineStore.Definition["contract"];
+    let contract: engineStore.Definition["contract"];
+    try {
+      contract = JSON.parse(String(r.contract)) as engineStore.Definition["contract"];
+    } catch {
+      continue; // a damaged row hides itself, never the whole list (the column has a json_valid check)
+    }
     for (const s of agentSteps(contract)) {
       const resource = `${String(r.workflow_id)}:${s.stepId}`;
       out.push(
@@ -205,17 +218,28 @@ export function allItems(db: Db): Item[] {
 
 // ── access_list ─────────────────────────────────────────────────────────────────────────────────────────────────────────
 
-export const NOT_SHOWN: ListOut["notShown"] = [{ kind: "held_call", reason: "Calls that wait for an owner approval are not listed by this version." }];
+const NOT_SHOWN: readonly ListOut["notShown"][number][] = [
+  { kind: "held_call", reason: "Calls that wait for an owner approval are not listed by this version." },
+  { kind: "step_in_flight", reason: "Steps already offered to an agent, and steps of an older version that still runs, are not listed." },
+];
 
 const refuse = (message: string, pointer: string): TbError => new TbError("validation_failed", message, 422, { pointer });
 
-/** The agent ids a request asks for; null = every agent (`all`). A person or an unlinked subject has no item here. */
-function askedAgents(subjects: readonly Subject[]): Set<string> | null {
+interface Asked {
+  /** `all`: every item */
+  all: boolean;
+  agents: Set<string>;
+  /** `unlinked`: the items that no agent holds */
+  unlinked: boolean;
+}
+
+/** What a request asks for. A person subject has no item here. */
+function asked(subjects: readonly Subject[]): Asked {
   if (subjects.some((s) => s.kind === "all")) {
     if (subjects.length !== 1) throw refuse("The subject all must be the only subject.", "/subjects");
-    return null;
+    return { all: true, agents: new Set(), unlinked: false };
   }
-  return new Set(subjects.filter((s): s is Extract<Subject, { kind: "agent" }> => s.kind === "agent").map((s) => s.id));
+  return { all: false, agents: new Set(subjects.filter((s): s is Extract<Subject, { kind: "agent" }> => s.kind === "agent").map((s) => s.id)), unlinked: subjects.some((s) => s.kind === "unlinked") };
 }
 
 const encodeCursor = (id: string): string => Buffer.from(JSON.stringify({ v: 1, after: id }), "utf8").toString("base64url");
@@ -230,14 +254,14 @@ function decodeCursor(c: string): string {
 }
 
 export function listAccess(db: Db, input: ListIn, now: number = Date.now()): ListOut {
-  const asked = askedAgents(input.subjects);
+  const want = asked(input.subjects);
   const after = input.cursor === undefined ? null : decodeCursor(input.cursor);
-  const limit = input.limit ?? DEFAULT_LIMIT;
-  const all = asked !== null && asked.size === 0 ? [] : allItems(db).filter((i) => asked === null || (i.subject.kind === "agent" && asked.has(i.subject.id)));
+  const limit = Number.isFinite(input.limit) ? Math.min(Math.max(Math.trunc(input.limit as number), 1), LIMIT_MAX) : DEFAULT_LIMIT;
+  const all = allItems(db).filter((i) => want.all || (i.subject.kind === "agent" ? want.agents.has(i.subject.id) : i.subject.kind === "unlinked" && want.unlinked));
   const rest = after === null ? all : all.filter((i) => i.id > after);
   const page = rest.slice(0, limit);
   const nextCursor = rest.length > limit ? encodeCursor((page[page.length - 1] as Item).id) : null;
-  const notShown = NOT_SHOWN;
+  const notShown = NOT_SHOWN.map((n) => ({ ...n }));
   return { v: 1, asOf: iso(now), ...(input.sweepId === undefined ? {} : { sweepId: input.sweepId }), items: page, nextCursor, notShown, complete: nextCursor === null && notShown.length === 0 };
 }
 
