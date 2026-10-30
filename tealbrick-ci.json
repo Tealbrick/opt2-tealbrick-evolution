@@ -3,8 +3,8 @@
   "kind": "miniapp",
   "paths": ["."],
   "images": [
-    { "name": "opt2-tealbrick-evolution", "product": "evolution", "kind": "app", "manifest": "tealbrick.manifest.json", "upgradeFrom": ">=0.3.0 <0.4.3-dev.1" },
-    { "name": "opt2-tealbrick-evolution-temporal", "product": "evolution", "kind": "service", "service": "temporal", "context": ".", "dockerfile": "services/temporal/Dockerfile", "upgradeFrom": ">=0.3.0 <0.4.3-dev.1" }
+    { "name": "opt2-tealbrick-evolution", "product": "evolution", "kind": "app", "manifest": "tealbrick.manifest.json", "upgradeFrom": ">=0.3.0 <0.4.3-dev.2" },
+    { "name": "opt2-tealbrick-evolution-temporal", "product": "evolution", "kind": "service", "service": "temporal", "context": ".", "dockerfile": "services/temporal/Dockerfile", "upgradeFrom": ">=0.3.0 <0.4.3-dev.2" }
   ],
   "preReleaseChecks": ["eval/run.ts"]
 }
