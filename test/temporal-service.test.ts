@@ -95,7 +95,7 @@ test("the manifest declares the temporal service, its env on the app, and valida
 test("tealbrick-ci.json lists the temporal service image next to the app image", () => {
   const ci = json("tealbrick-ci.json") as { images: Record<string, string>[] };
   const img = ci.images.find((i) => i.kind === "service");
-  assert.deepEqual(img, { name: "opt2-tealbrick-evolution-temporal", product: "evolution", kind: "service", service: "temporal", context: ".", dockerfile: "services/temporal/Dockerfile" });
+  assert.deepEqual(img, { name: "opt2-tealbrick-evolution-temporal", product: "evolution", kind: "service", service: "temporal", context: ".", dockerfile: "services/temporal/Dockerfile", upgradeFrom: ">=0.3.0 <0.4.0" });
   assert.ok(ci.images.some((i) => i.kind === "app" && i.product === img?.product));
 });
 

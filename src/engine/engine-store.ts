@@ -417,6 +417,11 @@ export function endHold(db: Db, workflowId: string, runId: string, stepKey: stri
   db.prepare("UPDATE engine_steps SET hold_ended_at = ?, hold_outcome = ?, updated_at = ? WHERE workflow_id = ? AND run_id = ? AND step_key = ?").run(now, outcome, now, workflowId, runId, stepKey);
 }
 
+/** True while the index holds an unfinished run of this schedule. */
+export function hasRunningScheduleRun(db: Db, scheduleId: string): boolean {
+  return db.prepare("SELECT 1 AS x FROM engine_runs WHERE schedule_id = ? AND ended_at IS NULL LIMIT 1").get(scheduleId) !== undefined;
+}
+
 /** The newest run the index holds for a schedule (a poll that found no change leaves none). */
 export function lastScheduleRun(db: Db, scheduleId: string): { startedAt: string; temporalWorkflowId: string } | null {
   const r = db.prepare("SELECT started_at, temporal_workflow_id FROM engine_runs WHERE schedule_id = ? ORDER BY started_at DESC LIMIT 1").get(scheduleId);

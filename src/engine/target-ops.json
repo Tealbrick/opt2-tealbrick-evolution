@@ -7379,13 +7379,7 @@
      "scopeType": "area",
      "idempotency": "supported",
      "dynamic": {
-      "mode": "search",
-      "crudCeiling": [
-       "read",
-       "create",
-       "update",
-       "delete"
-      ]
+      "mode": "search"
      }
     }
    ]
@@ -8298,13 +8292,7 @@
      "scopeType": "account",
      "idempotency": "supported",
      "dynamic": {
-      "mode": "search",
-      "crudCeiling": [
-       "read",
-       "create",
-       "update",
-       "delete"
-      ]
+      "mode": "search"
      }
     },
     {

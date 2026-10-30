@@ -240,6 +240,10 @@ The SDK reads only `TB_*` variables (SDK API section 13). The Dockerfile default
 
 Check `publisher` and `source.repo` in the manifest. The repository name must match the image name in `tealbrick-ci.json` (`opt2-tealbrick-evolution`).
 
+### Before an update to 0.4
+
+Update these apps first. Core refuses the update, with nothing changed, while one of them is older: bridge 0.2.11, Knowledge 0.1.29, Task Board 0.1.15, Inbox 0.3.0, Rules 0.3.0, Connect 0.6.0. A workspace on 0.2.x goes to 0.3.0 first (`upgradeFrom` is `>=0.3.0 <0.4.0`).
+
 ## Dependency pins
 
 `@opt2-tealbrick/*` dependencies are pinned as tarball URLs on the dist host (`Tealbrick/opt2-tealbrick-dist` releases). `pnpm-lock.yaml` carries the sha512 integrity of every such tarball. After changing one, run `pnpm install`, then `node <opt2-tealbrick-platform>/ci/tb-ci.ts pin-tarballs .`, then `pnpm install --frozen-lockfile`, and commit the lockfile. Image builds run `pnpm install --frozen-lockfile --ignore-scripts`.

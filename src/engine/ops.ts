@@ -376,6 +376,8 @@ export function engineHandlers(manifest: { companions?: Companions }) {
         if (!row) throw new EngineError("not_found", "No schedule with this id.", 404);
         if (!store.activeActivation(ctx.db, row.workflowId)) throw new EngineError("not_activated", `${row.workflowId} has no active version.`, 409);
         const t = await mustTemporal();
+        // A poll run reads the cursor it then moves: a second run beside it would act on the same items under another idempotency key.
+        if (row.kind === "poll" && store.hasRunningScheduleRun(ctx.db, row.id)) throw new EngineError("run_in_progress", "A run of this poll schedule is still running. Try again when it has ended.", 409);
         // S3 / F-G6: a deliberate click starts its own run (the id comes from the request's idempotency key) and the answer names it
         const runId = runNowId(row.id, ctx.idempotencyKey ?? null);
         try {

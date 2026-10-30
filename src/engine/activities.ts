@@ -73,10 +73,9 @@ export function denialOf(e: unknown): Denial | null {
 function classify(e: unknown): ApplicationFailure {
   if (e instanceof TbError) {
     const transient = e.httpStatus >= 500 || e.httpStatus === 429 || e.httpStatus === 408 || e.code === "rate_limited" || e.code === "timeout";
-    // the code and the status only: the text of another app may hold its data, and a failure is stored in Temporal history.
-    // The one exception is a Rules denial (hook_denied): its text is written for the owner, so it is kept, cut to 200 characters.
-    const denial = denialOf(e);
-    return ApplicationFailure.create({ message: denial ? denial.message : `${e.code} (HTTP ${e.httpStatus})`, type: e.code, nonRetryable: !transient });
+    // the code and the status only: the text of another app may hold its data, and a failure is stored in Temporal history
+    // (the codec does not cover failure text). A Rules denial keeps its text on the step row in app.db (denialOf), never here.
+    return ApplicationFailure.create({ message: `${e.code} (HTTP ${e.httpStatus})`, type: e.code, nonRetryable: !transient });
   }
   if (e instanceof ApplicationFailure) return e;
   return ApplicationFailure.create({ message: (e instanceof Error ? e.message : String(e)).slice(0, 300), type: "call_failed", nonRetryable: false });

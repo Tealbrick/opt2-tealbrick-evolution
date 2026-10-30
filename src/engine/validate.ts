@@ -12,7 +12,6 @@ import { nextCronTime, validateAgainstSchema } from "@opt2-tealbrick/manifest";
 import { UNASSIGNED_AGENT } from "../migrate/contract.ts";
 import type { TargetCatalog, TargetOp } from "./catalog.ts";
 import { currentCatalog, findOp } from "./catalog.ts";
-import { crudOfCall } from "./catalog-rules.ts";
 import { type AiStep, type ApprovalStep, type AppStep, type ConditionStep, type JsonSchemaObject, type LoopStep, type ParallelStep, type Step, type TimerStep, type TransformStep, type WorkflowContract, type WorkflowStep, walkSteps } from "./contract.ts";
 import { CONTRACT_SCHEMA, LIMITS } from "./contract-schema.ts";
 import { checkExpr, ExprError, exprRefs, hasTemplate, type PathSeg, parseRef, parseTemplate, type Ref, type ValueExpr } from "./expr.ts";
@@ -196,8 +195,7 @@ export function validateContract(contract: unknown, opts: ValidateOptions = {}):
           const r = validateAgainstSchema((op.input ?? { type: "object", additionalProperties: false }) as never, t.input as never);
           if (!r.ok) err("type_mismatch", `${p}/input`, `the poll input does not fit ${t.product}.${t.op}: ${r.errors.map((e) => e.message).join("; ")}`);
         }
-        // a poll reads by definition (poll_not_read above): its access is read whichever tool it names
-        addUse(op, t.product, "trigger", tool, ["read"]);
+        addUse(op, t.product, "trigger", tool);
       }
     } else if (t.kind === "event") {
       warn("event_trigger_pending", p, "event triggers need app event subscriptions (P2); until then the same workflow runs from a poll trigger");
@@ -246,13 +244,9 @@ export function validateContract(contract: unknown, opts: ValidateOptions = {}):
     return op;
   }
 
-  /** `crud`: what the call may do. Default: the op's own, or for a dynamic op (Connect `tools`) the named tool's (F-G1: not the search op's "read"). */
-  function addUse(op: TargetOp, product: string, stepId: string, tool: string | undefined, crud?: readonly string[]): void {
+  function addUse(op: TargetOp, product: string, stepId: string, tool: string | undefined): void {
     const k = `${product}.${op.id}`;
-    const callCrud = crud ?? crudOfCall(op, tool);
-    const u = uses.get(k) ?? { product, op: op.id, crud: op.dynamic ? [] : [...op.crud], effect: op.effect, ...(op.holdFamily ? { holdFamily: op.holdFamily } : {}), ...(op.scopeType ? { scopeType: op.scopeType } : {}), idempotency: op.idempotency, steps: [] };
-    // a dynamic op's crud is the union over the tools the workflow names, in the order read, create, update, delete
-    u.crud = op.dynamic ? (["read", "create", "update", "delete"] as const).filter((c) => u.crud.includes(c) || callCrud.includes(c)) : u.crud;
+    const u = uses.get(k) ?? { product, op: op.id, crud: [...op.crud], effect: op.effect, ...(op.holdFamily ? { holdFamily: op.holdFamily } : {}), ...(op.scopeType ? { scopeType: op.scopeType } : {}), idempotency: op.idempotency, steps: [] };
     if (!u.steps.includes(stepId)) u.steps.push(stepId);
     if (tool !== undefined) u.tools = [...new Set([...(u.tools ?? []), tool])].sort();
     uses.set(k, u);

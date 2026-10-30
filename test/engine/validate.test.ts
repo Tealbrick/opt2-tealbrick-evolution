@@ -9,8 +9,8 @@ import { bundledCatalog, injectCatalog, type TargetCatalog } from "../../src/eng
 import { COMPANION_PRODUCTS, companionBlock } from "../../src/engine/catalog-rules.ts";
 import { CONTRACT_SCHEMA, type Step, type WorkflowContract } from "../../src/engine/contract.ts";
 import { MODEL_ROLES } from "../../src/engine/model-roles.ts";
-import { UNASSIGNED_AGENT } from "../../src/migrate/contract.ts";
 import { dropSchemaNoise, type ValidationResult, validateContract } from "../../src/engine/validate.ts";
+import { UNASSIGNED_AGENT } from "../../src/migrate/contract.ts";
 import { read, wf } from "./harness.ts";
 
 const fixture = (n: string): WorkflowContract => JSON.parse(readFileSync(new URL(`./fixtures/${n}.json`, import.meta.url), "utf8")) as WorkflowContract;
@@ -242,39 +242,7 @@ test("steps typed as Step are what the validator reads (type check only)", () =>
   assert.equal(s.type, "timer");
 });
 
-// ───────────────────────────── C373 fix batch: F-G1, F-G3, F-G4 ─────────────────────────────
-
-const connectTool = (tool: string, id = "t") => ({ id, type: "app", product: "connect", op: "tools", input: { tool, arguments: {} } });
-const crudOf = (r: ValidationResult, product: string, op: string): string[] | undefined => r.uses.find((u) => u.product === product && u.op === op)?.crud;
-
-test("F-G1 quiet: a read op and a poll trigger stay read; a dynamic tool the catalog says is read stays read", () => {
-  assert.deepEqual(crudOf(validateContract(wf([read("a")]), { companions }), "knowledge", "recall"), ["read"]);
-  const poll = validateContract({ ...wf([read("a")]), triggers: [{ kind: "poll", product: "connect", op: "tools", input: { tool: "gmail_fetch_emails" }, cursorPath: "/x", every: "5m" }] } as unknown as WorkflowContract, { companions });
-  assert.equal(poll.ok, true, JSON.stringify(poll.errors));
-  assert.deepEqual(crudOf(poll, "connect", "tools"), ["read"], "a poll reads whichever tool it names");
-  const cat = structuredClone(bundledCatalog()) as TargetCatalog;
-  const tools = cat.connect?.operations.find((o) => o.id === "tools");
-  assert.ok(tools?.dynamic);
-  tools.dynamic.tools = { gmail_fetch_emails: ["read"], gmail_create_email_draft: ["create"], gmail_update_label: ["update"] };
-  injectCatalog(cat);
-  assert.deepEqual(crudOf(validateContract(wf([connectTool("gmail_fetch_emails")]), { companions }), "connect", "tools"), ["read"], "the snapshot's own crud of the tool");
-});
-
-test("F-G1 fire: a Connect tool is not shown as read-only: the op's crud ceiling when the catalog has no crud for the tool, the tool's own crud when it has", () => {
-  const unknown = validateContract(wf([connectTool("gmail_create_email_draft")]), { companions });
-  assert.equal(unknown.ok, true, JSON.stringify(unknown.errors));
-  assert.deepEqual(crudOf(unknown, "connect", "tools"), ["read", "create", "update", "delete"], "no per-tool crud in the snapshot: the ceiling (what the app lets a tool do)");
-  const cat = structuredClone(bundledCatalog()) as TargetCatalog;
-  const tools = cat.connect?.operations.find((o) => o.id === "tools");
-  assert.ok(tools?.dynamic);
-  tools.dynamic.tools = { gmail_fetch_emails: ["read"], gmail_create_email_draft: ["create"], gmail_update_label: ["update"] };
-  injectCatalog(cat);
-  assert.deepEqual(crudOf(validateContract(wf([connectTool("gmail_fetch_emails", "a"), connectTool("gmail_create_email_draft", "b")]), { companions }), "connect", "tools"), ["read", "create"], "the union over the tools the workflow names");
-  assert.deepEqual(crudOf(validateContract(wf([connectTool("gmail_update_label")]), { companions }), "connect", "tools"), ["update"]);
-  assert.deepEqual(crudOf(validateContract(wf([connectTool("some_new_tool")]), { companions }), "connect", "tools"), ["read", "create", "update", "delete"], "a tool the snapshot does not list gets the ceiling, never read");
-  // a prototype key is not a tool entry
-  assert.deepEqual(crudOf(validateContract(wf([connectTool("constructor")]), { companions }), "connect", "tools"), ["read", "create", "update", "delete"]);
-});
+// ───────────────────────────── C373 fix batch: F-G3, F-G4 ─────────────────────────────
 
 const placeholder = { id: "ask", type: "ai", by: { agent: UNASSIGNED_AGENT }, instruction: "x", inputs: {}, outputSchema: { type: "object" }, timeoutSec: 600 };
 

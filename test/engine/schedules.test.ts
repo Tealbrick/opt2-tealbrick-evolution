@@ -37,31 +37,6 @@ after(async () => {
   await t.stop();
 });
 
-/**
- * The schedule has taken `taken` actions (recentActions) and every workflow it started has CLOSED. The schedule's own
- * `runningActions` is NOT trusted for this: right after a trigger it can read empty while the started workflow is still running
- * (the scheduler records the action and the close a moment after the fact), so the workflows are described one by one.
- */
-async function actionsSettled(scheduleId: string, taken: number): Promise<boolean> {
-  const info = (await t.client.schedule.getHandle(scheduleIdOf(scheduleId)).describe()).info;
-  if (info.recentActions.length < taken) return false;
-  for (const a of info.recentActions) {
-    if (!("workflow" in a.action)) continue;
-    if ((await t.client.workflow.getHandle(a.action.workflow.workflowId).describe()).status.name === "RUNNING") return false;
-  }
-  return true;
-}
-/**
- * The scheduler names the workflow it starts <schedule id>-<trigger time to the SECOND>. A second "run now" in the same second
- * as the first gets the SAME workflow id: while the first is still running the start is refused ("already running") and the
- * trigger is lost. A test that triggers twice must therefore let the wall-clock second pass; it never races a sleep against it.
- */
-async function waitForNextSecond(scheduleId: string): Promise<void> {
-  const last = (await t.client.schedule.getHandle(scheduleIdOf(scheduleId)).describe()).info.recentActions.at(-1)?.scheduledAt;
-  assert.ok(last, "the schedule took an action");
-  await waitFor("the wall clock is in a later second than the first run's workflow id (the scheduler names runs by the second)", () => Math.floor(Date.now() / 1000) > Math.floor(last.getTime() / 1000));
-}
-
 let n = 0;
 function install(extra: Record<string, unknown> = {}, steps: unknown[] = [read("a")]): string {
   const id = `sched-flow-${++n}`;

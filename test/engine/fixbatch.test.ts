@@ -2,7 +2,7 @@
 // C373 fix batch, each item with a quiet-on-good and a fire-on-bad test:
 //   F-R1 the Rules denial text + rule id on the step row and in the run detail (hook_denied ONLY)
 //   F-G5 the reason code of a failed agent-step offer
-// (F-G1..G4 are in validate.test.ts / ops-level tests below; F-G6 and S3 in schedules.test.ts.)
+// (F-G3, F-G4 are in validate.test.ts / ops-level tests below; F-G6 and S3 in schedules.test.ts.)
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { TbError } from "@opt2-tealbrick/miniapp-sdk";
@@ -89,7 +89,7 @@ test("F-R1 fire: a hook_denied step keeps the bridge text (200 characters at mos
   const id = flow([write("w")]);
   const f = await failure(t.run({ workflowId: id, runId: "run_denied" }));
   assert.equal(f.code, "hook_denied");
-  assert.equal(f.message, `w: ${text}`);
+  assert.equal(f.message, "w: hook_denied (HTTP 403)", "the failure in Temporal history stays code-only: the text lives on the step row in app.db");
   const row = indexOf(t.db, id, "run_denied").steps[0];
   assert.deepEqual([row?.status, row?.error_code, row?.error_message, row?.rule_id], ["failed", "hook_denied", text, RULE], "the workflow's own failed write (code only) did not erase the reason");
   const s = await stepOf(id, "run_denied", "w");
@@ -119,9 +119,9 @@ test("F-R1 denialOf: cut to 200, rule id from the end of the whole text, control
   assert.equal(denialOf(new TbError("hook_denied", `(rule ${RULE}) and more`, 403))?.ruleId, null);
   assert.equal(denialOf(new TbError("hook_denied", "x (rule rul_01ARZ3NDEKTSV4RRFFQ69G5FAU)", 403))?.ruleId, null, "U is not a Crockford letter");
   assert.equal(denialOf(new TbError("hook_denied", "x (rule rul_01ARZ3NDEKTSV4RRFFQ69G5FA)", 403))?.ruleId, null, "25 characters");
-  assert.equal(denialOf(new TbError("hook_denied", "x rule " + RULE, 403))?.ruleId, null);
+  assert.equal(denialOf(new TbError("hook_denied", `x rule ${RULE}`, 403))?.ruleId, null);
   // line breaks and other control or format characters become spaces
-  assert.equal(denialOf(new TbError("hook_denied", "no\nway\t(rule " + RULE + ")", 403))?.message, `no way (rule ${RULE})`);
+  assert.equal(denialOf(new TbError("hook_denied", `no\nway\t(rule ${RULE})`, 403))?.message, `no way (rule ${RULE})`);
 });
 
 // ───────────────────────────── F-G5 ─────────────────────────────
@@ -222,7 +222,7 @@ test("F-G3: the check and the save refuse the 0.3.x placeholder agent with a poi
   const mk = (agent: string, id: string) => wf([{ id: "ask", type: "ai", by: { agent }, instruction: "do", inputs: {}, outputSchema: { type: "object" }, timeoutSec: 600 }], { id });
   const good = await op<CheckOut>("workflow_contract_validate", { contract: mk("agt_01M5BDHMN8ZQJPS4YQ4EWH8W85", "g3-good") });
   assert.equal(good.ok, true, JSON.stringify(good.errors));
-  const bad = await op<CheckOut & { errors: { code: string; path: string; pointer: string; message: string }[] }>("workflow_contract_validate", { contract: mk("agt_unassigned", "g3-bad") });
+  const bad = await op<Omit<CheckOut, "errors"> & { errors: { code: string; path: string; pointer: string; message: string }[] }>("workflow_contract_validate", { contract: mk("agt_unassigned", "g3-bad") });
   assert.equal(bad.ok, false);
   assert.deepEqual(
     bad.errors.map((e) => [e.code, e.path, e.pointer]),

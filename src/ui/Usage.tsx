@@ -50,9 +50,9 @@ function ShowButton({ pointer, onShow }: { pointer: string; onShow: (pointer: st
 // the engine reports the effect as a string; anything but a plain read or write needs the owner's eye
 const EFFECT: Record<string, "default" | "needs-you"> = { read: "default", write: "default" };
 
-/** F-P5: Connect `tools` is scoped by account, so a step that may create or update through it needs write access to the account it uses. */
-export const CONNECT_WRITE_ACCESS = "On Connect's accounts page, give Evolving Workflows write access to the account this step uses.";
-const writesThroughConnect = (r: UsageRow): boolean => r.product === "connect" && r.op === "tools" && !r.via && r.crud.some((c) => c === "create" || c === "update");
+/** F-P5: Connect `tools` is scoped by account: until the owner shares the account with this app, the step fails with scope_denied. */
+export const CONNECT_SHARE = "On Connect's accounts page, share the account this step uses with Evolving Workflows.";
+const usesConnectTools = (r: UsageRow): boolean => r.product === "connect" && r.op === "tools" && !r.via;
 
 export function UsageTable({ rows }: { rows: UsageRow[] }) {
   return (
@@ -89,10 +89,10 @@ export function UsageTable({ rows }: { rows: UsageRow[] }) {
           </tbody>
         </Table>
       )}
-      {rows.some((r) => r.tools?.length) ? <p className="tb-hint">For an operation that calls tools by name (Connect tools), Access is the most the app lets such a tool do, because the engine does not know what each tool does. The engine refuses any tool not named here.</p> : null}
-      {rows.filter(writesThroughConnect).map((r) => (
-        <Notice key={`${r.product}.${r.op}.write`} tone="needs-you" role="status">
-          {`${r.tools?.length ? `${r.tools.join(", ")}: ` : ""}${CONNECT_WRITE_ACCESS}`}
+      {rows.some((r) => r.tools?.length) ? <p className="tb-hint">For an operation that calls tools by name (Connect tools), the engine refuses any tool not named here. Connect lets a workflow call only the read tools of an account you shared with it; it refuses a tool that sends or changes something.</p> : null}
+      {rows.filter(usesConnectTools).map((r) => (
+        <Notice key={`${r.product}.${r.op}.share`} tone="needs-you" role="status">
+          {`${r.tools?.length ? `${r.tools.join(", ")}: ` : ""}${CONNECT_SHARE}`}
         </Notice>
       ))}
     </div>
