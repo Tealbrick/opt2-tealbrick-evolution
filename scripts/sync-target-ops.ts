@@ -22,7 +22,7 @@ for (const a of args.filter((x) => x.includes("="))) {
     version: m.version,
     operations: m.operations
       .filter((o) => o.audience === "agent")
-      .map((o) => ({ id: o.id, audience: o.audience, crud: o.crud, effect: o.effect, ...(o.holdFamily ? { holdFamily: o.holdFamily } : {}), ...(o.scopeType ? { scopeType: o.scopeType } : {}), idempotency: o.idempotency, ...(o.input ? { input: o.input } : {}), ...(o.output ? { output: o.output } : {}), ...(o.dynamic ? { dynamic: { mode: (o.dynamic as { mode: string }).mode } } : {}) })),
+      .map((o) => ({ id: o.id, audience: o.audience, crud: o.crud, effect: o.effect, ...(o.holdFamily ? { holdFamily: o.holdFamily } : {}), ...(o.scopeType ? { scopeType: o.scopeType } : {}), idempotency: o.idempotency, ...(o.input ? { input: o.input } : {}), ...(o.output ? { output: o.output } : {}), ...(o.dynamic ? { dynamic: o.dynamic } : {}) })),
   };
 }
 if (printCompanions) {

@@ -86,7 +86,7 @@ test("example B validates: both triggers, a nested parallel, an agent card, two 
   assert.deepEqual(Object.keys(v.stepTypes).sort(), ["brief", "classify", "crm", "draft", "enrich", "gate", "notes", "parse", "review", "sentiment", "write"]);
 });
 
-test("example B runs with fakes up to the Gmail draft; that step is refused (crud read only, P5) and the run fails there, with every step before it done", async () => {
+test("example B runs with fakes up to the Gmail draft; that step is refused (no write share on the account) and the run fails there, with every step before it done", async () => {
   fakes("refused");
   t.install({ ...exampleB, id: "inbound-email-advisor" });
   const pending = t.run({ workflowId: "inbound-email-advisor", runId: "run_b1", trigger: { kind: "manual", item: ITEM as never } });
@@ -116,7 +116,7 @@ test("example B runs with fakes up to the Gmail draft; that step is refused (cru
   assert.deepEqual(draft?.input, { tool: "gmail_create_email_draft", arguments: { account: "sales", thread: "th_1", subject: "Re: pricing", body: "Dear Acme, ..." } });
 });
 
-test("example B with a grant that allows the draft completes (the engine side is whole; only the platform grant is missing)", async () => {
+test("example B with a grant that allows the draft completes (the engine side is whole)", async () => {
   fakes("ok");
   t.install({ ...exampleB, id: "inbound-email-advisor-ok" });
   const pending = t.run({ workflowId: "inbound-email-advisor-ok", runId: "run_b2", trigger: { kind: "manual", item: ITEM as never } });

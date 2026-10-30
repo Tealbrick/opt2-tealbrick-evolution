@@ -52,6 +52,16 @@ const FILTERS: { id: Filter; label: string; has: (s: EngineRunStatus) => boolean
   { id: "done", label: "Completed", has: (s) => s === "completed" },
 ];
 
+/** Connect's refusals of a result action, in the owner's words. The engine stores the code only (another app's text may hold its data). */
+const CONNECT_REFUSALS: Record<string, string> = {
+  app_read_only: "Connect refused: this account is shared with Evolving Workflows for reads only. Allow writes on Connect's accounts page, then run the workflow again.",
+  app_edge_read_only: "Connect refused: the connection from Evolving Workflows to Connect in the Portal does not allow writes.",
+  app_outward_needs_approval: "Connect refused and sent nothing: this outward call does not wait for your approval. Use the tool's first-contact form in the workflow, or hold outward calls from apps in the workspace policy. A Rules hold alone is not enough.",
+  app_tool_refused: "Connect refused: a workflow cannot call a tool that deletes or moves money.",
+  first_contact_required: "Connect refused and sent nothing: this goes to someone new. Use the tool's first-contact form in the workflow, so that you approve it.",
+  scope_denied: "Connect refused: this account is not shared with Evolving Workflows for this kind of tool. Share it on Connect's accounts page.",
+};
+
 export function Runs({ agents, openId, holdHref, onActivation }: { agents: UseAgents["agents"]; openId?: string | null; holdHref: (holdId: string) => string; onActivation?: () => void }) {
   const [runs, setRuns] = useState<EngineRun[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -292,7 +302,7 @@ export function RunDetail({ runId, title, migrated = false, agents, holdHref, fr
                     <AgentHistory agents={agents} step={agent} fallbackAgent={s.agentId} />
                   </div>
                 ) : null}
-                {s.errorCode ? <p className="tb-hint">{s.errorCode.replaceAll("_", " ")}</p> : null}
+                {s.errorCode ? <p className="tb-hint">{CONNECT_REFUSALS[s.errorCode] ?? s.errorCode.replaceAll("_", " ")}</p> : null}
                 {s.errorMessage ? (
                   <p className="tb-hint step-reason" data-step-reason={s.stepId}>
                     {s.errorMessage}

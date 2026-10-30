@@ -238,6 +238,21 @@ export function engineHandlers(manifest: { companions?: Companions }) {
   }
 
   return {
+    // The activation review asks Connect what this app may do there. Reads only: Connect checks every tool call on its own. An older or
+    // missing Connect answers `available: false` and the page falls back to its plain advice.
+    [OP.connectAccess]: eop<K.ConnectAccessInput, K.ConnectAccessOutput>({
+      async run(input, ctx) {
+        try {
+          const r = await ctx.callApp("connect", "tool_shares_mine", { tools: input.tools ?? [] } as never);
+          if (r.status !== "ok") return { available: false, accounts: [], tools: [] };
+          const out = r.output as unknown as Pick<K.ConnectAccessOutput, "accounts" | "tools">;
+          return { available: true, accounts: out.accounts, tools: out.tools };
+        } catch (e) {
+          if (e instanceof TbError) return { available: false, accounts: [], tools: [] };
+          throw e;
+        }
+      },
+    }),
     [OP.workflowContractValidate]: eop<K.WorkflowContractValidateInput, K.WorkflowContractValidateOutput>({
       redact: (_i, o) => (o ? `Checked a contract: ${o.ok ? "valid" : `${o.errors.length} error(s)`}` : "Checked a contract"),
       async run(input, ctx) {

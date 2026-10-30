@@ -13,6 +13,7 @@ export type Crud = "create" | "read" | "update" | "delete";
 /** One op a workflow version calls, as the installed manifest describes it (activation review): `usage` of `workflow_activate` / `workflow_contract_validate`. */
 export type UsageRow = Out<"workflow_activate">["usage"][number];
 
+export type ConnectAccess = Out<"connect_access">;
 export type ValidateOut = Out<"workflow_contract_validate">;
 export type ActivateOut = Out<"workflow_activate">;
 export type SavedContract = Out<"workflow_contract_save">;

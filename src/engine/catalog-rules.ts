@@ -16,7 +16,7 @@ export interface TargetOp {
   input?: JsonSchemaLike;
   output?: JsonSchemaLike;
   /** a dynamic op (Connect `tools`): its input is `{tool, arguments}` and the real op is the tool */
-  dynamic?: { mode: string };
+  dynamic?: { mode: string; crudCeiling?: CrudAction[]; effectCeiling?: string };
 }
 export interface TargetApp {
   id: string;
@@ -54,7 +54,7 @@ const PURPOSE: Readonly<Record<string, string>> = {
   knowledge: "Approved workflow steps read the knowledge base and may add notes or documents.",
   inbox: "Approval steps ask the owner in Inbox and read the answer. Nothing else in Inbox changes.",
   rules: "Approved workflow steps may read why a rule decided and may propose a rule draft for the owner.",
-  connect: "Approved workflow steps read connected services (mail, calendars, data) and call the tools the owner approved.",
+  connect: "Approved workflow steps read connected services and, on accounts the owner shared for writes, run result actions such as a draft.",
 };
 
 export interface CompanionEntry {
@@ -65,6 +65,13 @@ export interface CompanionEntry {
 }
 
 const CRUD_ORDER: readonly CrudAction[] = ["read", "create", "update", "delete"];
+
+/**
+ * Connect `tools` is a dynamic op: its declared crud is read, and each tool has its own class. C370/C370a let a companion entry reach the
+ * dynamic op's ceiling so a result action can write (C366b). Never delete: deletions and payments stay with agents. This adds no write by
+ * itself: Connect still needs the owner's write share on the account, and the SDK its scope row, per call.
+ */
+const DYNAMIC_WRITE_CRUD: Readonly<Record<string, readonly CrudAction[]>> = { connect: ["create", "update"] };
 
 /** The wildcard companion (M-CP-3): `tb.holds_pending`, read only, after the owner's consent. A held app step waits for the owner and the
  *  engine reads which holds are still pending (the fallback when the bridge has no `app_hold_status`). */
@@ -81,7 +88,7 @@ export function companionBlock(apps: TargetCatalog): CompanionEntry[] {
     const app = apps[p];
     if (!app) return [];
     const ops = companionOps(app);
-    const crud = CRUD_ORDER.filter((c) => ops.some((o) => o.crud.includes(c)));
+    const crud = CRUD_ORDER.filter((c) => ops.some((o) => o.crud.includes(c)) || DYNAMIC_WRITE_CRUD[p]?.includes(c));
     return [{ product: p, operations: ops.map((o) => o.id), crud: [...crud], purpose: PURPOSE[p] as string }];
   });
   return [...entries, HOLDS_PENDING_COMPANION];
