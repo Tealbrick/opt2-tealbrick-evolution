@@ -35,7 +35,7 @@ for (const k of ["window", "document", "navigator", "location", "history", "sess
 }
 g.IS_REACT_ACT_ENVIRONMENT = true;
 
-type Handler = (input: Record<string, unknown>) => unknown;
+type Handler = (input: Record<string, unknown>) => unknown | Promise<unknown>;
 const stub = { calls: [] as { op: string; input: Record<string, unknown> }[], handlers: {} as Record<string, Handler> };
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
@@ -48,7 +48,7 @@ globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) =>
   stub.calls.push({ op, input: body.input ?? {} });
   const handler = stub.handlers[op];
   if (!handler) return json(404, { error: { code: "not_found", message: op } });
-  return json(200, { status: "ok", output: handler(body.input ?? {}) });
+  return json(200, { status: "ok", output: await handler(body.input ?? {}) });
 }) as typeof fetch;
 
 const { act, createElement: h } = await import("react");
@@ -222,6 +222,15 @@ describe("Runs filter", () => {
     assert.doesNotMatch(text(m.host), /loaded so far/, "everything the engine holds is loaded");
   });
 
+  it("a paged list with no filter on still has a Show older button", async () => {
+    setup(Array.from({ length: 150 }, (_, i) => run(i, "wf-a")));
+    const m = await mountRuns();
+    assert.equal(m.host.querySelectorAll(".pane-item").length, 100);
+    await click(buttons(m.host, "Show older")[0] as Element);
+    assert.equal(m.host.querySelectorAll(".pane-item").length, 150);
+    assert.equal(buttons(m.host, "Show older").length, 0);
+  });
+
   it("a complete list with no match says all runs were searched", async () => {
     setup([run(1), run(2), run(3)]);
     remember("runs", "zzz");
@@ -241,6 +250,30 @@ describe("Runs filter", () => {
     await click(buttons(m.host, "Clear filter")[0] as Element);
     assert.equal(localStorage.getItem(`${KEY}runs:workflow`), "");
     assert.deepEqual(callsOf("engine_runs_list").at(-1), { limit: 100 });
+  });
+
+  it("choosing workflow A and then B quickly ends on B's runs even when A answers last (no Loading forever)", async () => {
+    setup(Array.from({ length: 10 }, (_, i) => run(i, i < 5 ? "wf-a" : "wf-b")));
+    const all = Array.from({ length: 10 }, (_, i) => run(i, i < 5 ? "wf-a" : "wf-b"));
+    stub.handlers.engine_runs_list = async (i) => {
+      if (i.workflowId === "wf-a") await new Promise((r) => setTimeout(r, 120));
+      return { runs: all.filter((r) => !i.workflowId || r.workflowId === i.workflowId) };
+    };
+    const m = await mountRuns();
+    const pick = async (label: string) => {
+      const trigger = m.host.querySelector('[role="combobox"][aria-label="Workflow"]') as Element;
+      await click(trigger);
+      const opt = [...m.host.querySelectorAll('[role="option"]')].find((o) => o.textContent?.includes(label));
+      assert.ok(opt, `option ${label}`);
+      await click(opt);
+    };
+    await pick("Alpha digest");
+    await pick("Beta report");
+    await act(async () => new Promise((r) => setTimeout(r, 250)));
+    await flush();
+    assert.equal(m.host.querySelectorAll(".pane-item").length, 5);
+    assert.ok([...m.host.querySelectorAll(".pane-item")].every((b) => /Beta report/.test(b.textContent ?? "")), "B's runs, not A's");
+    assert.doesNotMatch(text(m.host), /Loading\./);
   });
 
   it("the status chip is a filter too: the bar counts it and Clear resets it", async () => {
@@ -314,6 +347,31 @@ describe("Suggestions filter", () => {
     assert.deepEqual(callsOf("review_suggestions").at(-1), { status: "open", limit: 200 });
     assert.equal(m.host.querySelectorAll(".item").length, 1);
     assert.doesNotMatch(text(m.host), /loaded so far/);
+  });
+
+  it("choosing a status chip and then another quickly ends on the last one even when the first answers last", async () => {
+    const rows = [...Array.from({ length: 3 }, (_, i) => suggestion(i, "rejected")), ...Array.from({ length: 2 }, (_, i) => suggestion(10 + i, "approved"))];
+    reset();
+    stub.handlers.review_suggestions = async (i) => {
+      if (i.status === "rejected") await new Promise((r) => setTimeout(r, 120));
+      return { suggestions: rows.filter((s) => !i.status || s.status === i.status) };
+    };
+    const m = await mountSuggestions();
+    await click(buttons(m.host, "Rejected")[0] as Element);
+    await click(buttons(m.host, "Approved")[0] as Element);
+    await act(async () => new Promise((r) => setTimeout(r, 250)));
+    await flush();
+    assert.equal(m.host.querySelectorAll(".item").length, 2);
+    assert.ok([...m.host.querySelectorAll(".item")].every((x) => /Approved/.test(x.textContent ?? "")), "the approved suggestions, not the rejected ones");
+  });
+
+  it("a paged list with no filter on still has a Show older button", async () => {
+    setup(Array.from({ length: 150 }, (_, i) => suggestion(i)));
+    const m = await mountSuggestions();
+    assert.equal(m.host.querySelectorAll(".item").length, 100);
+    await click(buttons(m.host, "Show older")[0] as Element);
+    assert.equal(m.host.querySelectorAll(".item").length, 150);
+    assert.equal(buttons(m.host, "Show older").length, 0);
   });
 
   it("a complete list with no match says all suggestions were searched", async () => {

@@ -1,6 +1,6 @@
 // Suggestions page: review what agents (and the Task Board detector) suggest; decide; start a draft from an approved one.
 import { accessFilter, appName, Button, Chip, ChipGroup, Dialog, EmptyState, Field, ListFilter, Notice, type Status, Swatch, Tag, TextInput, useAccessFilter } from "@opt2-tealbrick/ui";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { FILTER_FROM, filterKey } from "./filtering.ts";
 import { day, errorText, type Out, person, stamp } from "./ops.ts";
 
@@ -45,17 +45,23 @@ export function Suggestions({
   const [busy, setBusy] = useState(false);
   const [scanStatus, setScanStatus] = useState<Out<"detector_status"> | null>(null);
 
+  const seq = useRef(0); // only the newest load may land: a slower answer of another status chip must not replace the rows
   const load = useCallback(async () => {
+    const mine = ++seq.current;
     try {
       const out = await person("review_suggestions", filter === "all" ? { limit } : { status: filter, limit });
+      if (mine !== seq.current) return;
       setRows(out.suggestions);
       if (filter === "open") onOpenCount(out.suggestions.length);
-      setScanStatus(await person("detector_status", {}));
+      const status = await person("detector_status", {});
+      if (mine !== seq.current) return;
+      setScanStatus(status);
       setError(null);
     } catch (e) {
+      if (mine !== seq.current) return;
       setError(errorText(e));
     } finally {
-      setLoadingMore(false);
+      if (mine === seq.current) setLoadingMore(false);
     }
   }, [filter, limit, onOpenCount]);
   useEffect(() => {
@@ -170,6 +176,13 @@ export function Suggestions({
             </div>
           ))}
         </div>
+          {more && limit < SUGGESTIONS_MOST && !filterOn ? (
+            <div>
+              <Button onClick={showOlder} disabled={loadingMore}>
+                Show older
+              </Button>
+            </div>
+          ) : null}
         </>
       )}
       {selected ? <Detail id={selected} names={names} onClose={() => setSelected(null)} onChanged={load} onDraft={onDraft} /> : null}

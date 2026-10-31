@@ -79,18 +79,22 @@ export function Runs({ agents, openId, holdHref, onActivation }: { agents: UseAg
   const [open, setOpen] = useState<string | null>(openId ?? null);
   const [titles, setTitles] = useState<Map<string, string>>(new Map());
   const migration = useMigration();
+  const seq = useRef(0); // only the newest load may land: choosing workflow A then B must not end on A's slower answer
   const load = useCallback(async () => {
+    const mine = ++seq.current;
     engine("workflow_contracts_list", {})
       .then((r) => setTitles(new Map([...r.contracts].sort((a, b) => a.version - b.version).map((c) => [c.workflowId, c.title]))))
       .catch(() => {}); // the id is shown instead of a title
     try {
       const got = (await engine("engine_runs_list", workflow ? { limit, workflowId: workflow } : { limit })).runs;
+      if (mine !== seq.current) return;
       setData({ workflow, runs: got });
       setError(null);
     } catch (e) {
+      if (mine !== seq.current) return;
       setError(`Runs could not be loaded. ${errorText(e)}`);
     } finally {
-      setLoadingMore(false);
+      if (mine === seq.current) setLoadingMore(false);
     }
   }, [workflow, limit]);
   useEffect(() => {
@@ -200,6 +204,13 @@ export function Runs({ agents, openId, holdHref, onActivation }: { agents: UseAg
                 />
               </Field>
             </ListFilter>
+          ) : null}
+          {more && limit < RUNS_MOST && !filterOn ? (
+            <div>
+              <Button onClick={showOlder} disabled={loadingMore}>
+                Show older
+              </Button>
+            </div>
           ) : null}
           {more && limit >= RUNS_MOST && workflow === "" ? <p className="tb-hint">The engine gives the newest {RUNS_MOST} runs at most. To see older runs of one workflow, choose that workflow in the filter.</p> : null}
           <ChipGroup label="Show runs">
