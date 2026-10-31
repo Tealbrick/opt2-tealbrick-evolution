@@ -3,9 +3,10 @@
 // card (which card was offered the step, who claimed it, who timed out). Owner only (C88): the inputs and outputs of a step
 // are shown when the engine gives them, and never to an agent.
 import type { UseAgents } from "@opt2-tealbrick/miniapp-sdk/client";
-import { Button, Chip, ChipGroup, CopyBlock, EmptyState, Notice, type Status, Tag } from "@opt2-tealbrick/ui";
-import { useCallback, useEffect, useState } from "react";
+import { accessFilter, Button, Chip, ChipGroup, CopyBlock, EmptyState, Field, ListFilter, Notice, Select, type Status, Tag, useAccessFilter } from "@opt2-tealbrick/ui";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { AGENT_STEP_LABEL, type EngineRun, type EngineRunStatus, type EngineRunStep, type EngineStepStatus, engine } from "./engine-ops.ts";
+import { ALL, FILTER_FROM, facetChoices, filterKey } from "./filtering.ts";
 import { MigratedBadge, useMigration } from "./Migration.tsx";
 import { errorText, type Out, person, spanText, stamp } from "./ops.ts";
 
@@ -62,10 +63,19 @@ const CONNECT_REFUSALS: Record<string, string> = {
   scope_denied: "Connect refused: this account is not shared with Evolving Workflows for this kind of tool. Share it on Connect's accounts page.",
 };
 
+/** The engine answers the newest runs, no cursor: 100 first, "Show older" asks for the most it gives (200). A workflow chosen in the filter is the server's: it reaches every run of that workflow. */
+const RUNS_FIRST = 100;
+const RUNS_MOST = 200;
+
 export function Runs({ agents, openId, holdHref, onActivation }: { agents: UseAgents["agents"]; openId?: string | null; holdHref: (holdId: string) => string; onActivation?: () => void }) {
-  const [runs, setRuns] = useState<EngineRun[] | null>(null);
+  const [data, setData] = useState<{ workflow: string; runs: EngineRun[] } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<Filter>("all");
+  const [query, setQuery] = useAccessFilter(filterKey("runs"));
+  const [workflowRaw, setWorkflow] = useAccessFilter(filterKey("runs:workflow"));
+  const workflow = workflowRaw === ALL ? "" : workflowRaw;
+  const [limit, setLimit] = useState(RUNS_FIRST);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [open, setOpen] = useState<string | null>(openId ?? null);
   const [titles, setTitles] = useState<Map<string, string>>(new Map());
   const migration = useMigration();
@@ -74,12 +84,15 @@ export function Runs({ agents, openId, holdHref, onActivation }: { agents: UseAg
       .then((r) => setTitles(new Map([...r.contracts].sort((a, b) => a.version - b.version).map((c) => [c.workflowId, c.title]))))
       .catch(() => {}); // the id is shown instead of a title
     try {
-      setRuns((await engine("engine_runs_list", { limit: 100 })).runs);
+      const got = (await engine("engine_runs_list", workflow ? { limit, workflowId: workflow } : { limit })).runs;
+      setData({ workflow, runs: got });
       setError(null);
     } catch (e) {
       setError(`Runs could not be loaded. ${errorText(e)}`);
+    } finally {
+      setLoadingMore(false);
     }
-  }, []);
+  }, [workflow, limit]);
   useEffect(() => {
     void load();
   }, [load]);
@@ -87,6 +100,8 @@ export function Runs({ agents, openId, holdHref, onActivation }: { agents: UseAg
     if (openId) setOpen(openId);
   }, [openId]);
   // a run that is still running changes: keep the list current while one is shown as running
+  // rows of another workflow's filter may still be in state for one render: they are not shown
+  const runs = data && data.workflow === workflow ? data.runs : null;
   const anyRunning = (runs ?? []).some((r) => r.status === "running");
   useEffect(() => {
     if (!anyRunning) return;
@@ -94,9 +109,27 @@ export function Runs({ agents, openId, holdHref, onActivation }: { agents: UseAg
     return () => clearInterval(t);
   }, [anyRunning, load]);
   const accepts = FILTERS.find((f) => f.id === filter)?.has ?? (() => true);
-  const shown = (runs ?? []).filter((r) => accepts(r.status));
+  const textFilter = accessFilter(query);
+  const loaded = runs ?? [];
+  const shown = loaded.filter((r) => accepts(r.status) && textFilter.test([titles.get(r.workflowId) ?? "", r.workflowId, RUN_STATUS[r.status].label, r.triggerKind, stamp(r.startedAt)].join(" ")));
+  const more = loaded.length >= limit;
+  const filterOn = query.trim() !== "" || workflow !== "" || filter !== "all";
+  const barSeen = useRef(false);
+  const wants = data !== null && (loaded.length >= FILTER_FROM || more || filterOn);
+  if (wants) barSeen.current = true;
+  // once shown the bar stays while another workflow loads, so the focus is not lost
+  const showBar = data !== null && (wants || barSeen.current);
+  const clearFilter = () => {
+    setQuery("");
+    setWorkflow("");
+    setFilter("all");
+  };
+  const showOlder = () => {
+    setLoadingMore(true);
+    setLimit(RUNS_MOST);
+  };
   const current = open ?? shown[0]?.runId ?? null;
-  const currentRun = (runs ?? []).find((r) => r.runId === current);
+  const currentRun = loaded.find((r) => r.runId === current);
   return (
     <section className="app-page" aria-label="Runs">
       <div className="page-head">
@@ -116,13 +149,13 @@ export function Runs({ agents, openId, holdHref, onActivation }: { agents: UseAg
           </span>
         </Notice>
       ) : null}
-      {runs === null ? (
+      {data === null ? (
         error ? null : (
           <p className="tb-soft" role="status">
             Loading runs.
           </p>
         )
-      ) : runs.length === 0 && !open ? (
+      ) : loaded.length === 0 && !open && !filterOn && runs !== null ? (
         <EmptyState title="No runs yet.">
           Activate a workflow and use Run now on the Activation page, or create a schedule; its runs show here.
           {onActivation ? (
@@ -135,6 +168,40 @@ export function Runs({ agents, openId, holdHref, onActivation }: { agents: UseAg
         </EmptyState>
       ) : (
         <>
+          {showBar ? (
+            <ListFilter
+              label="Filter the runs"
+              value={query}
+              onChange={setQuery}
+              filter={textFilter}
+              placeholder="Workflow, status, or a regex"
+              noun={{ one: "run", many: "runs" }}
+              shown={shown.length}
+              total={loaded.length}
+              facets={workflow !== "" || filter !== "all"}
+              more={more}
+              loadedOnly={query.trim() !== "" || filter !== "all"}
+              busy={runs === null}
+              onClear={clearFilter}
+              onLoadMore={limit < RUNS_MOST ? showOlder : undefined}
+              loadingMore={loadingMore}
+            >
+              <Field label="Workflow">
+                <Select
+                  aria-label="Workflow"
+                  options={facetChoices(
+                    "All workflows",
+                    [...[...titles].map(([value, label]) => ({ value, label })), ...loaded.map((r) => ({ value: r.workflowId, label: titles.get(r.workflowId) ?? r.workflowId }))],
+                    workflow,
+                    "A workflow that is no longer listed",
+                  )}
+                  value={workflow === "" ? ALL : workflow}
+                  onValueChange={(v) => setWorkflow(v === ALL ? "" : v)}
+                />
+              </Field>
+            </ListFilter>
+          ) : null}
+          {more && limit >= RUNS_MOST && workflow === "" ? <p className="tb-hint">The engine gives the newest {RUNS_MOST} runs at most. To see older runs of one workflow, choose that workflow in the filter.</p> : null}
           <ChipGroup label="Show runs">
             {FILTERS.map((f) => (
               <Chip key={f.id} pressed={filter === f.id} onClick={() => setFilter(f.id)}>
@@ -144,7 +211,7 @@ export function Runs({ agents, openId, holdHref, onActivation }: { agents: UseAg
           </ChipGroup>
           <div className="two-pane">
             <nav className="pane-list" aria-label="Runs">
-              {shown.length === 0 ? <p className="tb-soft">No run matches.</p> : null}
+              {shown.length === 0 && !filterOn && runs !== null ? <p className="tb-soft">No run matches.</p> : null}
               {shown.map((r) => (
                 <button key={r.runId} type="button" className="pane-item" aria-current={current === r.runId} onClick={() => setOpen(r.runId)}>
                   <span className="tb-ink">

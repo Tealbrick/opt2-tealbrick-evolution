@@ -1,9 +1,10 @@
 // Schedules page (step B): run a promoted workflow on a cron schedule by one Bound agent, or (R1a) by an existing Free agent; pause, resume, delete;
 // run history. Evolving Workflows never starts the agent: the agent's own `tealbrick agent serve` (routines mode) claims runs.
 import type { UseAgents } from "@opt2-tealbrick/miniapp-sdk/client";
-import { Button, CopyBlock, Dialog, EmptyState, Field, Notice, Select, type Status, Table, Tag, TextInput } from "@opt2-tealbrick/ui";
+import { accessFilter, Button, CopyBlock, Dialog, EmptyState, Field, ListFilter, Notice, Select, type Status, Table, Tag, TextInput, useAccessFilter } from "@opt2-tealbrick/ui";
 import { useCallback, useEffect, useState } from "react";
 import { EngineSchedules } from "./EngineSchedules.tsx";
+import { FILTER_FROM, filterKey } from "./filtering.ts";
 import { errorText, freeTargetText, type Out, person, utcDue, utcStamp } from "./ops.ts";
 
 type Automation = Out<"automations_list">["automations"][number];
@@ -50,6 +51,11 @@ export function Schedules({ agents, agentsLoading, onOpenRuns, onOpenRun }: { ag
   const free = agents.filter((a) => a.mode === "free");
   const name = (id: string) => agents.find((a) => a.id === id)?.name ?? id;
   const openId = open === undefined ? (rows?.[0]?.id ?? null) : open;
+  const [query, setQuery] = useAccessFilter(filterKey("schedules"));
+  const textFilter = accessFilter(query);
+  const loaded = rows ?? [];
+  const shownRows = loaded.filter((a) => textFilter.test([a.workflowTitle, a.workflowId, name(a.agentId), a.enabled ? "active" : "paused", a.cron].join(" ")));
+  const showBar = rows !== null && (loaded.length >= FILTER_FROM || query.trim() !== "");
 
   const act = async (fn: () => Promise<unknown>) => {
     try {
@@ -101,8 +107,12 @@ export function Schedules({ agents, agentsLoading, onOpenRuns, onOpenRun }: { ag
       ) : rows.length === 0 ? (
         <EmptyState title="No agent schedules.">For a new workflow, use an engine schedule above. This older path needs a promoted draft and a Bound agent or a Free agent.</EmptyState>
       ) : (
+        <>
+        {showBar ? (
+          <ListFilter label="Filter the agent schedules" value={query} onChange={setQuery} filter={textFilter} placeholder="Workflow, agent, or a regex" noun={{ one: "schedule", many: "schedules" }} shown={shownRows.length} total={loaded.length} onClear={() => setQuery("")} />
+        ) : null}
         <div className="cards">
-          {rows.map((a) => (
+          {shownRows.map((a) => (
             <article key={a.id} className="tb-card">
               <div className="card-head">
                 <h3>
@@ -143,6 +153,7 @@ export function Schedules({ agents, agentsLoading, onOpenRuns, onOpenRun }: { ag
             </article>
           ))}
         </div>
+        </>
       )}
       <details className="history">
         <summary>Runner configuration for the Bound agent’s machine</summary>

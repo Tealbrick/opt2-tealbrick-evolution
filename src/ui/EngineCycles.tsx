@@ -1,9 +1,10 @@
 // Cycles, engine side (C367 WP3, ENGINE-BUILD §7): the runs of the engine next to the legacy runs of the same workflow version
 // (the 0.3.x routine runs that the cycle ledger above counts). One row per workflow version that has runs of either kind.
 // The gates stay the ones above; this table only puts the two kinds of run side by side so a version can be compared whole.
-import { Button, Notice, type Status, Table, Tag } from "@opt2-tealbrick/ui";
+import { accessFilter, Button, ListFilter, Notice, type Status, Table, Tag, useAccessFilter } from "@opt2-tealbrick/ui";
 import { useCallback, useEffect, useState } from "react";
 import { type EngineRun, type EngineRunStatus, engine } from "./engine-ops.ts";
+import { FILTER_FROM, filterKey } from "./filtering.ts";
 import { useMigration } from "./Migration.tsx";
 import { errorText, type Out } from "./ops.ts";
 
@@ -74,13 +75,16 @@ const TICK: Record<EngineRunStatus, { mark: string; status: Status }> = {
 };
 const pct = (n: number, of: number): string => (of === 0 ? "–" : `${Math.round((n / of) * 100)}%`);
 
+/** The most engine runs the table reads (the engine gives the newest ones, no next page). */
+const ENGINE_RUNS_MOST = 200;
+
 export function EngineCycles({ cycles }: { cycles: readonly Cycle[] }) {
   const [runs, setRuns] = useState<EngineRun[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const migration = useMigration();
   const load = useCallback(async () => {
     try {
-      setRuns((await engine("engine_runs_list", { limit: 200 })).runs);
+      setRuns((await engine("engine_runs_list", { limit: ENGINE_RUNS_MOST })).runs);
       setError(null);
     } catch (e) {
       setError(`Engine runs could not be loaded. ${errorText(e)}`);
@@ -91,6 +95,12 @@ export function EngineCycles({ cycles }: { cycles: readonly Cycle[] }) {
   }, [load]);
   // only versions the engine has run: a legacy-only version is already a row of the cycle table above
   const rows = runs ? sideBySide(runs, cycles, migration.legacyWorkflowOf).filter((r) => r.engine.total > 0) : [];
+  const [query, setQuery] = useAccessFilter(filterKey("cycles:engine"));
+  const textFilter = accessFilter(query);
+  const shownRows = rows.filter((r) => textFilter.test([r.workflowTitle, r.workflowId, r.version ? `v${r.version}` : ""].join(" ")));
+  // the rows are built from the newest ENGINE_RUNS_MOST engine runs; at that many, older versions may be missing
+  const more = (runs ?? []).length >= ENGINE_RUNS_MOST;
+  const showBar = runs !== null && (rows.length >= FILTER_FROM || more || query.trim() !== "");
   return (
     <section className="tb-stack" aria-label="Engine runs next to legacy runs">
       <h2 className="tb-h2">Engine runs and legacy runs</h2>
@@ -114,6 +124,10 @@ export function EngineCycles({ cycles }: { cycles: readonly Cycle[] }) {
       ) : rows.length === 0 ? (
         <p className="tb-soft">No engine runs yet. The legacy runs of every version are counted in the table above.</p>
       ) : (
+        <>
+        {showBar ? (
+          <ListFilter label="Filter the engine runs" value={query} onChange={setQuery} filter={textFilter} placeholder="Workflow, or a regex" noun={{ one: "version", many: "versions" }} shown={shownRows.length} total={rows.length} more={more} onClear={() => setQuery("")} />
+        ) : null}
         <Table aria-label="Engine runs and legacy runs per version">
           <thead>
             <tr>
@@ -128,7 +142,7 @@ export function EngineCycles({ cycles }: { cycles: readonly Cycle[] }) {
             </tr>
           </thead>
           <tbody>
-            {rows.map((r) => (
+            {shownRows.map((r) => (
               <tr key={key(r.workflowId, r.version)}>
                 <td>{r.workflowTitle}</td>
                 <td className="num">{r.version ? `v${r.version}` : "–"}</td>
@@ -155,6 +169,7 @@ export function EngineCycles({ cycles }: { cycles: readonly Cycle[] }) {
             ))}
           </tbody>
         </Table>
+        </>
       )}
     </section>
   );

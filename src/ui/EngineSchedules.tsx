@@ -1,11 +1,12 @@
 // Engine schedules (C367 WP3, ENGINE-BUILD §6): Temporal Schedules that start a workflow run. A schedule is a cron or an
 // interval in an IANA time zone, with overlap skip (or buffer one). The owner can Run now, Pause, Edit and Delete.
 // These are not the 0.3.x schedules above them (a Bound or Free agent that claims a run): the engine starts these itself.
-import { Button, Dialog, EmptyState, Field, NativeSelect, Notice, Tag, TextInput } from "@opt2-tealbrick/ui";
+import { accessFilter, Button, Dialog, EmptyState, Field, ListFilter, NativeSelect, Notice, Tag, TextInput, useAccessFilter } from "@opt2-tealbrick/ui";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { JsonObject } from "../engine/json.ts";
 import type { WorkflowContract } from "./engine-contract.ts";
 import { type EngineSchedule, engine } from "./engine-ops.ts";
+import { FILTER_FROM, filterKey, LIST_CAP } from "./filtering.ts";
 import { MigratedBadge, useMigration } from "./Migration.tsx";
 import { errorText, TIME_ZONES, zoned } from "./ops.ts";
 import { missingInputs, ValuesForm } from "./SchemaForm.tsx";
@@ -51,6 +52,13 @@ export function EngineSchedules({ onOpenRuns, onOpenRun }: { onOpenRuns?: () => 
   }, [load]);
 
   const titleOf = (workflowId: string) => workflows.find((w) => w.id === workflowId)?.title ?? workflowId;
+  const [query, setQuery] = useAccessFilter(filterKey("schedules:engine"));
+  const textFilter = accessFilter(query);
+  const loaded = rows ?? [];
+  const shownRows = loaded.filter((s) => textFilter.test([titleOf(s.workflowId), s.workflowId, s.paused ? "paused" : "active", s.cron ?? `every ${everyText(s.every)}`, s.timezone].join(" ")));
+  // schedules_list gives at most LIST_CAP schedules and has no next page: at that many, the list may be cut
+  const more = loaded.length >= LIST_CAP;
+  const showBar = rows !== null && (loaded.length >= FILTER_FROM || more || query.trim() !== "");
   const act = async (id: string, fn: () => Promise<void>) => {
     if (busy.current.has(id)) return;
     busy.current.add(id);
@@ -117,8 +125,12 @@ export function EngineSchedules({ onOpenRuns, onOpenRun }: { onOpenRuns?: () => 
       ) : rows.length === 0 ? (
         <EmptyState title="No engine schedules yet.">Activate a workflow, then schedule it here.</EmptyState>
       ) : (
+        <>
+        {showBar ? (
+          <ListFilter label="Filter the engine schedules" value={query} onChange={setQuery} filter={textFilter} placeholder="Workflow, or a regex" noun={{ one: "schedule", many: "schedules" }} shown={shownRows.length} total={loaded.length} more={more} onClear={() => setQuery("")} />
+        ) : null}
         <div className="cards">
-          {rows.map((s) => (
+          {shownRows.map((s) => (
             <article key={s.id} className="tb-card">
               <div className="card-head">
                 <h3>
@@ -163,6 +175,7 @@ export function EngineSchedules({ onOpenRuns, onOpenRun }: { onOpenRuns?: () => 
             </article>
           ))}
         </div>
+        </>
       )}
       {editing ? (
         <ScheduleDialog

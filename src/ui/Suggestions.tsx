@@ -1,6 +1,7 @@
 // Suggestions page: review what agents (and the Task Board detector) suggest; decide; start a draft from an approved one.
-import { appName, Button, Chip, ChipGroup, Dialog, EmptyState, Field, Notice, type Status, Swatch, Tag, TextInput } from "@opt2-tealbrick/ui";
+import { accessFilter, appName, Button, Chip, ChipGroup, Dialog, EmptyState, Field, ListFilter, Notice, type Status, Swatch, Tag, TextInput, useAccessFilter } from "@opt2-tealbrick/ui";
 import { useCallback, useEffect, useState } from "react";
+import { FILTER_FROM, filterKey } from "./filtering.ts";
 import { day, errorText, type Out, person, stamp } from "./ops.ts";
 
 type SuggestionStatus = "open" | "approved" | "rejected" | "archived";
@@ -18,6 +19,9 @@ const STATUS: Record<SuggestionStatus, { status: Status; label: string }> = {
   rejected: { status: "needs-you", label: "Rejected" },
   archived: { status: "default", label: "Archived" },
 };
+/** `review_suggestions` answers the newest 100 by default and 200 at most, no cursor. The status chips are the server's; the text filter reads the loaded rows. */
+const SUGGESTIONS_FIRST = 100;
+const SUGGESTIONS_MOST = 200;
 const opsOf = (ops: { product: string; operation: string }[]) => ops.map((o) => `${o.product}.${o.operation}`).join(", ");
 
 export function Suggestions({
@@ -31,6 +35,9 @@ export function Suggestions({
   onOpenCount: (n: number) => void;
 }) {
   const [filter, setFilter] = useState<Filter>("open");
+  const [query, setQuery] = useAccessFilter(filterKey("suggestions"));
+  const [limit, setLimit] = useState(SUGGESTIONS_FIRST);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [rows, setRows] = useState<Out<"review_suggestions">["suggestions"] | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -40,18 +47,33 @@ export function Suggestions({
 
   const load = useCallback(async () => {
     try {
-      const out = await person("review_suggestions", filter === "all" ? {} : { status: filter });
+      const out = await person("review_suggestions", filter === "all" ? { limit } : { status: filter, limit });
       setRows(out.suggestions);
       if (filter === "open") onOpenCount(out.suggestions.length);
       setScanStatus(await person("detector_status", {}));
       setError(null);
     } catch (e) {
       setError(errorText(e));
+    } finally {
+      setLoadingMore(false);
     }
-  }, [filter, onOpenCount]);
+  }, [filter, limit, onOpenCount]);
   useEffect(() => {
     void load();
   }, [load]);
+
+  const textFilter = accessFilter(query);
+  const loaded = rows ?? [];
+  const shownRows = loaded.filter((s) => textFilter.test([s.title, s.source === "detector" ? "Task Board detector" : "agent", s.agentId ? names(s.agentId) : "", STATUS[s.status].label, day(s.createdAt)].join(" ")));
+  const more = loaded.length >= limit;
+  const filterOn = query.trim() !== "";
+  // suggestions that wait for a review and the filter hides: the owner is told, so none is forgotten
+  const hiddenOpen = loaded.filter((s) => s.status === "open").length - shownRows.filter((s) => s.status === "open").length;
+  const showBar = rows !== null && (loaded.length >= FILTER_FROM || more || filterOn);
+  const showOlder = () => {
+    setLoadingMore(true);
+    setLimit(SUGGESTIONS_MOST);
+  };
 
   const scan = async () => {
     setBusy(true);
@@ -113,8 +135,27 @@ export function Suggestions({
       ) : rows.length === 0 ? (
         <EmptyState title="No suggestions here." />
       ) : (
+        <>
+          {showBar ? (
+            <ListFilter
+              label="Filter the suggestions"
+              value={query}
+              onChange={setQuery}
+              filter={textFilter}
+              placeholder="Title, agent, or a regex"
+              noun={{ one: "suggestion", many: "suggestions" }}
+              shown={shownRows.length}
+              total={loaded.length}
+              more={more}
+              onClear={() => setQuery("")}
+              onLoadMore={limit < SUGGESTIONS_MOST ? showOlder : undefined}
+              loadingMore={loadingMore}
+              hidden={hiddenOpen}
+              hiddenNoun={{ one: "suggestion that waits for your review", many: "suggestions that wait for your review" }}
+            />
+          ) : null}
         <div className="ruled">
-          {rows.map((s) => (
+          {shownRows.map((s) => (
             <div className="item" key={s.id}>
               <Swatch open={s.source === "detector"} />
               <h3>
@@ -129,6 +170,7 @@ export function Suggestions({
             </div>
           ))}
         </div>
+        </>
       )}
       {selected ? <Detail id={selected} names={names} onClose={() => setSelected(null)} onChanged={load} onDraft={onDraft} /> : null}
     </section>
