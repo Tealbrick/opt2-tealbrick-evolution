@@ -6,9 +6,10 @@
 // C288 R8: each version also shows what the runners reported with their runs (ok rate, minutes, retries, questions to the
 // owner, lessons), compared with the previous version, and "Show lessons" reads the lessons of that version (cycle_get).
 // Lessons are free text written by agents: shown on this owner page only, as plain text.
-import { Button, EmptyState, Notice, type Status, Table, Tag } from "@opt2-tealbrick/ui";
+import { accessFilter, Button, EmptyState, ListFilter, Notice, type Status, Table, Tag, useAccessFilter } from "@opt2-tealbrick/ui";
 import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import { EngineCycles } from "./EngineCycles.tsx";
+import { FILTER_FROM, filterKey, LIST_CAP } from "./filtering.ts";
 import { day, errorText, type Out, person, stamp } from "./ops.ts";
 import { STATUS } from "./Schedules.tsx";
 
@@ -149,6 +150,12 @@ export function Cycles() {
   }, [load]);
   // one row per workflow: its active cycle, in the list's order (newest promotion first)
   const actives = (cycles ?? []).filter((c) => c.active);
+  const [query, setQuery] = useAccessFilter(filterKey("cycles"));
+  const textFilter = accessFilter(query);
+  const shownActives = actives.filter((c) => textFilter.test([c.workflowTitle, c.workflowId, `v${c.version}`, VERDICT[c.evalLive.verdict].label].join(" ")));
+  // cycles_list gives at most LIST_CAP cycles and has no next page: at that many, the list may be cut
+  const more = (cycles ?? []).length >= LIST_CAP;
+  const showBar = cycles !== null && (actives.length >= FILTER_FROM || more || query.trim() !== "");
   const versionsOf = (workflowId: string) => (cycles ?? []).filter((c) => c.workflowId === workflowId).sort((a, b) => b.version - a.version);
   const parentOf = (c: Cycle) => (cycles ?? []).find((p) => p.workflowId === c.workflowId && p.version === c.parentVersion) ?? null;
 
@@ -182,6 +189,10 @@ export function Cycles() {
       ) : actives.length === 0 ? (
         <EmptyState title="No promoted workflows yet.">Promote a draft: each version you promote starts a cycle.</EmptyState>
       ) : (
+        <>
+        {showBar ? (
+          <ListFilter label="Filter the cycles" value={query} onChange={setQuery} filter={textFilter} placeholder="Workflow, verdict, or a regex" noun={{ one: "workflow", many: "workflows" }} shown={shownActives.length} total={actives.length} more={more} onClear={() => setQuery("")} />
+        ) : null}
         <Table className="cycles">
           <thead>
             <tr>
@@ -194,7 +205,7 @@ export function Cycles() {
             </tr>
           </thead>
           <tbody>
-            {actives.map((c) => {
+            {shownActives.map((c) => {
               const t = TREND[trendOf(c, parentOf(c))];
               const expanded = open === c.workflowId;
               return (
@@ -232,6 +243,7 @@ export function Cycles() {
             })}
           </tbody>
         </Table>
+        </>
       )}
       <EngineCycles cycles={cycles ?? []} />
     </section>

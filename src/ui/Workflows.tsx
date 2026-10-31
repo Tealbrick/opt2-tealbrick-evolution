@@ -1,8 +1,9 @@
 // Workflows page: permanent workflows, their versions, the diff between two versions, and the Bound-agent recipe.
 import { HARNESS_OPTION_IDS, type HarnessOptionId } from "@opt2-tealbrick/spec/routes";
-import { AppIcon, appArt, appName, Button, CopyBlock, EmptyState, Field, Ink, Notice, Select, Tag, TextInput } from "@opt2-tealbrick/ui";
+import { AppIcon, accessFilter, appArt, appName, Button, CopyBlock, EmptyState, Field, Ink, ListFilter, Notice, Select, Tag, TextInput, useAccessFilter } from "@opt2-tealbrick/ui";
 import { Fragment, useCallback, useEffect, useState } from "react";
 import { widens } from "./DraftBase.tsx";
+import { FILTER_FROM, filterKey, LIST_CAP } from "./filtering.ts";
 import { MigratedBadge, type Migration, MigrationSummary, useMigration } from "./Migration.tsx";
 import { ALLOWLIST_TEXT, day, errorText, type Out, person } from "./ops.ts";
 import { downloadJson, importedFrom } from "./Pipeline.tsx";
@@ -38,7 +39,14 @@ export function Workflows({ openId, stills }: { openId: string | null; stills: s
   useEffect(load, [load]);
   useEffect(() => setSelected(openId), [openId]);
   const migration = useMigration();
-  const current = selected ?? rows?.[0]?.id ?? null;
+  const [query, setQuery] = useAccessFilter(filterKey("workflows"));
+  const textFilter = accessFilter(query);
+  const loaded = rows ?? [];
+  const shownRows = loaded.filter((w) => textFilter.test([w.title, w.id, w.summary, `v${w.activeVersion}`].join(" ")));
+  // the list gives at most LIST_CAP workflows and has no next page: at that many, it may be cut
+  const more = loaded.length >= LIST_CAP;
+  const showBar = rows !== null && (loaded.length >= FILTER_FROM || more || query.trim() !== "");
+  const current = selected ?? shownRows[0]?.id ?? null;
   return (
     <section className="app-page" aria-label="Workflows">
       <div className="page-head">
@@ -67,9 +75,11 @@ export function Workflows({ openId, stills }: { openId: string | null; stills: s
       ) : rows.length === 0 ? (
         <EmptyState title="No workflows yet.">Promote a draft first.</EmptyState>
       ) : (
+        <div className="tb-stack">
+          {showBar ? <ListFilter label="Filter the workflows" value={query} onChange={setQuery} filter={textFilter} placeholder="Title, or a regex" noun={{ one: "workflow", many: "workflows" }} shown={shownRows.length} total={loaded.length} more={more} onClear={() => setQuery("")} /> : null}
         <div className="two-pane">
           <nav className="pane-list" aria-label="Workflows">
-            {rows.map((w) => (
+            {shownRows.map((w) => (
               <button type="button" key={w.id} className="pane-item tb-focusable" aria-current={current === w.id ? "true" : undefined} onClick={() => setSelected(w.id)}>
                 <Ink>{w.title}</Ink>
                 <span className="tb-row">
@@ -80,6 +90,7 @@ export function Workflows({ openId, stills }: { openId: string | null; stills: s
             ))}
           </nav>
           {current ? <Detail key={current} id={current} stills={stills} migration={migration} /> : null}
+        </div>
         </div>
       )}
     </section>
