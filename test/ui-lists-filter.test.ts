@@ -499,7 +499,7 @@ describe("Engine versions table filter", () => {
     stub.handlers.engine_runs_list = () => ({ runs: Array.from({ length: 200 }, (_, i) => run(i, `wf-${i % 12}`)) });
     remember("cycles:engine", "zzz");
     const full = await mount(h(engineCyc.EngineCycles, { cycles: [] }));
-    assert.match(text(full.host), /The filter searches only the 12 versions loaded so far\./);
+    assert.match(text(full.host), /The filter searches only the 12 versions this page holds\./);
   });
 });
 
