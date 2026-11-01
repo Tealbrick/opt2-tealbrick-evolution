@@ -1,6 +1,6 @@
 {
   "name": "opt2-tealbrick-evolution",
-  "version": "0.4.3-dev.4",
+  "version": "0.4.3",
   "private": true,
   "description": "Evolution: turns repeated agent work into reviewed, versioned workflows and Bound-agent recipes (Teal Brick opt2 miniapp).",
   "license": "Apache-2.0",
