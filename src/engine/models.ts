@@ -1,6 +1,7 @@
 // The model-role call of an `ai` step with `by: {role}` (ENGINE-BUILD §3, M2): `modelRole(role)` gives the binding the workspace
-// bridge holds (provider, model, base URL, key), then ONE provider call with temperature 0, at most 4000 output tokens, no tools,
-// and the answer is validated against the step's `outputSchema` with ONE repair retry. Content only: the model never acts.
+// bridge holds (provider, model, base URL, key), then ONE provider call with at most 4000 output tokens, no tools, and
+// temperature 0 only where the model accepts it (see `samplingFor`); the answer is validated against the step's
+// `outputSchema` with ONE repair retry. Content only: the model never acts.
 //
 // The SDK's modelRole() is injected (tests use a fake binding and a local fake provider server). A missing binding, a bridge
 // without the `model_roles` cap, a role the manifest does not declare, or a role that is not a text role all end the step with
@@ -34,6 +35,22 @@ export class ModelError extends Error {
 export { TEXT_ROLES };
 export const MODEL_ROLES_CAP = "model_roles";
 export const MAX_OUTPUT_TOKENS = 4000;
+
+/**
+ * OpenAI reasoning models (gpt-5*, gpt-6*, o1*, o3*, o4*) answer 400 to `temperature` other than the default and to `top_p`
+ * (OpenAI "Using GPT-6": remove them when reasoning effort is not `none`; gpt-6-luna defaults to `medium`). Matched by exact
+ * prefix on the model id, after an optional router prefix such as `openai/`.
+ */
+export const OPENAI_REASONING_PREFIXES = ["gpt-5", "gpt-6", "o1", "o3", "o4"] as const;
+export function isOpenAIReasoningModel(model: string): boolean {
+  const id = model.trim().toLowerCase();
+  const bare = id.slice(id.lastIndexOf("/") + 1);
+  return OPENAI_REASONING_PREFIXES.some((p) => bare.startsWith(p));
+}
+/** `temperature: 0` for an OpenAI-compatible call, or nothing for a reasoning model (which takes only the default). */
+export function samplingFor(model: string): { temperature?: 0 } {
+  return isOpenAIReasoningModel(model) ? {} : { temperature: 0 };
+}
 
 export interface ModelPortDeps {
   /** the SDK's `modelRole` */
@@ -110,7 +127,8 @@ async function callProvider(f: typeof fetch, b: RoleBinding, turns: Turn[], maxT
   const provider = MODEL_PROVIDERS.find((p) => p.id === b.provider);
   const system = SYSTEM;
   if (b.provider === "anthropic") {
-    const r = obj(await post(f, `${base}/v1/messages`, { "x-api-key": b.key ?? "", "anthropic-version": "2023-06-01" }, { model: b.model, max_tokens: maxTokens, temperature: 0, system, messages: turns }, timeoutMs));
+    // no temperature: Claude Opus 4.7 and later, Sonnet 5 and later, Haiku 5.5 and Fable answer 400 to a non-default value
+    const r = obj(await post(f, `${base}/v1/messages`, { "x-api-key": b.key ?? "", "anthropic-version": "2023-06-01" }, { model: b.model, max_tokens: maxTokens, system, messages: turns }, timeoutMs));
     const text = (Array.isArray(r.content) ? r.content : []).map((c) => (obj(c).type === "text" ? String(obj(c).text ?? "") : "")).join("");
     const u = obj(r.usage);
     return { text, tokensIn: num(u.input_tokens), tokensOut: num(u.output_tokens) };
@@ -134,7 +152,7 @@ async function callProvider(f: typeof fetch, b: RoleBinding, turns: Turn[], maxT
     // OpenAI itself wants max_completion_tokens; the compatible servers still use max_tokens
     const limit = b.provider === "openai" ? { max_completion_tokens: maxTokens } : { max_tokens: maxTokens };
     const r = obj(
-      await post(f, `${base}/chat/completions`, b.key ? { authorization: `Bearer ${b.key}` } : {}, { model: b.model, temperature: 0, ...limit, messages: [{ role: "system", content: system }, ...turns] }, timeoutMs),
+      await post(f, `${base}/chat/completions`, b.key ? { authorization: `Bearer ${b.key}` } : {}, { model: b.model, ...samplingFor(b.model), ...limit, messages: [{ role: "system", content: system }, ...turns] }, timeoutMs),
     );
     const msg = obj(obj((Array.isArray(r.choices) ? r.choices : [])[0]).message);
     const u = obj(r.usage);
