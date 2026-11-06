@@ -1,9 +1,9 @@
-// The model-role call (src/engine/models.ts): modelRole() binding -> ONE provider call with temperature 0, at most 4000 output
+// The model-role call (src/engine/models.ts): modelRole() binding -> ONE provider call (temperature 0 only where the model accepts it), at most 4000 output
 // tokens, no tools; the reply is validated against the output schema with ONE repair retry. A local server plays the providers.
 import assert from "node:assert/strict";
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import { after, before, test } from "node:test";
-import { createModelPort, MAX_OUTPUT_TOKENS, type ModelError, parseJsonReply, type RoleBinding } from "../../src/engine/models.ts";
+import { createModelPort, isOpenAIReasoningModel, MAX_OUTPUT_TOKENS, type ModelError, parseJsonReply, type RoleBinding } from "../../src/engine/models.ts";
 
 interface Seen {
   url: string;
@@ -78,7 +78,7 @@ test("OpenAI itself gets max_completion_tokens; Anthropic and Google get their o
   assert.deepEqual([a.output, a.tokensIn, a.tokensOut], [{ bullets: ["a"] }, 5, 3]);
   assert.equal(seen[1]?.url, "/v1/messages");
   assert.equal(seen[1]?.headers["x-api-key"], "ANT-KEY");
-  assert.equal(seen[1]?.body.temperature, 0);
+  assert.equal("temperature" in (seen[1]?.body ?? {}), false, "current Claude models refuse a non-default temperature");
   assert.equal(seen[1]?.body.max_tokens, 500);
   assert.match(String(seen[1]?.body.system), /CONTENT ONLY/);
   const g = await port(bind({ provider: "google", key: "G-KEY", model: "gem-1" })).run(req() as never);
@@ -87,6 +87,26 @@ test("OpenAI itself gets max_completion_tokens; Anthropic and Google get their o
   assert.equal(seen[2]?.headers["x-goog-api-key"], "G-KEY");
   assert.equal(((seen[2] as Seen).body.generationConfig as { temperature: number }).temperature, 0);
   assert.equal("tools" in (seen[2]?.body ?? {}), false);
+});
+
+test("OpenAI reasoning models (gpt-5, gpt-6, o1, o3, o4) get no temperature and no top_p; other models keep temperature 0", async () => {
+  seen.length = 0;
+  const reasoning = ["gpt-6-luna", "gpt-5", "gpt-5.1-mini", "o1", "o3-mini", "o4-mini", "openai/gpt-6-sol", "GPT-6-Luna"];
+  replies = reasoning.map(() => openai('{"bullets":[]}'));
+  for (const model of reasoning) await port(bind({ provider: "openai", model })).run(req() as never);
+  for (const [i, model] of reasoning.entries()) {
+    const body = seen[i]?.body ?? {};
+    assert.equal("temperature" in body, false, `${model}: no temperature`);
+    assert.equal("top_p" in body, false, `${model}: no top_p`);
+    assert.equal(body.max_completion_tokens, 4000, `${model}: limit kept`);
+  }
+  seen.length = 0;
+  const plain = ["gpt-4.1", "gpt-4o-mini", "llama-3.3-70b", "mistral-large", "omni-1"];
+  replies = plain.map(() => openai('{"bullets":[]}'));
+  for (const model of plain) await port(bind({ model })).run(req() as never);
+  for (const [i, model] of plain.entries()) assert.equal(seen[i]?.body.temperature, 0, `${model}: temperature 0`);
+  assert.equal(isOpenAIReasoningModel("gpt-6-luna"), true);
+  assert.equal(isOpenAIReasoningModel("gpt-4.1"), false);
 });
 
 test("the reply is validated; ONE repair retry says what is wrong; tokens of both calls add up; a second bad reply is output_invalid", async () => {
